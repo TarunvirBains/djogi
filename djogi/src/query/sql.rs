@@ -2707,13 +2707,19 @@ where
 /// `LockMode::None`); preserving the call keeps the emitter
 /// structurally identical to the SELECT path and makes the future
 /// lock-opt-in surface a single-line change at the terminal layer.
+#[allow(dead_code)]
 pub(crate) fn build_insert_select<S: Model, T: Model>(
     qs: &QuerySet<S>,
     columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
 ) -> Result<SqlAccumulator, PortablePredicateError> {
-    // Emit the INSERT prefix and the target column list. Target column
-    // names are macro-baked `&'static str` literals via FieldRef, so
-    // `push_sql` (not `push_bind`) is correct.
+    build_insert_select_with_conflict::<S, T>(qs, columns, None)
+}
+
+pub(crate) fn build_insert_select_with_conflict<S: Model, T: Model>(
+    qs: &QuerySet<S>,
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+    conflict: Option<&crate::query::insert_select::OnConflictClause<S, T>>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
     let mut acc = SqlAccumulator::new("INSERT INTO ");
     acc.push_sql(T::table_name());
     acc.push_sql(" (");
@@ -2742,6 +2748,9 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
     acc.push_sql(" FROM ");
     acc.push_sql(S::table_name());
     push_tail(&mut acc, qs)?;
+    if let Some(clause) = conflict {
+        push_on_conflict::<S, T>(&mut acc, clause)?;
+    }
     Ok(acc)
 }
 
@@ -2755,14 +2764,87 @@ pub(crate) fn build_insert_select<S: Model, T: Model>(
 /// Returns the same [`PortablePredicateError`] variants as
 /// [`build_insert_select`] — the additional SQL token is always trusted
 /// (`T::COLUMN_LIST` is crate-owned static SQL text).
+#[allow(dead_code)]
 pub(crate) fn build_insert_select_returning<S: Model, T: Model + FromPgRow>(
     qs: &QuerySet<S>,
     columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
 ) -> Result<SqlAccumulator, PortablePredicateError> {
-    let mut acc = build_insert_select::<S, T>(qs, columns)?;
+    build_insert_select_returning_with_conflict::<S, T>(qs, columns, None)
+}
+
+pub(crate) fn build_insert_select_returning_with_conflict<S: Model, T: Model + FromPgRow>(
+    qs: &QuerySet<S>,
+    columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+    conflict: Option<&crate::query::insert_select::OnConflictClause<S, T>>,
+) -> Result<SqlAccumulator, PortablePredicateError> {
+    let mut acc = build_insert_select_with_conflict::<S, T>(qs, columns, conflict)?;
     acc.push_sql(" RETURNING ");
     acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
     Ok(acc)
+}
+
+fn push_on_conflict<S: Model, T: Model>(
+    acc: &mut SqlAccumulator,
+    clause: &crate::query::insert_select::OnConflictClause<S, T>,
+) -> Result<(), PortablePredicateError> {
+    use crate::query::insert_select::{ConflictAction, ConflictTarget};
+
+    acc.push_sql(" ON CONFLICT");
+    if let Some(target) = &clause.target {
+        match target {
+            ConflictTarget::Columns {
+                columns,
+                inference_predicate,
+            } => {
+                acc.push_sql(" (");
+                for (i, col) in columns.iter().enumerate() {
+                    if i > 0 {
+                        acc.push_sql(", ");
+                    }
+                    acc.push_sql(col);
+                }
+                acc.push_sql(")");
+                if let Some(pred) = inference_predicate {
+                    acc.push_sql(" WHERE ");
+                    crate::expr::sql::emit_expr(acc, &pred.node, SqlEmitContext::root())?;
+                }
+            }
+            ConflictTarget::Constraint { name, .. } => {
+                acc.push_sql(" ON CONSTRAINT ");
+                acc.push_sql(name);
+            }
+        }
+    }
+    match &clause.action {
+        ConflictAction::DoNothing => acc.push_sql(" DO NOTHING"),
+        ConflictAction::DoUpdate {
+            assignments,
+            where_clause,
+        } => push_conflict_do_update::<S, T>(acc, assignments, where_clause.as_deref())?,
+    }
+    Ok(())
+}
+
+fn push_conflict_do_update<S: Model, T: Model>(
+    acc: &mut SqlAccumulator,
+    assignments: &[crate::query::insert_select::ConflictUpdate<S, T>],
+    where_clause: Option<&crate::query::insert_select::ConflictCondition<T>>,
+) -> Result<(), PortablePredicateError> {
+    let ctx = SqlEmitContext::joined(T::table_name());
+    acc.push_sql(" DO UPDATE SET ");
+    for (i, asgn) in assignments.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql(asgn.target_column());
+        acc.push_sql(" = ");
+        crate::expr::sql::emit_expr(acc, asgn.value_node(), ctx)?;
+    }
+    if let Some(cond) = where_clause {
+        acc.push_sql(" WHERE ");
+        crate::expr::sql::emit_expr(acc, &cond.node, ctx)?;
+    }
+    Ok(())
 }
 
 /// Walk the emitted SELECT list and check that every column's alias (or
@@ -2860,6 +2942,7 @@ mod tests {
     use super::*;
     use crate::descriptor::{ModelDescriptor, PkType};
     use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
+    use crate::query::field::FieldRef;
     use crate::query::queryset::QuerySet;
 
     // REQ-304: minimal descriptor for Fake model — provides pk_column() = Some("id")
@@ -3541,6 +3624,15 @@ mod tests {
             .expect("test predicate should lower to insert-select SQL")
     }
 
+    fn build_insert_select_with_conflict<S: Model, T: Model>(
+        qs: &QuerySet<S>,
+        columns: &[crate::query::insert_select::InsertSelectColumn<S, T>],
+        conflict: Option<&crate::query::insert_select::OnConflictClause<S, T>>,
+    ) -> SqlAccumulator {
+        super::build_insert_select_with_conflict::<S, T>(qs, columns, conflict)
+            .expect("test predicate should lower to insert-select SQL")
+    }
+
     /// Helper — build an `InsertSelectColumn<S, T>` whose source is a
     /// bare column reference (the most common shape in adopter call
     /// sites). The post-fix source-tagged constructor pins the source
@@ -3553,6 +3645,182 @@ mod tests {
         let target: crate::query::FieldRef<T, i32> = crate::query::FieldRef::new(target_column);
         let source: crate::query::FieldRef<S, i32> = crate::query::FieldRef::new(source_column);
         target.copy_from(source.as_insert_source())
+    }
+
+    #[test]
+    fn build_insert_select_do_nothing_with_columns_emits_clause() {
+        use crate::query::insert_select::{ConflictAction, ConflictTarget, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["payload"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoNothing,
+        };
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        assert!(acc.sql().contains("ON CONFLICT (payload) DO NOTHING"));
+    }
+
+    #[test]
+    fn build_insert_select_bare_do_nothing_emits_no_target() {
+        use crate::query::insert_select::{ConflictAction, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let clause = OnConflictClause {
+            target: None,
+            action: ConflictAction::DoNothing,
+        };
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        assert!(acc.sql().contains("ON CONFLICT DO NOTHING"));
+        assert!(!acc.sql().contains("ON CONFLICT ("));
+    }
+
+    #[test]
+    fn build_insert_select_constraint_target_emits_on_constraint() {
+        use crate::query::insert_select::{ConflictAction, ConflictTarget, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Constraint {
+                name: "fakes_payload_key",
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoNothing,
+        };
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        assert!(
+            acc.sql()
+                .contains("ON CONFLICT ON CONSTRAINT fakes_payload_key DO NOTHING")
+        );
+    }
+
+    #[test]
+    fn build_insert_select_do_update_emits_excluded_assignment() {
+        use crate::query::insert_select::{ConflictAction, ConflictTarget, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let asgn = FieldRef::<Fake, i64>::new("payload")
+            .conflict_set::<Fake>(FieldRef::<Fake, i64>::new("payload").excluded());
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["id"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoUpdate {
+                assignments: vec![asgn],
+                where_clause: None,
+            },
+        };
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        assert!(
+            acc.sql()
+                .contains("ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload")
+        );
+    }
+
+    #[test]
+    fn build_insert_select_do_update_qualifies_target_columns_in_exprs_and_where() {
+        use crate::query::insert_select::{ConflictAction, ConflictTarget, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let field = FieldRef::<Fake, i64>::new("payload");
+        let asgn = field.conflict_set_expr::<Fake, _>(
+            field.as_conflict_expr() + field.excluded().into_conflict_expr(),
+        );
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["id"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoUpdate {
+                assignments: vec![asgn],
+                where_clause: Some(Box::new(field.excluded().conflict_gt(field))),
+            },
+        };
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        assert!(
+            acc.sql().contains(
+                "ON CONFLICT (id) DO UPDATE SET payload = fakes.payload + EXCLUDED.payload \
+                 WHERE EXCLUDED.payload > fakes.payload"
+            ),
+            "target-side conflict expressions must qualify the existing row to avoid ambiguity: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn build_insert_select_returning_with_conflict_orders_clauses() {
+        use crate::query::insert_select::{ConflictAction, ConflictTarget, OnConflictClause};
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let cols = vec![col_copy::<Fake, Fake>("payload", "payload")];
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["id"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoNothing,
+        };
+        let acc = super::build_insert_select_returning_with_conflict::<Fake, Fake>(
+            &qs,
+            &cols,
+            Some(&clause),
+        )
+        .unwrap();
+        let sql = acc.sql();
+        assert!(sql.find("ON CONFLICT").unwrap() < sql.find("RETURNING").unwrap());
+    }
+
+    #[test]
+    fn insert_select_source_literal_and_conflict_literal_bind_sequentially() {
+        // Pin: a literal bind on the SELECT side gets $1 and a literal bind
+        // in the ON CONFLICT clause gets $2. The SqlAccumulator numbers binds
+        // monotonically across the whole statement (SELECT projection emits
+        // before push_on_conflict), so a future emitter reorder that resets
+        // or double-numbers binds would break this.
+        use crate::query::insert_select::{
+            ConflictAction, ConflictTarget, ConflictUpdate, InsertSelectColumn, InsertSelectSource,
+            OnConflictClause,
+        };
+
+        let qs: QuerySet<Fake> = QuerySet::new();
+
+        // SELECT side: one target column whose source is a literal -> $1.
+        let target: crate::query::FieldRef<Fake, i32> = crate::query::FieldRef::new("payload");
+        let source_literal_col: InsertSelectColumn<Fake, Fake> =
+            target.copy_from(InsertSelectSource::<Fake, _>::literal(7i32));
+        let cols = vec![source_literal_col];
+
+        // ON CONFLICT side: DO UPDATE SET payload = <literal> -> $2.
+        let conflict_assignment: ConflictUpdate<Fake, Fake> =
+            crate::query::FieldRef::<Fake, i32>::new("payload").conflict_set_value::<Fake>(42i32);
+        let clause = OnConflictClause {
+            target: Some(ConflictTarget::Columns {
+                columns: vec!["id"],
+                inference_predicate: None,
+            }),
+            action: ConflictAction::DoUpdate {
+                assignments: vec![conflict_assignment],
+                where_clause: None,
+            },
+        };
+
+        let acc = build_insert_select_with_conflict::<Fake, Fake>(&qs, &cols, Some(&clause));
+        let sql = acc.sql();
+
+        // Exactly two binds, sequenced $1 (source) then $2 (conflict).
+        assert_eq!(acc.bind_count(), 2, "expected two binds, got sql: {sql}");
+        // Source literal is the SELECT projection -> $1.
+        assert!(
+            sql.contains("SELECT $1 FROM fakes"),
+            "source literal must bind as $1: {sql}"
+        );
+        // Conflict literal is the DO UPDATE SET assignment -> $2.
+        assert!(
+            sql.contains("DO UPDATE SET payload = $2"),
+            "conflict literal must bind as $2: {sql}"
+        );
     }
 
     #[test]

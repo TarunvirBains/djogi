@@ -422,6 +422,13 @@ pub(crate) enum ExprNode {
         column: &'static str,
     },
 
+    /// `EXCLUDED.<column>` — the conflict-row pseudo-table reference used by
+    /// `INSERT ... ON CONFLICT ... DO UPDATE`.
+    Excluded {
+        /// The target column on the `EXCLUDED` pseudo-table.
+        column: &'static str,
+    },
+
     /// Alias-qualified outer-scope column reference inside a correlated
     /// subquery — emits `<alias>.<column>`. Used by LATERAL joins to
     /// unambiguously reference the outer table by its framework alias.

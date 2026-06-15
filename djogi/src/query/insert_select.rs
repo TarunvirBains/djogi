@@ -145,6 +145,17 @@
 //! more than once`). Both are surfaced as [`DjogiError::Validation`]
 //! before the SQL leaves the framework, so the diagnostic carries the
 //! target table name rather than the bare Postgres SQLSTATE.
+//! # Bulk upsert via ON CONFLICT
+//! Attach [`InsertSelectStmt::on_conflict_do_nothing`] or
+//! [`InsertSelectStmt::on_conflict_do_update`] to turn the bulk copy into a
+//! typed bulk upsert. Use [`ConflictTarget::columns`],
+//! [`ConflictTarget::constraint`], or [`ConflictTarget::none`] to choose the
+//! conflict arbiter, and `field.excluded()` to reference `EXCLUDED.field` in
+//! `DO UPDATE SET`.
+//! # ON CONFLICT vs MERGE
+//! Prefer ON CONFLICT for the common unique-key insert-or-update case. Reach
+//! for [`QuerySet::merge_into`](crate::query::QuerySet::merge_into) when you
+//! need BY SOURCE actions, delete branches, or multiple conditional branches.
 
 #![allow(clippy::manual_async_fn)]
 
@@ -152,13 +163,15 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::Expr;
 use crate::expr::arithmetic::Numeric;
-use crate::expr::node::ExprNode;
+use crate::expr::node::{CmpOp, ExprNode};
 use crate::model::Model;
 use crate::pg::accumulator::as_params;
 use crate::pg::decode::FromPgRow;
-use crate::query::field::FieldRef;
+use crate::query::field::{DjogiField, FieldRef, IntoSqlField};
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_insert_select, build_insert_select_returning};
+use crate::query::sql::{
+    build_insert_select_returning_with_conflict, build_insert_select_with_conflict,
+};
 use crate::query::terminal::auto_set_tenant;
 use std::collections::HashSet;
 use std::future::Future;
@@ -345,6 +358,27 @@ impl<S: Model, V> FieldRef<S, V> {
     }
 }
 
+impl<T: Model, V> FieldRef<T, V> {
+    /// Reference this column on the `EXCLUDED` pseudo-row — the
+    /// would-have-been-inserted value — for use inside `DO UPDATE SET` or
+    /// a conflict `WHERE` predicate.
+    #[must_use = "an ExcludedRef is lazy — use it in a DO UPDATE SET assignment or a condition"]
+    pub fn excluded(self) -> ExcludedRef<T, V> {
+        ExcludedRef::from_node(ExprNode::Excluded {
+            column: self.column(),
+        })
+    }
+
+    /// Reference this column on the existing (target) row as a
+    /// [`ConflictExpr`], e.g. the left operand of `col = col + EXCLUDED.col`.
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn as_conflict_expr(self) -> ConflictExpr<T, V> {
+        ConflictExpr::from_node(ExprNode::Field {
+            column: self.column(),
+        })
+    }
+}
+
 /// A single `(target_column, source_expression)` mapping that becomes
 /// one position in the `INSERT (...) SELECT ...` shape.
 /// # What
@@ -497,6 +531,419 @@ impl<T: Model, V> FieldRef<T, V> {
             _phantom: PhantomData,
         }
     }
+
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// an `EXCLUDED` column value.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set<S: Model>(self, value: ExcludedRef<T, V>) -> ConflictUpdate<S, T> {
+        ConflictUpdate {
+            target_column: self.column(),
+            value: ConflictUpdateValue { node: value.node },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// an arbitrary conflict expression (a target column, an `EXCLUDED`
+    /// column, or arithmetic over them).
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_expr<S: Model, E>(self, value: E) -> ConflictUpdate<S, T>
+    where
+        E: IntoConflictExpr<T, V>,
+    {
+        ConflictUpdate {
+            target_column: self.column(),
+            value: ConflictUpdateValue {
+                node: value.into_conflict_expr().node,
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// a bound literal value.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_value<S: Model>(self, value: V) -> ConflictUpdate<S, T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let expr: Expr<V> = value.into();
+        ConflictUpdate {
+            target_column: self.column(),
+            value: ConflictUpdateValue { node: expr.node },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Build a `DO UPDATE SET` assignment that sets this target column to
+    /// its own `EXCLUDED` value (`col = EXCLUDED.col`) — the common
+    /// "overwrite with the incoming value" case.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_excluded<S: Model>(self) -> ConflictUpdate<S, T> {
+        let column = self.column();
+        ConflictUpdate {
+            target_column: column,
+            value: ConflictUpdateValue {
+                node: ExprNode::Excluded { column },
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Build a `DO UPDATE SET` assignment that adds a literal to this
+    /// target column's existing value (`col = col + value`).
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_add<S: Model>(self, value: V) -> ConflictUpdate<S, T>
+    where
+        V: Numeric + Into<Expr<V>>,
+    {
+        self.conflict_arith::<S>(value, ExprNode::Add)
+    }
+
+    /// Build a `DO UPDATE SET` assignment that subtracts a literal from
+    /// this target column's existing value (`col = col - value`).
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_sub<S: Model>(self, value: V) -> ConflictUpdate<S, T>
+    where
+        V: Numeric + Into<Expr<V>>,
+    {
+        self.conflict_arith::<S>(value, ExprNode::Sub)
+    }
+
+    /// Build a `DO UPDATE SET` assignment that multiplies this target
+    /// column's existing value by a literal (`col = col * value`).
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_mul<S: Model>(self, value: V) -> ConflictUpdate<S, T>
+    where
+        V: Numeric + Into<Expr<V>>,
+    {
+        self.conflict_arith::<S>(value, ExprNode::Mul)
+    }
+
+    /// Build a `DO UPDATE SET` assignment that divides this target
+    /// column's existing value by a literal (`col = col / value`).
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_div<S: Model>(self, value: V) -> ConflictUpdate<S, T>
+    where
+        V: Numeric + Into<Expr<V>>,
+    {
+        self.conflict_arith::<S>(value, ExprNode::Div)
+    }
+
+    fn conflict_arith<S: Model>(
+        self,
+        value: V,
+        op: fn(Box<ExprNode>, Box<ExprNode>) -> ExprNode,
+    ) -> ConflictUpdate<S, T>
+    where
+        V: Numeric + Into<Expr<V>>,
+    {
+        let column = self.column();
+        let rhs: Expr<V> = value.into();
+        ConflictUpdate {
+            target_column: column,
+            value: ConflictUpdateValue {
+                node: op(Box::new(ExprNode::Field { column }), Box::new(rhs.node)),
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Build an equality predicate comparing this target column to another
+    /// conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_eq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Eq,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build an inequality (`<>`) predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_neq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Neq,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build a greater-than predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_gt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Gt,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build a greater-than-or-equal predicate comparing this target column
+    /// to another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_gte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Gte,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build a less-than predicate comparing this target column to another
+    /// conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_lt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Lt,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build a less-than-or-equal predicate comparing this target column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_lte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Lte,
+            rhs.into_conflict_expr().node,
+        )
+    }
+
+    /// Build an equality predicate comparing this target column to a bound
+    /// literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_eq_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Eq,
+            e.node,
+        )
+    }
+
+    /// Build an inequality (`<>`) predicate comparing this target column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_neq_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Neq,
+            e.node,
+        )
+    }
+
+    /// Build a greater-than predicate comparing this target column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_gt_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Gt,
+            e.node,
+        )
+    }
+
+    /// Build a greater-than-or-equal predicate comparing this target column
+    /// to a bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_gte_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Gte,
+            e.node,
+        )
+    }
+
+    /// Build a less-than predicate comparing this target column to a bound
+    /// literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_lt_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Lt,
+            e.node,
+        )
+    }
+
+    /// Build a less-than-or-equal predicate comparing this target column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_lte_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(
+            ExprNode::Field {
+                column: self.column(),
+            },
+            CmpOp::Lte,
+            e.node,
+        )
+    }
+}
+
+impl<T: Model> FieldRef<T, bool> {
+    /// Build a predicate that is true when this boolean target column is
+    /// true, for use in a conflict `WHERE` guard.
+    pub fn conflict_is_true(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::Field {
+                column: self.column(),
+            },
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build a predicate that is true when this boolean target column is
+    /// false, for use in a conflict `WHERE` guard.
+    pub fn conflict_is_false(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::Not(Box::new(ExprNode::Field {
+                column: self.column(),
+            })),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model, V> ExcludedRef<T, V> {
+    /// Build an equality predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_eq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Eq, rhs.into_conflict_expr().node)
+    }
+
+    /// Build an inequality (`<>`) predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
+    pub fn conflict_neq<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Neq, rhs.into_conflict_expr().node)
+    }
+
+    /// Build a greater-than predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_gt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Gt, rhs.into_conflict_expr().node)
+    }
+
+    /// Build a greater-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
+    pub fn conflict_gte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Gte, rhs.into_conflict_expr().node)
+    }
+
+    /// Build a less-than predicate comparing this `EXCLUDED` column to
+    /// another conflict expression, for use in a conflict `WHERE` guard.
+    pub fn conflict_lt<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Lt, rhs.into_conflict_expr().node)
+    }
+
+    /// Build a less-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to another conflict expression, for use in a conflict
+    /// `WHERE` guard.
+    pub fn conflict_lte<E: IntoConflictExpr<T, V>>(self, rhs: E) -> ConflictCondition<T> {
+        conflict_condition(self.node, CmpOp::Lte, rhs.into_conflict_expr().node)
+    }
+
+    /// Build an equality predicate comparing this `EXCLUDED` column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_eq_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Eq, e.node)
+    }
+
+    /// Build an inequality (`<>`) predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
+    pub fn conflict_neq_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Neq, e.node)
+    }
+
+    /// Build a greater-than predicate comparing this `EXCLUDED` column to
+    /// a bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_gt_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Gt, e.node)
+    }
+
+    /// Build a greater-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
+    pub fn conflict_gte_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Gte, e.node)
+    }
+
+    /// Build a less-than predicate comparing this `EXCLUDED` column to a
+    /// bound literal value, for use in a conflict `WHERE` guard.
+    pub fn conflict_lt_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Lt, e.node)
+    }
+
+    /// Build a less-than-or-equal predicate comparing this `EXCLUDED`
+    /// column to a bound literal value, for use in a conflict `WHERE`
+    /// guard.
+    pub fn conflict_lte_value(self, value: V) -> ConflictCondition<T>
+    where
+        V: Into<Expr<V>>,
+    {
+        let e: Expr<V> = value.into();
+        conflict_condition(self.node, CmpOp::Lte, e.node)
+    }
 }
 
 /// Closure-return shape for [`QuerySet::insert_into`]. The closure can
@@ -536,6 +983,727 @@ impl<S: Model, T: Model> IntoInsertColumns<S, T> for Vec<InsertSelectColumn<S, T
     }
 }
 
+mod __conflict_sealed {
+    pub trait Sealed {}
+}
+
+/// The accumulated `ON CONFLICT` clause attached to an
+/// [`InsertSelectStmt`]. Holds an optional [`ConflictTarget`] (the
+/// arbiter — which unique index or constraint the conflict is detected
+/// on) and a [`ConflictAction`] (`DO NOTHING` or `DO UPDATE SET ...`).
+/// Inert until the statement executes; build it through
+/// [`InsertSelectStmt::on_conflict_do_nothing`],
+/// [`InsertSelectStmt::on_conflict_do_update`], or
+/// [`InsertSelectStmt::on_conflict_do_update_where`] rather than
+/// constructing it directly.
+#[must_use = "an OnConflictClause is inert until attached to an InsertSelectStmt and executed"]
+pub struct OnConflictClause<S: Model, T: Model> {
+    pub(crate) target: Option<ConflictTarget<T>>,
+    pub(crate) action: ConflictAction<S, T>,
+}
+
+impl<S: Model, T: Model> Clone for OnConflictClause<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            target: self.target.clone(),
+            action: self.action.clone(),
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for OnConflictClause<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OnConflictClause")
+            .field("target", &self.target)
+            .field("action", &self.action)
+            .finish()
+    }
+}
+
+/// The conflict arbiter for an `ON CONFLICT` clause — which unique index
+/// or named constraint Postgres checks the incoming row against.
+/// # Variants
+/// - `Columns` — infer the arbiter from a column list (`ON CONFLICT
+///   (col, ...)`), optionally narrowed by a partial-index inference
+///   predicate via [`ConflictTarget::where_predicate`].
+/// - `Constraint` — name a constraint explicitly (`ON CONFLICT ON
+///   CONSTRAINT <name>`).
+///
+/// Construct via [`ConflictTarget::columns`] /
+/// [`ConflictTarget::columns_of`] / [`ConflictTarget::constraint`]; pass
+/// [`ConflictTarget::none`] for a bare `ON CONFLICT` with no arbiter
+/// (only valid with `DO NOTHING`).
+/// # Why the fields are validated at execution, not just construction
+/// The variant fields are public. The constructors validate identifiers,
+/// but a re-validation runs in the execution path so post-construction
+/// mutation cannot route an unchecked identifier into the emitted SQL.
+#[non_exhaustive]
+pub enum ConflictTarget<T: Model> {
+    /// Infer the conflict arbiter from a column list (`ON CONFLICT
+    /// (col, ...)`). `inference_predicate` narrows the match to a
+    /// partial unique index.
+    #[non_exhaustive]
+    Columns {
+        /// The arbiter columns, in declaration order. Validated against
+        /// the target descriptor and the plain-identifier contract
+        /// before emission.
+        columns: Vec<&'static str>,
+        /// Optional `WHERE` predicate selecting a partial unique index;
+        /// may reference only target-table columns, never `EXCLUDED`.
+        inference_predicate: Option<Box<ConflictCondition<T>>>,
+    },
+    /// Name a unique or exclusion constraint explicitly (`ON CONFLICT ON
+    /// CONSTRAINT <name>`). A constraint target cannot carry an
+    /// inference predicate.
+    #[non_exhaustive]
+    Constraint {
+        /// The constraint name. Validated against the plain-identifier
+        /// contract before it is emitted unquoted.
+        name: &'static str,
+        /// Always `None` for a constraint target — a `WHERE` inference
+        /// predicate is rejected at execution because Postgres does not
+        /// accept one on `ON CONFLICT ON CONSTRAINT`.
+        inference_predicate: Option<Box<ConflictCondition<T>>>,
+    },
+}
+
+impl<T: Model> Clone for ConflictTarget<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Columns {
+                columns,
+                inference_predicate,
+            } => Self::Columns {
+                columns: columns.clone(),
+                inference_predicate: inference_predicate.clone(),
+            },
+            Self::Constraint {
+                name,
+                inference_predicate,
+            } => Self::Constraint {
+                name,
+                inference_predicate: inference_predicate.clone(),
+            },
+        }
+    }
+}
+
+impl<T: Model> std::fmt::Debug for ConflictTarget<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Columns {
+                columns,
+                inference_predicate,
+            } => f
+                .debug_struct("Columns")
+                .field("columns", columns)
+                .field("inference_predicate", inference_predicate)
+                .finish(),
+            Self::Constraint {
+                name,
+                inference_predicate,
+            } => f
+                .debug_struct("Constraint")
+                .field("name", name)
+                .field("inference_predicate", inference_predicate)
+                .finish(),
+        }
+    }
+}
+
+/// A builder for a column-inferred [`ConflictTarget`] that accepts
+/// heterogeneous column value types in one chain —
+/// `ConflictColumns::new().column(f.a()).column(f.b())` — where
+/// [`ConflictTarget::columns`]'s single-`V` iterator signature cannot.
+/// Pass the finished builder to [`ConflictTarget::columns_of`].
+#[must_use = "a ConflictColumns builder is inert until passed to ConflictTarget::columns_of"]
+pub struct ConflictColumns<T: Model> {
+    cols: Vec<&'static str>,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<T: Model> ConflictColumns<T> {
+    /// Start an empty arbiter-column builder. Add columns with
+    /// [`ConflictColumns::column`], then hand the result to
+    /// [`ConflictTarget::columns_of`].
+    pub fn new() -> Self {
+        Self {
+            cols: Vec::new(),
+            _t: PhantomData,
+        }
+    }
+
+    /// Append one arbiter column. Each call may carry a different value
+    /// type `V`, which is why this builder exists alongside the
+    /// homogeneous [`ConflictTarget::columns`] iterator constructor.
+    pub fn column<V, C>(mut self, col: C) -> Self
+    where
+        C: IntoConflictColumn<T, V>,
+    {
+        self.cols.push(col.conflict_column_name());
+        self
+    }
+}
+
+impl<T: Model> Default for ConflictColumns<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Sealed bridge that lets a typed field reference ([`FieldRef`] or
+/// [`DjogiField`]) act as a conflict-arbiter column. Carries the value
+/// type `V` so [`ConflictColumns::column`] can accept heterogeneous
+/// column types. Not implementable downstream.
+pub trait IntoConflictColumn<T: Model, V>: __conflict_sealed::Sealed {
+    /// Extract the underlying column name. Implementors return the
+    /// already-validated `&'static str` column identifier.
+    fn conflict_column_name(self) -> &'static str;
+}
+
+impl<T: Model, V> __conflict_sealed::Sealed for FieldRef<T, V> {}
+impl<T: Model, V> __conflict_sealed::Sealed for DjogiField<T, V> {}
+
+impl<T: Model, V> IntoConflictColumn<T, V> for FieldRef<T, V> {
+    fn conflict_column_name(self) -> &'static str {
+        self.column()
+    }
+}
+
+impl<T: Model, V> IntoConflictColumn<T, V> for DjogiField<T, V> {
+    fn conflict_column_name(self) -> &'static str {
+        self.into_sql_field().column()
+    }
+}
+
+/// A typed expression in the `DO UPDATE SET` right-hand side or a
+/// conflict `WHERE` predicate. Wraps the crate-private expression IR and
+/// carries the target model `T` and value type `V` at compile time.
+/// Produced by [`FieldRef::as_conflict_expr`],
+/// [`ExcludedRef::into_conflict_expr`], or arithmetic on those; consumed
+/// by [`FieldRef::conflict_set_expr`].
+pub struct ConflictExpr<T: Model, V> {
+    pub(crate) node: ExprNode,
+    pub(crate) _marker: PhantomData<fn() -> (T, V)>,
+}
+
+impl<T: Model, V> ConflictExpr<T, V> {
+    pub(crate) fn from_node(node: ExprNode) -> Self {
+        Self {
+            node,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model, V> Clone for ConflictExpr<T, V> {
+    fn clone(&self) -> Self {
+        Self::from_node(self.node.clone())
+    }
+}
+
+impl<T: Model, V> std::fmt::Debug for ConflictExpr<T, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConflictExpr")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+/// A reference to a column of the `EXCLUDED` pseudo-row — the
+/// would-have-been-inserted values, available inside `DO UPDATE SET` and
+/// the conflict `WHERE` predicate. Produced by [`FieldRef::excluded`].
+/// Use [`ExcludedRef::into_conflict_expr`] to place it in an assignment,
+/// or the `conflict_*` comparison methods to build a predicate against
+/// it.
+pub struct ExcludedRef<T: Model, V> {
+    pub(crate) node: ExprNode,
+    pub(crate) _marker: PhantomData<fn() -> (T, V)>,
+}
+
+impl<T: Model, V> ExcludedRef<T, V> {
+    pub(crate) fn from_node(node: ExprNode) -> Self {
+        Self {
+            node,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Convert this `EXCLUDED.<col>` reference into a [`ConflictExpr`] so
+    /// it can be assigned in a `DO UPDATE SET` list or composed with
+    /// arithmetic.
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn into_conflict_expr(self) -> ConflictExpr<T, V> {
+        ConflictExpr::from_node(self.node)
+    }
+}
+
+impl<T: Model, V> Clone for ExcludedRef<T, V> {
+    fn clone(&self) -> Self {
+        Self::from_node(self.node.clone())
+    }
+}
+
+impl<T: Model, V> std::fmt::Debug for ExcludedRef<T, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExcludedRef")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+/// A boolean predicate over target-table columns and/or `EXCLUDED`
+/// columns. Used as a partial-index inference predicate
+/// ([`ConflictTarget::where_predicate`]) or a `DO UPDATE ... WHERE`
+/// guard ([`InsertSelectStmt::on_conflict_do_update_where`]). Compose
+/// with [`ConflictCondition::and`] / [`ConflictCondition::or`] / `!`.
+pub struct ConflictCondition<T: Model> {
+    pub(crate) node: ExprNode,
+    pub(crate) _marker: PhantomData<fn() -> T>,
+}
+
+impl<T: Model> Clone for ConflictCondition<T> {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model> std::fmt::Debug for ConflictCondition<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConflictCondition")
+            .field("node", &self.node)
+            .finish()
+    }
+}
+
+/// Sealed bridge for the predicate closures on
+/// [`ConflictTarget::where_predicate`] and
+/// [`InsertSelectStmt::on_conflict_do_update_where`], letting a closure
+/// return a [`ConflictCondition`] directly. Not implementable
+/// downstream.
+pub trait IntoConflictCondition<T: Model>: __conflict_sealed::Sealed {
+    /// Convert `self` into the canonical [`ConflictCondition`] the
+    /// builder stores.
+    fn into_conflict_condition(self) -> ConflictCondition<T>;
+}
+
+impl<T: Model> __conflict_sealed::Sealed for ConflictCondition<T> {}
+
+impl<T: Model> IntoConflictCondition<T> for ConflictCondition<T> {
+    fn into_conflict_condition(self) -> ConflictCondition<T> {
+        self
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ConflictUpdateValue {
+    pub(crate) node: ExprNode,
+}
+
+impl Clone for ConflictUpdateValue {
+    fn clone(&self) -> Self {
+        Self {
+            node: self.node.clone(),
+        }
+    }
+}
+
+/// A single `column = expression` assignment in a `DO UPDATE SET` list.
+/// Built by the `conflict_set*` / `conflict_excluded` / `conflict_add`
+/// (etc.) methods on a target [`FieldRef`]; the closure passed to
+/// [`InsertSelectStmt::on_conflict_do_update`] returns one or a `Vec` of
+/// them.
+pub struct ConflictUpdate<S: Model, T: Model> {
+    pub(crate) target_column: &'static str,
+    pub(crate) value: ConflictUpdateValue,
+    pub(crate) _phantom: PhantomData<fn() -> (S, T)>,
+}
+
+impl<S: Model, T: Model> Clone for ConflictUpdate<S, T> {
+    fn clone(&self) -> Self {
+        Self {
+            target_column: self.target_column,
+            value: self.value.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for ConflictUpdate<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConflictUpdate")
+            .field("target_column", &self.target_column)
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+impl<S: Model, T: Model> ConflictUpdate<S, T> {
+    #[doc(hidden)]
+    pub(crate) fn target_column(&self) -> &'static str {
+        self.target_column
+    }
+
+    #[doc(hidden)]
+    pub(crate) fn value_node(&self) -> &ExprNode {
+        &self.value.node
+    }
+}
+
+/// What Postgres does when an incoming row conflicts on the
+/// [`ConflictTarget`] arbiter: `DO NOTHING` (skip the row) or `DO UPDATE
+/// SET ...` (merge into the existing row using the `EXCLUDED` pseudo-row
+/// for incoming values). Built indirectly by the `on_conflict_*` builders
+/// on [`InsertSelectStmt`].
+#[non_exhaustive]
+pub enum ConflictAction<S: Model, T: Model> {
+    /// Skip the conflicting row, leaving the existing row unchanged
+    /// (`ON CONFLICT ... DO NOTHING`).
+    DoNothing,
+    /// Merge the conflicting row into the existing one
+    /// (`ON CONFLICT ... DO UPDATE SET ...`), optionally guarded by a
+    /// `WHERE` clause.
+    #[non_exhaustive]
+    DoUpdate {
+        /// The `SET column = expr` assignments; never empty (an empty
+        /// list is rejected at execution).
+        assignments: Vec<ConflictUpdate<S, T>>,
+        /// Optional `WHERE` guard; when false Postgres skips the row
+        /// rather than updating it.
+        where_clause: Option<Box<ConflictCondition<T>>>,
+    },
+}
+
+impl<S: Model, T: Model> Clone for ConflictAction<S, T> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::DoNothing => Self::DoNothing,
+            Self::DoUpdate {
+                assignments,
+                where_clause,
+            } => Self::DoUpdate {
+                assignments: assignments.clone(),
+                where_clause: where_clause.clone(),
+            },
+        }
+    }
+}
+
+impl<S: Model, T: Model> std::fmt::Debug for ConflictAction<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DoNothing => f.write_str("DoNothing"),
+            Self::DoUpdate {
+                assignments,
+                where_clause,
+            } => f
+                .debug_struct("DoUpdate")
+                .field("assignments", assignments)
+                .field("where_clause", where_clause)
+                .finish(),
+        }
+    }
+}
+
+/// Sealed bridge that lets a typed field reference, an [`ExcludedRef`],
+/// or an existing [`ConflictExpr`] be used as the right-hand side of a
+/// conflict assignment or comparison. Carries the value type `V` so the
+/// two sides of a comparison are pinned to the same type. Not
+/// implementable downstream.
+pub trait IntoConflictExpr<T: Model, V>: __conflict_sealed::Sealed {
+    /// Convert `self` into the canonical [`ConflictExpr`].
+    fn into_conflict_expr(self) -> ConflictExpr<T, V>;
+}
+
+impl<T: Model, V> __conflict_sealed::Sealed for ExcludedRef<T, V> {}
+impl<T: Model, V> __conflict_sealed::Sealed for ConflictExpr<T, V> {}
+
+impl<T: Model, V> IntoConflictExpr<T, V> for FieldRef<T, V> {
+    fn into_conflict_expr(self) -> ConflictExpr<T, V> {
+        ConflictExpr::from_node(ExprNode::Field {
+            column: self.column(),
+        })
+    }
+}
+
+impl<T: Model, V> IntoConflictExpr<T, V> for DjogiField<T, V> {
+    fn into_conflict_expr(self) -> ConflictExpr<T, V> {
+        self.into_sql_field().into_conflict_expr()
+    }
+}
+
+impl<T: Model, V> IntoConflictExpr<T, V> for ExcludedRef<T, V> {
+    fn into_conflict_expr(self) -> ConflictExpr<T, V> {
+        ConflictExpr::from_node(self.node)
+    }
+}
+
+impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
+    fn into_conflict_expr(self) -> ConflictExpr<T, V> {
+        self
+    }
+}
+
+/// Sealed bridge for the update closures on
+/// [`InsertSelectStmt::on_conflict_do_update`] and
+/// [`InsertSelectStmt::on_conflict_do_update_where`], letting the closure
+/// return either a single [`ConflictUpdate`] or a `Vec` of them. Not
+/// implementable downstream.
+pub trait IntoConflictUpdates<S: Model, T: Model>: __conflict_sealed::Sealed {
+    /// Normalize `self` into the `Vec<ConflictUpdate<S, T>>` the builder
+    /// stores.
+    fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>>;
+}
+
+impl<S: Model, T: Model> __conflict_sealed::Sealed for ConflictUpdate<S, T> {}
+impl<S: Model, T: Model> __conflict_sealed::Sealed for Vec<ConflictUpdate<S, T>> {}
+
+impl<S: Model, T: Model> IntoConflictUpdates<S, T> for ConflictUpdate<S, T> {
+    fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>> {
+        vec![self]
+    }
+}
+
+impl<S: Model, T: Model> IntoConflictUpdates<S, T> for Vec<ConflictUpdate<S, T>> {
+    fn into_conflict_updates(self) -> Vec<ConflictUpdate<S, T>> {
+        self
+    }
+}
+
+impl<T: Model> ConflictTarget<T> {
+    /// Infer the conflict arbiter from a homogeneous list of target
+    /// fields (`ON CONFLICT (col, ...)`). All fields must share the same
+    /// value type `V`; for a mix of column types use
+    /// [`ConflictColumns`] + [`ConflictTarget::columns_of`] instead.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns([DailyTotal::fields().day()])
+    /// ```
+    #[must_use]
+    pub fn columns<I, C, V>(fields: I) -> Self
+    where
+        I: IntoIterator<Item = C>,
+        C: IntoConflictColumn<T, V>,
+    {
+        Self::Columns {
+            columns: fields
+                .into_iter()
+                .map(IntoConflictColumn::conflict_column_name)
+                .collect(),
+            inference_predicate: None,
+        }
+    }
+
+    /// Infer the conflict arbiter from a [`ConflictColumns`] builder,
+    /// which (unlike [`ConflictTarget::columns`]) accepts arbiter columns
+    /// of differing value types.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns_of(
+    ///     ConflictColumns::new()
+    ///         .column(Account::fields().tenant_id())
+    ///         .column(Account::fields().email()),
+    /// )
+    /// ```
+    #[must_use]
+    pub fn columns_of(builder: ConflictColumns<T>) -> Self {
+        Self::Columns {
+            columns: builder.cols,
+            inference_predicate: None,
+        }
+    }
+
+    /// Name a unique or exclusion constraint explicitly (`ON CONFLICT ON
+    /// CONSTRAINT <name>`).
+    /// # Panics
+    /// Panics if `name` is not a valid Postgres identifier (non-empty,
+    /// ≤63 bytes, ASCII letter/underscore start, not a reserved keyword)
+    /// — the name lands unquoted in the emitted SQL, so a malformed name
+    /// is a framework-misuse bug, not a recoverable runtime condition.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::constraint("accounts_email_key")
+    /// ```
+    #[must_use]
+    pub fn constraint(name: &'static str) -> Self {
+        crate::ident::assert_plain_ident(name, "conflict constraint name");
+        Self::Constraint {
+            name,
+            inference_predicate: None,
+        }
+    }
+
+    /// A bare `ON CONFLICT` with no arbiter — Postgres treats any unique
+    /// conflict as a match. Only valid with `DO NOTHING`; returns
+    /// `None`, which the `on_conflict_*` builders accept via
+    /// `impl Into<Option<ConflictTarget<T>>>`.
+    /// # Example
+    /// ```ignore
+    /// .on_conflict_do_nothing(ConflictTarget::<Account>::none())
+    /// ```
+    #[must_use]
+    #[allow(clippy::self_named_constructors)]
+    pub fn none() -> Option<Self> {
+        None
+    }
+
+    /// Narrow a column arbiter to a partial unique index by attaching an
+    /// inference `WHERE` predicate. The predicate may reference only
+    /// target-table columns (never `EXCLUDED`); a constraint target with
+    /// a predicate is rejected at execution.
+    /// # Example
+    /// ```ignore
+    /// ConflictTarget::columns([Doc::fields().slug()])
+    ///     .where_predicate(|t| t.published().conflict_is_true())
+    /// ```
+    #[must_use]
+    pub fn where_predicate<F, C>(self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> C,
+        C: IntoConflictCondition<T>,
+    {
+        match self {
+            Self::Columns { columns, .. } => Self::Columns {
+                columns,
+                inference_predicate: Some(Box::new(
+                    f(T::Fields::default()).into_conflict_condition(),
+                )),
+            },
+            Self::Constraint { name, .. } => Self::Constraint {
+                name,
+                inference_predicate: Some(Box::new(
+                    f(T::Fields::default()).into_conflict_condition(),
+                )),
+            },
+        }
+    }
+}
+
+impl<T: Model> ConflictCondition<T> {
+    /// Combine two predicates with `AND`. Use `!cond` (via
+    /// [`std::ops::Not`]) for negation.
+    pub fn and(self, other: ConflictCondition<T>) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::And(Box::new(self.node), Box::new(other.node)),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Combine two predicates with `OR`.
+    pub fn or(self, other: ConflictCondition<T>) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::Or(Box::new(self.node), Box::new(other.node)),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Model> std::ops::Not for ConflictCondition<T> {
+    type Output = ConflictCondition<T>;
+
+    fn not(self) -> Self::Output {
+        ConflictCondition {
+            node: ExprNode::Not(Box::new(self.node)),
+            _marker: PhantomData,
+        }
+    }
+}
+
+fn expr_node_contains_excluded(node: &ExprNode) -> bool {
+    match node {
+        ExprNode::Excluded { .. } => true,
+        ExprNode::Cmp { lhs, rhs, .. }
+        | ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => {
+            expr_node_contains_excluded(lhs) || expr_node_contains_excluded(rhs)
+        }
+        ExprNode::Not(inner) => expr_node_contains_excluded(inner),
+        _ => false,
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Add for ConflictExpr<T, V> {
+    type Output = ConflictExpr<T, V>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        ConflictExpr::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Sub for ConflictExpr<T, V> {
+    type Output = ConflictExpr<T, V>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        ConflictExpr::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Mul for ConflictExpr<T, V> {
+    type Output = ConflictExpr<T, V>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        ConflictExpr::from_node(ExprNode::Mul(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Div for ConflictExpr<T, V> {
+    type Output = ConflictExpr<T, V>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        ConflictExpr::from_node(ExprNode::Div(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Add for ExcludedRef<T, V> {
+    type Output = ExcludedRef<T, V>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        ExcludedRef::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Sub for ExcludedRef<T, V> {
+    type Output = ExcludedRef<T, V>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        ExcludedRef::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Mul for ExcludedRef<T, V> {
+    type Output = ExcludedRef<T, V>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        ExcludedRef::from_node(ExprNode::Mul(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl<T: Model, V: Numeric> std::ops::Div for ExcludedRef<T, V> {
+    type Output = ExcludedRef<T, V>;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        ExcludedRef::from_node(ExprNode::Div(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+fn conflict_condition<T: Model>(lhs: ExprNode, op: CmpOp, rhs: ExprNode) -> ConflictCondition<T> {
+    ConflictCondition {
+        node: ExprNode::Cmp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        },
+        _marker: PhantomData,
+    }
+}
+
 /// Terminal-pending bulk `INSERT INTO target SELECT ... FROM source`.
 /// [`InsertSelectStmt::execute`] emits the `INSERT ... SELECT` and
 /// returns the affected row count.
@@ -563,6 +1731,8 @@ pub struct InsertSelectStmt<S: Model, T: Model> {
     /// the emitter renders the INSERT column list and the SELECT
     /// projection in lockstep position.
     pub(crate) columns: Vec<InsertSelectColumn<S, T>>,
+    /// Optional ON CONFLICT clause appended after the SELECT tail.
+    pub(crate) on_conflict: Option<OnConflictClause<S, T>>,
     /// Covariant `T` tag — matches [`QuerySet<T>`]'s variance so the
     /// statement composes with the same `Send + Sync` story.
     pub(crate) _target: PhantomData<fn() -> T>,
@@ -573,6 +1743,7 @@ impl<S: Model, T: Model> Clone for InsertSelectStmt<S, T> {
         InsertSelectStmt {
             source: self.source.clone(),
             columns: self.columns.clone(),
+            on_conflict: self.on_conflict.clone(),
             _target: PhantomData,
         }
     }
@@ -585,6 +1756,7 @@ impl<S: Model, T: Model> std::fmt::Debug for InsertSelectStmt<S, T> {
             .field("target_table", &T::table_name())
             .field("source", &self.source)
             .field("columns", &self.columns)
+            .field("on_conflict", &self.on_conflict)
             .finish()
     }
 }
@@ -684,7 +1856,242 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             )));
         }
 
+        if let Some(clause) = &self.on_conflict {
+            if let Some(target) = &clause.target {
+                match target {
+                    ConflictTarget::Columns {
+                        columns,
+                        inference_predicate,
+                    } => {
+                        if columns.is_empty() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict target column list is empty",
+                                T::table_name(),
+                            )));
+                        }
+                        let mut seen: HashSet<&'static str> = HashSet::with_capacity(columns.len());
+                        for col in columns {
+                            if !seen.insert(col) {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' appears more than once",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
+                        let known: HashSet<&'static str> =
+                            T::descriptor().fields.iter().map(|f| f.name).collect();
+                        for col in columns {
+                            if !known.contains(col) {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' is not a column of the model",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
+                        // Defense-in-depth: columns is a Vec reachable for
+                        // post-construction mutation. The membership check
+                        // above restricts entries to descriptor field names
+                        // (themselves macro-validated), but re-assert the
+                        // plain-ident contract so any future divergence
+                        // between "is a descriptor field" and "is a plain
+                        // identifier" cannot reach push_sql unvalidated.
+                        // check_reserved = true: columns land unquoted in
+                        // `ON CONFLICT (<col>, ...)`.
+                        for col in columns {
+                            if crate::ident::check_plain_ident(col, true).is_err() {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' is not a valid Postgres identifier",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
+                        if inference_predicate
+                            .as_deref()
+                            .is_some_and(|pred| expr_node_contains_excluded(&pred.node))
+                        {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict target WHERE predicate cannot reference EXCLUDED; arbiter inference predicates may only reference target-table columns",
+                                T::table_name(),
+                            )));
+                        }
+                    }
+                    ConflictTarget::Constraint {
+                        name,
+                        inference_predicate,
+                    } => {
+                        // Defense-in-depth: `name` is a public field on a
+                        // #[non_exhaustive] variant. The `constraint(...)`
+                        // constructor validates it, but external code can
+                        // overwrite the field afterward and the value flows
+                        // straight to push_sql in the emitter. Re-validate
+                        // here — the last gate before SQL emission.
+                        // check_reserved = true: the name lands unquoted in
+                        // `ON CONFLICT ON CONSTRAINT <name>`.
+                        if crate::ident::check_plain_ident(name, true).is_err() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict constraint name '{}' is not a valid Postgres identifier (must be a non-empty, <=63-byte ASCII identifier that is not a reserved keyword); reject post-construction mutation of ConflictTarget::Constraint::name",
+                                T::table_name(),
+                                name,
+                            )));
+                        }
+                        if inference_predicate.is_some() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT ON CONSTRAINT does not accept a WHERE inference predicate; use ConflictTarget::columns(...).where_predicate(...) instead",
+                                T::table_name(),
+                            )));
+                        }
+                    }
+                }
+            }
+            if let ConflictAction::DoUpdate { assignments, .. } = &clause.action
+                && assignments.is_empty()
+            {
+                return Err(DjogiError::Validation(format!(
+                    "insert_into::<{}>: ON CONFLICT DO UPDATE SET requires at least one assignment",
+                    T::table_name(),
+                )));
+            }
+        }
+
         Ok(())
+    }
+
+    /// Attach an `ON CONFLICT (...) DO NOTHING` clause: when an incoming
+    /// row conflicts on `target`, skip it and leave the existing row
+    /// untouched.
+    /// # Why
+    /// Idempotent bulk insert — copy rows that do not already exist on a
+    /// unique key, in one statement, without a per-row existence check.
+    /// `target` accepts a [`ConflictTarget`] or
+    /// [`ConflictTarget::none`] (bare `ON CONFLICT`, any unique conflict
+    /// matches).
+    /// # Example
+    /// ```ignore
+    /// CompletedOrder::objects()
+    ///     .insert_into::<OrderArchive, _, _>(|t, s| vec![
+    ///         t.original_id().copy_from(s.id().as_insert_source()),
+    ///         t.total().copy_from(s.total().as_insert_source()),
+    ///     ])
+    ///     .on_conflict_do_nothing(
+    ///         ConflictTarget::columns([OrderArchive::fields().original_id()]),
+    ///     )
+    ///     .execute(&mut ctx)
+    ///     .await?;
+    /// ```
+    #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
+    pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
+        self.on_conflict = Some(OnConflictClause {
+            target: target.into(),
+            action: ConflictAction::DoNothing,
+        });
+        self
+    }
+
+    /// Attach an `ON CONFLICT (...) DO UPDATE SET ...` clause: when an
+    /// incoming row conflicts on `target`, merge it into the existing row
+    /// using the assignments the `updates` closure returns.
+    /// # Why
+    /// Bulk upsert — insert-or-update on a unique key in one statement,
+    /// without a read-modify-write round trip per row. The closure
+    /// receives the target model's `Fields`; build assignments with the
+    /// `conflict_set*` / `conflict_excluded` / `conflict_add` (etc.)
+    /// methods, referencing the incoming values through `EXCLUDED` via
+    /// [`FieldRef::excluded`].
+    /// # `updated_at` is NOT auto-stamped
+    /// Unlike [`Model::save`], a `DO UPDATE SET` does not touch
+    /// `updated_at` automatically — the column `DEFAULT` only fires on
+    /// the INSERT path, not on the conflict-update path. The conflicting
+    /// row's `updated_at` therefore retains its existing value unless the
+    /// closure assigns it explicitly, e.g.
+    /// `t.updated_at().conflict_set_value(OffsetDateTime::now_utc())` or
+    /// `t.updated_at().conflict_excluded()` to take the incoming value.
+    /// This is deliberate: the SET list is exactly what you specify, with
+    /// no hidden columns — consistent with djogi's explicit-over-magic
+    /// design.
+    /// # Example
+    /// ```ignore
+    /// PageViewBatch::objects()
+    ///     .insert_into::<DailyTotal, _, _>(|t, s| vec![
+    ///         t.day().copy_from(s.day().as_insert_source()),
+    ///         t.hits().copy_from(s.hits().as_insert_source()),
+    ///     ])
+    ///     .on_conflict_do_update(
+    ///         ConflictTarget::columns([DailyTotal::fields().day()]),
+    ///         // Accumulate hits across batches; updated_at left untouched
+    ///         // unless you add t.updated_at().conflict_set_value(...).
+    ///         |t| vec![t.hits().conflict_set_expr(
+    ///             t.hits().as_conflict_expr() + t.hits().excluded().into_conflict_expr(),
+    ///         )],
+    ///     )
+    ///     .execute(&mut ctx)
+    ///     .await?;
+    /// ```
+    #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
+    pub fn on_conflict_do_update<F, U>(mut self, target: ConflictTarget<T>, updates: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> U,
+        U: IntoConflictUpdates<S, T>,
+    {
+        self.on_conflict = Some(OnConflictClause {
+            target: Some(target),
+            action: ConflictAction::DoUpdate {
+                assignments: updates(T::Fields::default()).into_conflict_updates(),
+                where_clause: None,
+            },
+        });
+        self
+    }
+
+    /// Attach an `ON CONFLICT (...) DO UPDATE SET ... WHERE <guard>`
+    /// clause: like [`on_conflict_do_update`](Self::on_conflict_do_update),
+    /// but the merge applies only to conflicting rows for which the
+    /// `predicate` guard is true. When the guard is false, Postgres skips
+    /// the row (no update, no insert).
+    /// # Why
+    /// Conditional upsert — e.g. only overwrite when the incoming row is
+    /// newer. The guard closure receives the target model's `Fields` and
+    /// may compare target columns against `EXCLUDED` columns. The same
+    /// `updated_at` policy as
+    /// [`on_conflict_do_update`](Self::on_conflict_do_update) applies:
+    /// nothing stamps `updated_at` unless the update closure assigns it.
+    /// # Example
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![
+    ///         t.body().conflict_set(t.body().excluded()),
+    ///         t.version().conflict_set(t.version().excluded()),
+    ///     ],
+    ///     // Only overwrite when the incoming version is greater.
+    ///     |t| t.version().excluded().conflict_gt(t.version()),
+    /// )
+    /// ```
+    #[must_use = "InsertSelectStmt is inert — call .execute(ctx) to run the INSERT ... SELECT"]
+    pub fn on_conflict_do_update_where<F, U, P, C>(
+        mut self,
+        target: ConflictTarget<T>,
+        updates: F,
+        predicate: P,
+    ) -> Self
+    where
+        F: FnOnce(T::Fields) -> U,
+        U: IntoConflictUpdates<S, T>,
+        P: FnOnce(T::Fields) -> C,
+        C: IntoConflictCondition<T>,
+    {
+        self.on_conflict = Some(OnConflictClause {
+            target: Some(target),
+            action: ConflictAction::DoUpdate {
+                assignments: updates(T::Fields::default()).into_conflict_updates(),
+                where_clause: Some(Box::new(
+                    predicate(T::Fields::default()).into_conflict_condition(),
+                )),
+            },
+        });
+        self
     }
 
     /// Run the accumulated INSERT...SELECT and return the affected row
@@ -766,8 +2173,12 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             auto_set_tenant::<T>(ctx).await?;
             auto_set_tenant::<S>(ctx).await?;
 
-            let acc = build_insert_select::<S, T>(&self.source, &self.columns)
-                .map_err(DjogiError::from)?;
+            let acc = build_insert_select_with_conflict::<S, T>(
+                &self.source,
+                &self.columns,
+                self.on_conflict.as_ref(),
+            )
+            .map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
@@ -800,6 +2211,10 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// # Short-circuit
     /// Returns `Ok(Vec::new())` when the source queryset is
     /// [`QuerySet::none`]-derived (`is_empty() == true`).
+    /// # ON CONFLICT DO NOTHING + RETURNING
+    /// `DO NOTHING` returns only rows that were actually inserted.
+    /// Conflicting rows skipped by `ON CONFLICT DO NOTHING` are omitted from
+    /// the returned `Vec<T>`. `DO UPDATE` does return updated rows.
     pub fn execute_returning<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -820,8 +2235,12 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
             auto_set_tenant::<T>(ctx).await?;
             auto_set_tenant::<S>(ctx).await?;
 
-            let acc = build_insert_select_returning::<S, T>(&self.source, &self.columns)
-                .map_err(DjogiError::from)?;
+            let acc = build_insert_select_returning_with_conflict::<S, T>(
+                &self.source,
+                &self.columns,
+                self.on_conflict.as_ref(),
+            )
+            .map_err(DjogiError::from)?;
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -908,6 +2327,7 @@ impl<S: Model> QuerySet<S> {
         InsertSelectStmt {
             source: self,
             columns,
+            on_conflict: None,
             _target: PhantomData,
         }
     }
@@ -923,8 +2343,54 @@ mod tests {
     //! Task 8 `FilterClause` tests and the bulk-update builder tests).
 
     use super::*;
-    use crate::descriptor::ModelDescriptor;
+    use crate::descriptor::{FieldSqlType, ModelDescriptor, PkType, field_descriptor};
     use crate::query::field::FieldRef;
+
+    #[derive(Default, Clone, Copy)]
+    struct SourceFields;
+
+    #[derive(Default, Clone, Copy)]
+    struct TargetFields;
+
+    impl TargetFields {
+        fn view_count(self) -> FieldRef<Target, i32> {
+            FieldRef::new("view_count")
+        }
+
+        fn published(self) -> FieldRef<Target, bool> {
+            FieldRef::new("published")
+        }
+    }
+
+    static TARGET_DESCRIPTOR: ModelDescriptor = ModelDescriptor {
+        type_name: "Target",
+        table_name: "targets",
+        pk_type: PkType::HeerIdDesc,
+        fields: &[
+            field_descriptor("view_count", FieldSqlType::Integer, false),
+            field_descriptor("published", FieldSqlType::Boolean, false),
+        ],
+        partition_by: None,
+        has_outbox: false,
+        idempotency_key: None,
+        tenant_key: None,
+        cache_ttl: None,
+        rationale: None,
+        indexes: &[],
+        is_through: false,
+        fts: None,
+        app: None,
+        moved_from_app: None,
+        renamed_from: None,
+        exclusion_constraints: &[],
+        tree_edge: None,
+        proxy_for: None,
+        default_filter_sql: None,
+        computed_fields: &[],
+        table_comment: None,
+        storage_params: None,
+        tablespace: None,
+    };
 
     // Minimal `Model` impls — mirror the `Fake` used in `query::field`,
     // `query::sql`, and `query::update` unit tests so this file's
@@ -934,7 +2400,7 @@ mod tests {
     #[allow(clippy::manual_async_fn)]
     impl Model for Source {
         type Pk = i64;
-        type Fields = ();
+        type Fields = SourceFields;
         fn table_name() -> &'static str {
             "sources"
         }
@@ -983,7 +2449,7 @@ mod tests {
     #[allow(clippy::manual_async_fn)]
     impl Model for Target {
         type Pk = i64;
-        type Fields = ();
+        type Fields = TargetFields;
         fn table_name() -> &'static str {
             "targets"
         }
@@ -991,7 +2457,7 @@ mod tests {
             unreachable!()
         }
         fn descriptor() -> &'static ModelDescriptor {
-            unreachable!()
+            &TARGET_DESCRIPTOR
         }
         fn get(
             _ctx: &mut crate::context::DjogiContext,
@@ -1141,5 +2607,348 @@ mod tests {
         assert_eq!(mapping.target_column(), "view_count");
         // The composed node is an Add — leaf is bare-Field + Literal.
         assert!(matches!(mapping.source(), ExprNode::Add(_, _)));
+    }
+
+    #[test]
+    fn insert_select_stmt_default_has_no_on_conflict() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs.insert_into::<Target, _, _>(|_t, _s| {
+            let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
+            let source_col: FieldRef<Source, i32> = FieldRef::new("score");
+            vec![target_col.copy_from(source_col.as_insert_source())]
+        });
+        assert!(stmt.on_conflict.is_none());
+    }
+
+    #[test]
+    fn insert_select_stmt_clone_preserves_on_conflict_none() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs.insert_into::<Target, _, _>(|_t, _s| {
+            let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
+            let source_col: FieldRef<Source, i32> = FieldRef::new("score");
+            vec![target_col.copy_from(source_col.as_insert_source())]
+        });
+        let cloned = stmt.clone();
+        assert!(cloned.on_conflict.is_none());
+    }
+
+    #[test]
+    fn excluded_builds_pseudo_table_node() {
+        let col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let excl: ExcludedRef<Target, i32> = col.excluded();
+        assert!(matches!(
+            excl.node,
+            ExprNode::Excluded { column } if column == "view_count"
+        ));
+    }
+
+    #[test]
+    fn excluded_arithmetic_composes() {
+        let col_a: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let col_b: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let composed: ExcludedRef<Target, i32> = col_a.excluded() + col_b.excluded();
+        assert!(matches!(composed.node, ExprNode::Add(_, _)));
+    }
+
+    #[test]
+    fn conflict_set_from_excluded_builds_assignment() {
+        let col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let asgn: ConflictUpdate<Source, Target> =
+            col.conflict_set::<Source>(FieldRef::<Target, i32>::new("view_count").excluded());
+        assert_eq!(asgn.target_column(), "view_count");
+        assert!(matches!(
+            asgn.value_node(),
+            ExprNode::Excluded { column } if *column == "view_count"
+        ));
+    }
+
+    #[test]
+    fn conflict_set_expr_builds_arithmetic_assignment() {
+        let target_col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let lhs: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let rhs: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let asgn: ConflictUpdate<Source, Target> = target_col.conflict_set_expr::<Source, _>(
+            lhs.as_conflict_expr() + rhs.excluded().into_conflict_expr(),
+        );
+        assert_eq!(asgn.target_column(), "view_count");
+        assert!(matches!(asgn.value_node(), ExprNode::Add(_, _)));
+    }
+
+    #[test]
+    fn conflict_excluded_builds_excluded_assignment() {
+        let col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let asgn: ConflictUpdate<Source, Target> = col.conflict_excluded::<Source>();
+        assert_eq!(asgn.target_column(), "view_count");
+        assert!(matches!(
+            asgn.value_node(),
+            ExprNode::Excluded { column } if *column == "view_count"
+        ));
+    }
+
+    #[test]
+    fn conflict_add_builds_add_against_literal() {
+        let col: FieldRef<Target, i32> = FieldRef::new("view_count");
+        let asgn: ConflictUpdate<Source, Target> = col.conflict_add::<Source>(5);
+        match asgn.value_node() {
+            ExprNode::Add(lhs, rhs) => {
+                assert!(matches!(**lhs, ExprNode::Field { column } if column == "view_count"));
+                assert!(matches!(**rhs, ExprNode::Literal(_)));
+            }
+            other => panic!("expected Add(Field, Literal), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conflict_sub_mul_div_build_their_nodes() {
+        let sub: ConflictUpdate<Source, Target> =
+            FieldRef::<Target, i32>::new("view_count").conflict_sub::<Source>(1);
+        assert!(matches!(sub.value_node(), ExprNode::Sub(_, _)));
+        let mul: ConflictUpdate<Source, Target> =
+            FieldRef::<Target, i32>::new("view_count").conflict_mul::<Source>(2);
+        assert!(matches!(mul.value_node(), ExprNode::Mul(_, _)));
+        let div: ConflictUpdate<Source, Target> =
+            FieldRef::<Target, i32>::new("view_count").conflict_div::<Source>(2);
+        assert!(matches!(div.value_node(), ExprNode::Div(_, _)));
+    }
+
+    #[test]
+    fn on_conflict_do_nothing_columns_attaches_clause() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::columns([FieldRef::<Target, i32>::new(
+                "view_count",
+            )]));
+        let clause = stmt.on_conflict.as_ref().expect("clause attached");
+        assert!(matches!(clause.action, ConflictAction::DoNothing));
+        assert!(matches!(
+            clause.target,
+            Some(ConflictTarget::Columns { ref columns, .. }) if columns == &["view_count"]
+        ));
+    }
+
+    #[test]
+    fn on_conflict_do_nothing_bare_has_no_target() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::none());
+        let clause = stmt.on_conflict.as_ref().unwrap();
+        assert!(clause.target.is_none());
+    }
+
+    #[test]
+    fn on_conflict_do_update_attaches_clause() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_update(
+                ConflictTarget::columns([FieldRef::<Target, i32>::new("view_count")]),
+                |t| vec![t.view_count().conflict_set(t.view_count().excluded())],
+            );
+        let clause = stmt.on_conflict.as_ref().unwrap();
+        assert!(matches!(clause.action, ConflictAction::DoUpdate { .. }));
+    }
+
+    #[test]
+    fn validate_rejects_empty_conflict_target_columns() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::Columns {
+                columns: vec![],
+                inference_predicate: None,
+            });
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(err, DjogiError::Validation(ref m) if m.contains("conflict target")));
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_conflict_target_columns() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::Columns {
+                columns: vec!["view_count", "view_count"],
+                inference_predicate: None,
+            });
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(err, DjogiError::Validation(ref m) if m.contains("more than once")));
+    }
+
+    #[test]
+    fn validate_rejects_unknown_conflict_target_column() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::Columns {
+                columns: vec!["ghost_column"],
+                inference_predicate: None,
+            });
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(
+            err,
+            DjogiError::Validation(ref m) if m.contains("ghost_column") && m.contains("not a column")
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_empty_do_update_assignments() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_update(
+                ConflictTarget::columns([FieldRef::<Target, i32>::new("view_count")]),
+                |_t| Vec::<ConflictUpdate<Source, Target>>::new(),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(err, DjogiError::Validation(ref m) if m.contains("DO UPDATE SET")));
+    }
+
+    #[test]
+    fn conflict_target_constraint_valid_name_does_not_panic() {
+        let _ = ConflictTarget::<Target>::constraint("fakes_pkey");
+    }
+
+    #[test]
+    #[should_panic]
+    fn conflict_target_constraint_invalid_name_panics() {
+        let _ = ConflictTarget::<Target>::constraint("fakes; DROP TABLE fakes");
+    }
+
+    #[test]
+    fn validate_rejects_where_predicate_on_constraint_target() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::<Target>::constraint("oc_targets_slug_key")
+                    .where_predicate(|t| t.published().conflict_is_true()),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(
+            err,
+            DjogiError::Validation(ref m)
+                if m.contains("ON CONSTRAINT") && m.contains("WHERE inference predicate")
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_excluded_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, i32>::new("view_count")])
+                    .where_predicate(|t| t.view_count().excluded().conflict_gt_value(0)),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(matches!(
+            err,
+            DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_mutated_constraint_name_with_injection() {
+        // The validating constructor `ConflictTarget::constraint` runs
+        // assert_plain_ident, but the `name` field is public and mutable.
+        // External code can build a valid target, then overwrite `name`
+        // with an injection payload that bypasses the constructor. The
+        // runtime validator is the last gate before the name reaches
+        // push_sql (sql.rs), so it must re-validate.
+        let qs: QuerySet<Source> = QuerySet::new();
+        let mut stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::constraint(
+                "targets_view_count_key",
+            ));
+
+        // Reach into the public field and mutate it post-construction,
+        // bypassing the constructor's assert_plain_ident.
+        if let Some(clause) = stmt.on_conflict.as_mut()
+            && let Some(ConflictTarget::Constraint { name, .. }) = clause.target.as_mut()
+        {
+            *name = "targets'; DROP TABLE targets;--";
+        }
+
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("conflict constraint name")),
+            "mutated constraint name must be rejected by validate_execute, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_mutated_conflict_column_with_bad_ident() {
+        // ConflictTarget::Columns.columns is a Vec<&'static str> built from
+        // validated FieldRefs, but the Vec is reachable for post-construction
+        // mutation. The existing membership check (known.contains(col))
+        // rejects names absent from the descriptor, but does not run the
+        // identifier-shape contract on the static string. A defense-in-depth
+        // re-validation closes the gap for any future path where a
+        // descriptor field name and a plain-ident string could diverge.
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            // A non-identifier payload is rejected by both the membership
+            // check (it is not a descriptor field) and the defense-in-depth
+            // ident re-check. The assertion tolerates either message so a
+            // future reorder of the two checks does not make the test
+            // brittle.
+            .on_conflict_do_nothing(ConflictTarget::<Target>::Columns {
+                columns: vec!["view_count) OR 1=1 --"],
+                inference_predicate: None,
+            });
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m)
+                if m.contains("not a column") || m.contains("not a valid Postgres identifier")),
+            "a non-identifier conflict column must be rejected, got: {err:?}"
+        );
     }
 }

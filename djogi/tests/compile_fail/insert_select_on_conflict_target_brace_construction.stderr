@@ -1,0 +1,13 @@
+error[E0639]: cannot create non-exhaustive variant using struct expression
+  --> $DIR/insert_select_on_conflict_target_brace_construction.rs:10:43
+   |
+10 |       let _t: ConflictTarget<BraceTarget> = ConflictTarget::Columns {
+   |  ___________________________________________^
+11 | |         columns: vec!["id_col"],
+12 | |         inference_predicate: None,
+13 | |     };
+   | |_____^
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0639`.

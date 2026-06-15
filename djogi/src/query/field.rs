@@ -949,6 +949,264 @@ impl<M: Model, V> DjogiField<M, V> {
     pub fn as_insert_source(self) -> crate::query::insert_select::InsertSelectSource<M, V> {
         self.sql.as_insert_source()
     }
+
+    /// Mirror of [`FieldRef::excluded`](crate::query::FieldRef::excluded)
+    /// — see that method for the full contract. The dynamic-field surface
+    /// forwards to the typed one.
+    #[must_use = "an ExcludedRef is lazy — use it in a DO UPDATE SET assignment or a condition"]
+    pub fn excluded(self) -> crate::query::insert_select::ExcludedRef<M, V> {
+        self.sql.excluded()
+    }
+
+    /// Mirror of
+    /// [`FieldRef::as_conflict_expr`](crate::query::FieldRef::as_conflict_expr)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn as_conflict_expr(self) -> crate::query::insert_select::ConflictExpr<M, V> {
+        self.sql.as_conflict_expr()
+    }
+
+    /// Lift this field into a [`ConflictExpr`](crate::query::insert_select::ConflictExpr)
+    /// via the [`IntoConflictExpr`](crate::query::insert_select::IntoConflictExpr)
+    /// bridge — equivalent to
+    /// [`as_conflict_expr`](DjogiField::as_conflict_expr) for a plain
+    /// field.
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn into_conflict_expr(self) -> crate::query::insert_select::ConflictExpr<M, V> {
+        use crate::query::insert_select::IntoConflictExpr;
+        self.sql.into_conflict_expr()
+    }
+
+    /// Mirror of [`FieldRef::conflict_set`](crate::query::FieldRef::conflict_set)
+    /// — see that method for the full contract. The dynamic-field surface
+    /// forwards to the typed one.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set<S: Model>(
+        self,
+        value: crate::query::insert_select::ExcludedRef<M, V>,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M> {
+        self.sql.conflict_set(value)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_set_expr`](crate::query::FieldRef::conflict_set_expr)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_expr<S: Model, E>(
+        self,
+        value: E,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_set_expr(value)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_set_value`](crate::query::FieldRef::conflict_set_value)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_set_value<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_set_value(value)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_excluded`](crate::query::FieldRef::conflict_excluded)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_excluded<S: Model>(self) -> crate::query::insert_select::ConflictUpdate<S, M> {
+        self.sql.conflict_excluded()
+    }
+
+    /// Mirror of [`FieldRef::conflict_add`](crate::query::FieldRef::conflict_add)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_add<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_add(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_sub`](crate::query::FieldRef::conflict_sub)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_sub<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_sub(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_mul`](crate::query::FieldRef::conflict_mul)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_mul<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_mul(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_div`](crate::query::FieldRef::conflict_div)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictUpdate is lazy — drop one and DO UPDATE SET silently omits the column"]
+    pub fn conflict_div<S: Model>(
+        self,
+        value: V,
+    ) -> crate::query::insert_select::ConflictUpdate<S, M>
+    where
+        V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_div(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_eq`](crate::query::FieldRef::conflict_eq)
+    /// — see that method for the full contract.
+    pub fn conflict_eq<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_eq(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_eq_value`](crate::query::FieldRef::conflict_eq_value)
+    /// — see that method for the full contract.
+    pub fn conflict_eq_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_eq_value(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_neq`](crate::query::FieldRef::conflict_neq)
+    /// — see that method for the full contract.
+    pub fn conflict_neq<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_neq(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_neq_value`](crate::query::FieldRef::conflict_neq_value)
+    /// — see that method for the full contract.
+    pub fn conflict_neq_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_neq_value(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_gt`](crate::query::FieldRef::conflict_gt)
+    /// — see that method for the full contract.
+    pub fn conflict_gt<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_gt(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_gt_value`](crate::query::FieldRef::conflict_gt_value)
+    /// — see that method for the full contract.
+    pub fn conflict_gt_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_gt_value(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_gte`](crate::query::FieldRef::conflict_gte)
+    /// — see that method for the full contract.
+    pub fn conflict_gte<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_gte(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_gte_value`](crate::query::FieldRef::conflict_gte_value)
+    /// — see that method for the full contract.
+    pub fn conflict_gte_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_gte_value(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_lt`](crate::query::FieldRef::conflict_lt)
+    /// — see that method for the full contract.
+    pub fn conflict_lt<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_lt(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_lt_value`](crate::query::FieldRef::conflict_lt_value)
+    /// — see that method for the full contract.
+    pub fn conflict_lt_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_lt_value(value)
+    }
+
+    /// Mirror of [`FieldRef::conflict_lte`](crate::query::FieldRef::conflict_lte)
+    /// — see that method for the full contract.
+    pub fn conflict_lte<E>(self, rhs: E) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        E: crate::query::insert_select::IntoConflictExpr<M, V>,
+    {
+        self.sql.conflict_lte(rhs)
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_lte_value`](crate::query::FieldRef::conflict_lte_value)
+    /// — see that method for the full contract.
+    pub fn conflict_lte_value(self, value: V) -> crate::query::insert_select::ConflictCondition<M>
+    where
+        V: Into<crate::expr::Expr<V>>,
+    {
+        self.sql.conflict_lte_value(value)
+    }
+}
+
+impl<M: Model> DjogiField<M, bool> {
+    /// Mirror of
+    /// [`FieldRef::conflict_is_true`](crate::query::FieldRef::conflict_is_true)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_true(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_true()
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_is_false`](crate::query::FieldRef::conflict_is_false)
+    /// — see that method for the full contract.
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_false(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_false()
+    }
 }
 
 impl<M: Model, V> DjogiField<M, V> {

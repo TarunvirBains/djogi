@@ -893,6 +893,24 @@ inserted row into memory. For large copy operations, prefer `.execute(...)` for
 the count and then query the target table with a filter on the known ID range or
 a `created_at` window.
 
+### ON CONFLICT bulk upsert
+
+`insert_into(...)` also composes with `ON CONFLICT` for bulk upsert flows:
+
+- `.on_conflict_do_nothing(target)` skips conflicting rows.
+- `.on_conflict_do_update(target, |t| ...)` emits `DO UPDATE SET ...`.
+- `.on_conflict_do_update_where(target, |t| ..., |t| ...)` adds a conflict-time
+  `WHERE` guard.
+
+Use `ConflictTarget::columns(...)`, `ConflictTarget::columns_of(...)`, or
+`ConflictTarget::constraint(...)` to choose the arbiter. Inside `DO UPDATE`,
+`field.excluded()` references `EXCLUDED.field`, while plain target-side field
+references resolve against the target table row being updated.
+
+See [Bulk upsert: INSERT...SELECT ON CONFLICT](./insert-select-on-conflict.md)
+for examples, edge cases, and `RETURNING` behavior under `DO NOTHING` vs
+`DO UPDATE`.
+
 ---
 
 ## Recursive / tree queries

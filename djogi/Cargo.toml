@@ -938,6 +938,11 @@ name = "insert_select"
 path = "../tests/integration/insert_select.rs"
 harness = true
 
+[[test]]
+name = "insert_select_on_conflict"
+path = "../tests/integration/insert_select_on_conflict.rs"
+harness = true
+
 # Issue #178 — typed MERGE INTO live coverage.
 # Pins basic upsert, BY SOURCE actions, convenience update-changed logic,
 # and validation rejections against a real database.
