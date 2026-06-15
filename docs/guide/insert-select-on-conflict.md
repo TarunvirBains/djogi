@@ -86,6 +86,76 @@ explicit-over-magic design.
 When the guard is false, Postgres skips the conflicting row instead of
 updating it.
 
+## Nullable conflict helpers
+
+Nullable columns can stay on the typed surface for the two common upsert
+patterns that previously required either a non-nullable proxy column or a
+raw SQL escape hatch.
+
+Use `conflict_is_null()` / `conflict_is_not_null()` when the `DO UPDATE ...
+WHERE` guard should depend on whether the existing target value is present:
+
+```rust,ignore
+.on_conflict_do_update_where(
+    ConflictTarget::columns([Profile::fields().slug()]),
+    |t| vec![t.avatar_url().conflict_set(t.avatar_url().excluded())],
+    |t| t.avatar_url().conflict_is_null(),
+)
+```
+
+Use `conflict_coalesce_excluded()` when the SET expression should keep the
+existing non-NULL target value and only fall back to the incoming
+`EXCLUDED` value when the target is NULL:
+
+```rust,ignore
+.on_conflict_do_update(
+    ConflictTarget::columns([Profile::fields().slug()]),
+    |t| vec![
+        t.avatar_url()
+            .conflict_set_expr(t.avatar_url().conflict_coalesce_excluded()),
+    ],
+)
+```
+
+These helpers are intentionally gated to `Option<T>` columns. The emitted
+SQL is the direct PostgreSQL form:
+
+- `conflict_is_null()` -> `target.col IS NULL`
+- `conflict_is_not_null()` -> `target.col IS NOT NULL`
+- `conflict_coalesce_excluded()` -> `COALESCE(target.col, EXCLUDED.col)`
+
+Remember that `DO UPDATE ... WHERE` still follows PostgreSQL three-valued
+logic: only `TRUE` performs the update; both `FALSE` and `NULL` skip it.
+The null-test helpers let you make that behavior explicit instead of
+depending on a nullable comparison result.
+
+### Arbiter position restriction
+
+`conflict_is_null()`, `conflict_is_not_null()`, and
+`conflict_coalesce_excluded()` are valid in `DO UPDATE SET` assignments and
+`DO UPDATE ... WHERE` action guards against the existing target column.
+
+They must not be used in the arbiter `where_predicate` of
+`ConflictTarget::columns([...]).where_predicate(...)`. The arbiter predicate
+narrows which rows trigger conflict resolution. PostgreSQL only allows
+target-table column references there, not `EXCLUDED.*`. Djogi enforces this at
+`validate_execute` time with a validation error.
+
+Use `EXCLUDED`-referencing helpers only in the `DO UPDATE` action path:
+
+```rust,ignore
+// OK: target null-test in the arbiter predicate.
+ConflictTarget::columns([Profile::fields().slug()])
+    .where_predicate(|t| t.avatar_url().conflict_is_null())
+
+// OK: EXCLUDED reference in the DO UPDATE WHERE guard.
+.on_conflict_do_update_where(
+    ConflictTarget::columns([Profile::fields().slug()]),
+    |t| vec![t.avatar_url().conflict_set(t.avatar_url().excluded())],
+    |t| t.avatar_url().excluded().conflict_is_null(),
+)
+```
+
 ## RETURNING
 
 `execute_returning(...)` composes with `ON CONFLICT`. `DO NOTHING` omits

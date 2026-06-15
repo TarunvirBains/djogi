@@ -842,6 +842,85 @@ impl<T: Model> FieldRef<T, bool> {
     }
 }
 
+impl<T: Model, V> FieldRef<T, Option<V>> {
+    /// Build a predicate that is true when this target-table column is NULL.
+    ///
+    /// This references the target-table column directly (not `EXCLUDED`), so
+    /// it is valid in both positions of an `ON CONFLICT` clause:
+    /// - An arbiter inference predicate
+    ///   ([`ConflictTarget::where_predicate`]) that narrows a partial unique
+    ///   index.
+    /// - A `DO UPDATE … WHERE` action guard passed to
+    ///   [`on_conflict_do_update_where`](crate::query::QuerySet::on_conflict_do_update_where).
+    ///
+    /// For a NULL test on the *incoming* `EXCLUDED` row, use
+    /// [`ExcludedRef::conflict_is_null`] instead (action guard only).
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNull(Box::new(ExprNode::Field {
+                column: self.column(),
+            })),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build a predicate that is true when this target-table column is not
+    /// NULL.
+    ///
+    /// This references the target-table column directly (not `EXCLUDED`), so
+    /// it is valid in both positions of an `ON CONFLICT` clause:
+    /// - An arbiter inference predicate
+    ///   ([`ConflictTarget::where_predicate`]) that narrows a partial unique
+    ///   index.
+    /// - A `DO UPDATE … WHERE` action guard passed to
+    ///   [`on_conflict_do_update_where`](crate::query::QuerySet::on_conflict_do_update_where).
+    ///
+    /// For a NOT NULL test on the *incoming* `EXCLUDED` row, use
+    /// [`ExcludedRef::conflict_is_not_null`] instead (action guard only).
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_not_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_not_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNotNull(Box::new(ExprNode::Field {
+                column: self.column(),
+            })),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build `COALESCE(target.column, EXCLUDED.column)` over this nullable
+    /// target column, for use in a conflict `DO UPDATE SET` assignment.
+    /// ```ignore
+    /// .on_conflict_do_update(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set_expr(t.body().conflict_coalesce_excluded())],
+    /// )
+    /// ```
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn conflict_coalesce_excluded(self) -> ConflictExpr<T, Option<V>> {
+        ConflictExpr::from_node(ExprNode::Coalesce(vec![
+            ExprNode::Field {
+                column: self.column(),
+            },
+            ExprNode::Excluded {
+                column: self.column(),
+            },
+        ]))
+    }
+}
+
 impl<T: Model, V> ExcludedRef<T, V> {
     /// Build an equality predicate comparing this `EXCLUDED` column to
     /// another conflict expression, for use in a conflict `WHERE` guard.
@@ -943,6 +1022,60 @@ impl<T: Model, V> ExcludedRef<T, V> {
     {
         let e: Expr<V> = value.into();
         conflict_condition(self.node, CmpOp::Lte, e.node)
+    }
+}
+
+impl<T: Model, V> ExcludedRef<T, Option<V>> {
+    /// Build a predicate that is true when the incoming `EXCLUDED` column is
+    /// NULL.
+    ///
+    /// This references `EXCLUDED.<column>` — the proposed value from the
+    /// conflicting row — so it is valid only in a `DO UPDATE … WHERE` action
+    /// guard or a `DO UPDATE SET` assignment. It **cannot** be used in an
+    /// arbiter inference predicate ([`ConflictTarget::where_predicate`]);
+    /// `validate_execute` rejects any arbiter predicate that references
+    /// `EXCLUDED`.
+    ///
+    /// For a NULL test on the *existing* target-table column (valid in either
+    /// position), use [`FieldRef::conflict_is_null`] instead.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().excluded().conflict_is_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNull(Box::new(self.node)),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build a predicate that is true when the incoming `EXCLUDED` column is
+    /// not NULL.
+    ///
+    /// This references `EXCLUDED.<column>` — the proposed value from the
+    /// conflicting row — so it is valid only in a `DO UPDATE … WHERE` action
+    /// guard or a `DO UPDATE SET` assignment. It **cannot** be used in an
+    /// arbiter inference predicate ([`ConflictTarget::where_predicate`]);
+    /// `validate_execute` rejects any arbiter predicate that references
+    /// `EXCLUDED`.
+    ///
+    /// For a NOT NULL test on the *existing* target-table column (valid in
+    /// either position), use [`FieldRef::conflict_is_not_null`] instead.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().excluded().conflict_is_not_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_not_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNotNull(Box::new(self.node)),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -1612,9 +1745,33 @@ impl<T: Model> std::ops::Not for ConflictCondition<T> {
     }
 }
 
+// SAFETY-CRITICAL: This walker enforces that arbiter inference predicates
+// never reference EXCLUDED. The match must remain exhaustive; do not add a
+// wildcard arm. Every structural ExprNode variant that can transitively carry
+// an Excluded child must have an explicit recursive arm here. When a new
+// ExprNode variant is added that has inner ExprNode children, add a
+// corresponding arm that recurses into those children. Variants with no inner
+// ExprNode children should return false.
 fn expr_node_contains_excluded(node: &ExprNode) -> bool {
     match node {
+        // Leaf variants contain no inner ExprNode, so they can never carry Excluded.
+        ExprNode::Field { .. }
+        | ExprNode::RawSql(_)
+        | ExprNode::Literal(_)
+        | ExprNode::ArrayLength { .. }
+        | ExprNode::CurrentYear
+        | ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::OuterRefAlias { .. }
+        | ExprNode::TsMatch { .. }
+        | ExprNode::TsRank { .. }
+        | ExprNode::TsRankCd { .. }
+        | ExprNode::IntervalLiteral { .. } => false,
+
+        // The only true leaf that signals EXCLUDED.
         ExprNode::Excluded { .. } => true,
+
+        // Binary arithmetic and logical expressions recurse into both sides.
         ExprNode::Cmp { lhs, rhs, .. }
         | ExprNode::Add(lhs, rhs)
         | ExprNode::Sub(lhs, rhs)
@@ -1624,8 +1781,45 @@ fn expr_node_contains_excluded(node: &ExprNode) -> bool {
         | ExprNode::Or(lhs, rhs) => {
             expr_node_contains_excluded(lhs) || expr_node_contains_excluded(rhs)
         }
-        ExprNode::Not(inner) => expr_node_contains_excluded(inner),
-        _ => false,
+
+        // Unary wrappers recurse into the single inner node.
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            expr_node_contains_excluded(inner)
+        }
+
+        // Variadic expressions recurse into every operand.
+        ExprNode::Coalesce(operands) => operands.iter().any(expr_node_contains_excluded),
+        ExprNode::GroupingVariadic { args } => args.iter().any(expr_node_contains_excluded),
+
+        // CASE recurses into each arm's condition and value, plus the default.
+        ExprNode::Case { arms, otherwise } => {
+            arms.iter().any(|(cond, val)| {
+                expr_node_contains_excluded(cond) || expr_node_contains_excluded(val)
+            }) || expr_node_contains_excluded(otherwise)
+        }
+
+        // Aggregate recurses into the argument and optional expression fields.
+        ExprNode::Aggregate {
+            arg, arg2, filter, ..
+        } => {
+            expr_node_contains_excluded(arg)
+                || arg2.as_deref().is_some_and(expr_node_contains_excluded)
+                || filter.as_deref().is_some_and(expr_node_contains_excluded)
+        }
+
+        // Subquery bodies are separate scopes; only lhs expressions belong to this scope.
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
+        ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
+            expr_node_contains_excluded(lhs)
+        }
+
+        // Spatial variants have no inner ExprNode children reachable via this path.
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(_) | ExprNode::RowAggregate { .. } => false,
+
+        // Trigram variants are leaf-shaped and have no inner ExprNode.
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
     }
 }
 
@@ -2057,6 +2251,11 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// `updated_at` policy as
     /// [`on_conflict_do_update`](Self::on_conflict_do_update) applies:
     /// nothing stamps `updated_at` unless the update closure assigns it.
+    /// Nullable columns can participate directly through
+    /// [`FieldRef::conflict_is_null`](crate::query::FieldRef::conflict_is_null),
+    /// [`FieldRef::conflict_is_not_null`](crate::query::FieldRef::conflict_is_not_null),
+    /// and the matching `EXCLUDED` helpers when the guard should depend on
+    /// whether a nullable value is present.
     /// # Example
     /// ```ignore
     /// .on_conflict_do_update_where(
@@ -2368,6 +2567,7 @@ mod tests {
         pk_type: PkType::HeerIdDesc,
         fields: &[
             field_descriptor("view_count", FieldSqlType::Integer, false),
+            field_descriptor("maybe_view_count", FieldSqlType::Integer, true),
             field_descriptor("published", FieldSqlType::Boolean, false),
         ],
         partition_by: None,
@@ -2675,6 +2875,46 @@ mod tests {
     }
 
     #[test]
+    fn conflict_is_null_builds_target_postfix_predicate() {
+        let cond = FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_is_null();
+        assert!(matches!(
+            cond.node,
+            ExprNode::IsNull(inner)
+                if matches!(*inner, ExprNode::Field { column } if column == "maybe_view_count")
+        ));
+    }
+
+    #[test]
+    fn conflict_is_not_null_builds_excluded_postfix_predicate() {
+        let cond = FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+            .excluded()
+            .conflict_is_not_null();
+        assert!(matches!(
+            cond.node,
+            ExprNode::IsNotNull(inner)
+                if matches!(*inner, ExprNode::Excluded { column } if column == "maybe_view_count")
+        ));
+    }
+
+    #[test]
+    fn conflict_coalesce_excluded_builds_same_column_coalesce_expr() {
+        let expr =
+            FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_coalesce_excluded();
+        match expr.node {
+            ExprNode::Coalesce(args) => {
+                assert_eq!(args.len(), 2);
+                assert!(
+                    matches!(args[0], ExprNode::Field { column } if column == "maybe_view_count")
+                );
+                assert!(
+                    matches!(args[1], ExprNode::Excluded { column } if column == "maybe_view_count")
+                );
+            }
+            other => panic!("expected Coalesce(Field, Excluded), got {other:?}"),
+        }
+    }
+
+    #[test]
     fn conflict_excluded_builds_excluded_assignment() {
         let col: FieldRef<Target, i32> = FieldRef::new("view_count");
         let asgn: ConflictUpdate<Source, Target> = col.conflict_excluded::<Source>();
@@ -2883,6 +3123,79 @@ mod tests {
             err,
             DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
         ));
+    }
+
+    #[test]
+    fn validate_rejects_excluded_is_null_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                            .excluded()
+                            .conflict_is_null()
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_excluded_is_not_null_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                            .excluded()
+                            .conflict_is_not_null()
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_coalesce_excluded_in_conflict_target_where_predicate() {
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(
+                ConflictTarget::columns([FieldRef::<Target, Option<i32>>::new("maybe_view_count")])
+                    .where_predicate(|_t| {
+                        FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_eq(
+                            FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+                                .conflict_coalesce_excluded(),
+                        )
+                    }),
+            );
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")),
+            "expected EXCLUDED rejection, got: {err:?}"
+        );
     }
 
     #[test]

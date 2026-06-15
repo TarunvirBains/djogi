@@ -206,7 +206,15 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             check_aggregate_legality(l)?;
             check_aggregate_legality(r)
         }
-        ExprNode::Not(expr) => check_aggregate_legality(expr),
+        ExprNode::Not(expr) | ExprNode::IsNull(expr) | ExprNode::IsNotNull(expr) => {
+            check_aggregate_legality(expr)
+        }
+        ExprNode::Coalesce(args) => {
+            for arg in args {
+                check_aggregate_legality(arg)?;
+            }
+            Ok(())
+        }
         ExprNode::Cmp { lhs, rhs, .. } => {
             check_aggregate_legality(lhs)?;
             check_aggregate_legality(rhs)
@@ -323,6 +331,24 @@ pub(crate) fn emit_expr(
         ExprNode::Not(expr) => {
             acc.push_sql("NOT (");
             emit_expr(acc, expr, ctx)?;
+            acc.push_sql(")");
+        }
+        ExprNode::IsNull(expr) => {
+            emit_expr(acc, expr, ctx)?;
+            acc.push_sql(" IS NULL");
+        }
+        ExprNode::IsNotNull(expr) => {
+            emit_expr(acc, expr, ctx)?;
+            acc.push_sql(" IS NOT NULL");
+        }
+        ExprNode::Coalesce(args) => {
+            acc.push_sql("COALESCE(");
+            for (idx, arg) in args.iter().enumerate() {
+                if idx > 0 {
+                    acc.push_sql(", ");
+                }
+                emit_expr(acc, arg, ctx)?;
+            }
             acc.push_sql(")");
         }
         ExprNode::Cmp { op, lhs, rhs } => {
@@ -1746,6 +1772,92 @@ mod tests {
         emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
         assert_eq!(acc.sql(), "EXCLUDED.payload");
         assert_eq!(acc.bind_count(), 0);
+    }
+
+    fn invalid_count_star_distinct() -> ExprNode {
+        ExprNode::Aggregate {
+            op: AggOp::CountStar,
+            arg: Box::new(ExprNode::Field { column: "payload" }),
+            arg2: None,
+            filter: None,
+            cast_to: None,
+            distinct: true,
+            window: None,
+            order_by: vec![],
+            within_group_order_by: vec![],
+        }
+    }
+
+    #[test]
+    fn emit_is_null_renders_postfix_test_no_bind() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::IsNull(Box::new(ExprNode::Field { column: "value" }));
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "value IS NULL");
+        assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn emit_is_not_null_renders_postfix_test_no_bind() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::IsNotNull(Box::new(ExprNode::Field { column: "value" }));
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "value IS NOT NULL");
+        assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn emit_is_null_over_excluded_qualifies_pseudo_table() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::IsNull(Box::new(ExprNode::Excluded { column: "value" }));
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "EXCLUDED.value IS NULL");
+        assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn emit_coalesce_renders_comma_separated_no_bind() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::Coalesce(vec![
+            ExprNode::Field { column: "value" },
+            ExprNode::Excluded { column: "value" },
+        ]);
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "COALESCE(value, EXCLUDED.value)");
+        assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn emit_coalesce_single_operand_renders_one_arg() {
+        let mut acc = SqlAccumulator::new("");
+        let node = ExprNode::Coalesce(vec![ExprNode::Field { column: "value" }]);
+        emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
+        assert_eq!(acc.sql(), "COALESCE(value)");
+        assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn check_aggregate_legality_recurses_into_coalesce_operands() {
+        let err = check_aggregate_legality(&ExprNode::Coalesce(vec![
+            ExprNode::Field { column: "value" },
+            invalid_count_star_distinct(),
+        ]))
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::UnsupportedAggregate { op, .. } if op == "COUNT(*)"
+        ));
+    }
+
+    #[test]
+    fn check_aggregate_legality_recurses_into_is_null_operand() {
+        let err =
+            check_aggregate_legality(&ExprNode::IsNull(Box::new(invalid_count_star_distinct())))
+                .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::UnsupportedAggregate { op, .. } if op == "COUNT(*)"
+        ));
     }
 
     #[test]

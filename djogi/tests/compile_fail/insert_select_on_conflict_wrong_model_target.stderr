@@ -18,9 +18,9 @@ error[E0277]: the trait bound `Option<djogi::ConflictTarget<WrongTgtTarget>>: Fr
              and 22 others
      = note: required for `djogi::ConflictTarget<WrongTgtSource>` to implement `Into<Option<djogi::ConflictTarget<WrongTgtTarget>>>`
 note: required by a bound in `InsertSelectStmt::<S, T>::on_conflict_do_nothing`
-    --> djogi/src/query/insert_select.rs:1985:58
+    --> djogi/src/query/insert_select.rs:2179:58
      |
-1985 |     pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
+2179 |     pub fn on_conflict_do_nothing(mut self, target: impl Into<Option<ConflictTarget<T>>>) -> Self {
      |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `InsertSelectStmt::<S, T>::on_conflict_do_nothing`
 
 error: aborting due to 1 previous error

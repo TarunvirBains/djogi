@@ -2,8 +2,9 @@
 //! typed [`Expr<T>`](super::Expr) wrapper.
 //! # What
 //! [`ExprNode`] is an untyped enum tree: leaves are `Field { column }` /
-//! `Literal(FilterValue)`, internal nodes are arithmetic, comparison, and
-//! (in later phases) subquery / aggregate / CASE forms. The typed
+//! `Literal(FilterValue)`, internal nodes are arithmetic, comparison,
+//! null-test, and higher-level query forms such as subquery / aggregate /
+//! CASE nodes. The typed
 //! [`Expr<T>`](super::Expr) wrapper projects `T`-safety over this dynamic
 //! core so user-facing APIs stay typed while the SQL emitter only has one
 //! variant tree to walk.
@@ -18,10 +19,11 @@
 //!   regardless of `T`. Same pattern for comparisons (`Expr<T>.eq(Expr<T>)
 //! -> Expr<bool>` — the wrapper changes `T` from `T` to `bool`, the node
 //!   is a `Cmp { op: Eq, .. }`).
-//! - **Phase expansion.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
-//!   `Aggregate`, and `OuterRef` variants. Keeping the enum untyped means
-//!   those additions don't ripple into every type-parameterised site; only
-//!   the emitter and a few typed constructors grow.
+//! - **Forward-compatible expansion.** New variants such as `Case`,
+//!   `Exists`, `Subquery`, `Aggregate`, `OuterRef`, and conflict-specific
+//!   helpers can land without rippling `T` changes through every typed
+//!   wrapper site; only the emitter and the small set of typed
+//!   constructors grow.
 //! # Where
 //! - [`super::Expr`] — typed wrapper, the public surface.
 //! - [`super::sql::emit_expr`] — the matching emitter (one arm per variant).
@@ -41,10 +43,10 @@ use std::any::TypeId;
 /// Untyped expression tree. The typed [`super::Expr<T>`] wrapper carries
 /// the phantom `T` parameter and projects type safety over the dynamic
 /// variants stored here. The SQL emitter walks this enum directly.
-/// Marked `#[non_exhaustive]` to leave room for Tasks 4 / 5
-/// additions (`Case`, `Exists`, `Subquery`, `Aggregate`, `OuterRef`) without
-/// forcing a downstream semver bump. `Condition::Expr` carries `Expr<bool>`,
-/// not `ExprNode`, so the typed seal stays intact at the public boundary.
+/// Marked `#[non_exhaustive]` to allow adding new expression variants in
+/// future releases without forcing a downstream semver bump. `Condition::Expr`
+/// carries `Expr<bool>`, not `ExprNode`, so the typed seal stays intact at the
+/// public boundary.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub(crate) enum ExprNode {
@@ -111,6 +113,18 @@ pub(crate) enum ExprNode {
 
     /// `NOT expr` — boolean logical NOT.
     Not(Box<ExprNode>),
+
+    /// `<expr> IS NULL` — unary postfix null test producing a boolean
+    /// expression.
+    IsNull(Box<ExprNode>),
+
+    /// `<expr> IS NOT NULL` — unary postfix null test producing a boolean
+    /// expression.
+    IsNotNull(Box<ExprNode>),
+
+    /// `COALESCE(expr1, expr2, …)` — return the first non-NULL operand.
+    /// Operand order is preserved exactly as built by the typed surface.
+    Coalesce(Vec<ExprNode>),
 
     /// `lhs <op> rhs` — comparison producing an `Expr<bool>` at the
     /// typed-wrapper layer. See [`CmpOp`] for the operator set.
@@ -295,7 +309,7 @@ pub(crate) enum ExprNode {
     /// [`ExprNode`] that evaluates to boolean (typed as `Expr<bool>` at
     /// the builder surface), the value is the expression whose result
     /// becomes the CASE output when that arm fires. `otherwise` is
-    /// **required** (not `Option`) per the Task 5 plan — forcing the
+    /// **required** (not `Option`) — forcing the
     /// user to decide on the default avoids the silent-NULL footgun
     /// where a CASE with no matching arm produces NULL against a column
     /// the user expected to be non-null.
@@ -391,7 +405,7 @@ pub(crate) enum ExprNode {
     /// against the enclosing query scope when there is no matching
     /// column in the subquery's own `FROM` list. When both inner and
     /// outer tables expose a same-named column, the unqualified
-    /// emission is ambiguous and Postgres raises `42702`. Task 5 ships
+    /// emission is ambiguous and Postgres raises `42702`. Djogi ships
     /// the unqualified form; a qualified variant (carrying the outer
     /// table alias) is deferred alongside the broader `parent_table`
     /// threading needed for `select_related + filter_expr` composition.

@@ -7,18 +7,18 @@ error[E0277]: the trait bound `djogi::Expr<i32>: IntoConflictExpr<WrongExprTarge
      |                               required by a bound introduced by this call
      |
 help: the following other types implement trait `IntoConflictExpr<T, V>`
-    --> djogi/src/query/insert_select.rs:1424:1
+    --> djogi/src/query/insert_select.rs:1557:1
      |
-1424 | impl<T: Model, V> IntoConflictExpr<T, V> for FieldRef<T, V> {
+1557 | impl<T: Model, V> IntoConflictExpr<T, V> for FieldRef<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `FieldRef<T, V>`
 ...
-1432 | impl<T: Model, V> IntoConflictExpr<T, V> for DjogiField<T, V> {
+1565 | impl<T: Model, V> IntoConflictExpr<T, V> for DjogiField<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `DjogiField<T, V>`
 ...
-1438 | impl<T: Model, V> IntoConflictExpr<T, V> for ExcludedRef<T, V> {
+1571 | impl<T: Model, V> IntoConflictExpr<T, V> for ExcludedRef<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ExcludedRef<T, V>`
 ...
-1444 | impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
+1577 | impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConflictExpr<T, V>`
 note: required by a bound in `DjogiField::<M, V>::conflict_set_expr`
     --> djogi/src/query/field.rs:1000:12

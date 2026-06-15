@@ -1,0 +1,32 @@
+error[E0599]: no method named `conflict_is_null` found for struct `DjogiField<ConflictNullNonOptionTarget, i32>` in the current scope
+    --> $DIR/insert_select_conflict_null_on_non_option.rs:29:39
+     |
+  29 |                 let _guard = t.hits().conflict_is_null();
+     |                                       ^^^^^^^^^^^^^^^^
+     |
+help: there is a method `conflict_mul` with a similar name, but with different arguments
+    --> djogi/src/query/field.rs:1056:5
+     |
+1056 | /     pub fn conflict_mul<S: Model>(
+1057 | |         self,
+1058 | |         value: V,
+1059 | |     ) -> crate::query::insert_select::ConflictUpdate<S, M>
+1060 | |     where
+1061 | |         V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+     | |_________________________________________________________________________^
+
+error[E0599]: no method named `conflict_coalesce_excluded` found for struct `DjogiField<ConflictNullNonOptionTarget, i32>` in the current scope
+  --> $DIR/insert_select_conflict_null_on_non_option.rs:30:58
+   |
+30 |                 vec![t.hits().conflict_set_expr(t.hits().conflict_coalesce_excluded())]
+   |                                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+help: there is a method `conflict_excluded` with a similar name
+   |
+30 -                 vec![t.hits().conflict_set_expr(t.hits().conflict_coalesce_excluded())]
+30 +                 vec![t.hits().conflict_set_expr(t.hits().conflict_excluded())]
+   |
+
+error: aborting due to 2 previous errors
+
+For more information about this error, try `rustc --explain E0599`.
