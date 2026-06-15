@@ -1,7 +1,7 @@
 //! Typed column handles — the API surface every filter closure interacts with.
 //! # What
 //! `FieldRef<M, V>` is the handle returned by macro-generated `{Model}Fields`
-//! methods (Task 4). It carries only a `'static` column name plus phantom
+//! methods. It carries only a `'static` column name plus phantom
 //! type parameters that tie it to a specific `Model` (`M`) and a specific
 //! SQL-bindable value type (`V`). Each method call (`.eq`, `.gte`, etc.)
 //! consumes the ref (by value — it's `Copy`) and a value, returning a
@@ -42,7 +42,7 @@
 //! not for hand-written code.
 //! # Where
 //! - `Condition` / `Leaf` / `FilterValue` / `LookupOp` — `query::condition`.
-//! - `{Model}Fields` generation — `djogi-macros/src/model/fields.rs` (Task 4).
+//! - `{Model}Fields` generation — `djogi-macros/src/model/fields.rs`.
 //! - `Model::Fields` associated type — `djogi/src/model.rs`.
 
 use crate::jsonb::Jsonb;
@@ -4121,7 +4121,7 @@ impl<M: Model, V> FieldRef<M, V> {
 // compiling without change.
 impl<M: Model, V> FieldRef<M, V> {
     /// `column IN (v1, v2, …)`. An empty iterator is allowed and renders as
-    /// SQL `FALSE` at emission time (Task 6).
+    /// SQL `FALSE` at emission time.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn in_list<I, P>(self, values: I) -> Condition
     where
