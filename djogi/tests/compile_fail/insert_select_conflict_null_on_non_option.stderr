@@ -5,14 +5,14 @@ error[E0599]: no method named `conflict_is_null` found for struct `DjogiField<Co
      |                                       ^^^^^^^^^^^^^^^^
      |
 help: there is a method `conflict_mul` with a similar name, but with different arguments
-    --> djogi/src/query/field.rs:1056:5
+    --> djogi/src/query/field.rs:1138:5
      |
-1056 | /     pub fn conflict_mul<S: Model>(
-1057 | |         self,
-1058 | |         value: V,
-1059 | |     ) -> crate::query::insert_select::ConflictUpdate<S, M>
-1060 | |     where
-1061 | |         V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
+1138 | /     pub fn conflict_mul<S: Model>(
+1139 | |         self,
+1140 | |         value: V,
+1141 | |     ) -> crate::query::insert_select::ConflictUpdate<S, M>
+1142 | |     where
+1143 | |         V: crate::expr::arithmetic::Numeric + Into<crate::expr::Expr<V>>,
      | |_________________________________________________________________________^
 
 error[E0599]: no method named `conflict_coalesce_excluded` found for struct `DjogiField<ConflictNullNonOptionTarget, i32>` in the current scope
