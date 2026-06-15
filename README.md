@@ -65,7 +65,7 @@ When a query shape still falls outside the typed surface, the raw SQL escape hat
 
 ## Status
 
-**Current release:** `v0.1.0-alpha.16` (public alpha — API may change before v0.1.0 stable)
+**Current release:** `v0.1.0-alpha.11` (public alpha — API may change before v0.1.0 stable)
 
 ## Project Layout
 

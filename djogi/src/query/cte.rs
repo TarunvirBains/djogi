@@ -95,6 +95,21 @@ fn ensure_unique_term_name(terms: &[CteTerm], name: &'static str) -> Result<(), 
     Ok(())
 }
 
+/// Reject a CTE term name that shadows the model's own table, which would
+/// make the CTE body's `FROM <table>` reference resolve to the CTE itself
+/// rather than the physical table — producing either a Postgres error or
+/// silent self-reference on non-recursive CTEs, and unintended infinite
+/// recursion on `WITH RECURSIVE` terms.
+fn ensure_cte_name_not_model_table(name: &str, table_name: &str) -> Result<(), DjogiError> {
+    if sql_ident_eq(name, table_name) {
+        return Err(DjogiError::Validation(format!(
+            "CTE name {name:?} conflicts with the model table {table_name:?}; \
+             choose a different name",
+        )));
+    }
+    Ok(())
+}
+
 fn find_term<'a>(terms: &'a [CteTerm], name: &str) -> Option<&'a CteTerm> {
     terms.iter().find(|term| sql_ident_eq(term.name, name))
 }
@@ -121,7 +136,7 @@ fn build_cte_queryset_body<M: Model + FromPgRow>(
 
 fn validate_recursive_anchor<M: Model>(anchor: &QuerySet<M>) -> Result<(), DjogiError> {
     let mut rejected: Vec<&'static str> = Vec::new();
-    if !anchor.ordering.is_empty() {
+    if anchor.has_explicit_ordering {
         rejected.push("order_by");
     }
     if anchor.limit.is_some() {
@@ -342,6 +357,7 @@ impl<M: Model> CteQuerySet<M> {
         body: B,
     ) -> Result<Self, DjogiError> {
         validate_cte_name(name)?;
+        ensure_cte_name_not_model_table(name, M::table_name())?;
         ensure_unique_term_name(&[], name)?;
         validate_cte_consumer(&consumer, "QuerySet::with(...)")?;
         let recipe = body.into_cte_body_recipe();
@@ -387,6 +403,7 @@ impl<M: Model> CteQuerySet<M> {
         body: B,
     ) -> Result<Self, DjogiError> {
         validate_cte_name(name)?;
+        ensure_cte_name_not_model_table(name, M::table_name())?;
         ensure_unique_term_name(&self.terms, name)?;
         let recipe = body.into_cte_body_recipe();
         recipe()?;
@@ -426,6 +443,7 @@ impl<M: Model> CteQuerySet<M> {
     {
         validate_cte_name(name)?;
         ensure_unique_term_name(&self.terms, name)?;
+        ensure_cte_name_not_model_table(name, M::table_name())?;
         validate_cte_name(arm.cte_name)?;
         if arm.cte_name != name {
             return Err(DjogiError::Validation(format!(
@@ -737,7 +755,13 @@ pub(crate) fn build_recursive_cte_body<M: Model + FromPgRow>(
     })?;
 
     let mut acc = SqlAccumulator::new("");
-    acc.extend_with(build_cte_queryset_body(anchor)?);
+    // Strip any default ordering from the anchor arm — ORDER BY is not
+    // legal inside a recursive CTE body. Explicit ordering is already
+    // rejected above; default proxy ordering passes validation but must
+    // not appear in the emitted SQL.
+    let mut anchor_no_order = anchor.clone();
+    anchor_no_order.ordering.clear();
+    acc.extend_with(build_cte_queryset_body(&anchor_no_order)?);
     acc.push_sql(" UNION ALL SELECT ");
     push_qualified_columns_for_arm::<M>(&mut acc, "t");
     acc.push_sql(" FROM ");
@@ -826,6 +850,10 @@ where
         M: 'ctx,
     {
         async move {
+            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            if self.consumer.is_empty() {
+                return Ok(vec![]);
+            }
             let acc = build_cte_select(&self)?;
             crate::query::terminal::auto_set_tenant::<M>(ctx).await?;
             let (sql, binds) = acc.into_parts();
@@ -846,6 +874,10 @@ where
         M: 'ctx,
     {
         async move {
+            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            if self.consumer.is_empty() {
+                return Ok(None);
+            }
             self.consumer = self.consumer.limit(1);
             let acc = build_cte_select(&self)?;
             crate::query::terminal::auto_set_tenant::<M>(ctx).await?;
@@ -870,6 +902,10 @@ where
         M: 'ctx,
     {
         async move {
+            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            if self.consumer.is_empty() {
+                return Ok(0_i64);
+            }
             let acc = build_cte_count(&self)?;
             crate::query::terminal::auto_set_tenant::<M>(ctx).await?;
             let (sql, binds) = acc.into_parts();
@@ -888,6 +924,10 @@ where
         M: 'ctx,
     {
         async move {
+            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            if self.consumer.is_empty() {
+                return Ok(false);
+            }
             let acc = build_cte_exists(&self)?;
             crate::query::terminal::auto_set_tenant::<M>(ctx).await?;
             let (sql, binds) = acc.into_parts();
@@ -1128,6 +1168,35 @@ mod tests {
     }
 
     #[test]
+    fn cte_name_colliding_with_model_table_is_rejected() {
+        // "mini_nodes" == MiniNode::table_name() — must reject.
+        let err = MiniNode::objects()
+            .with("mini_nodes", MiniNode::objects())
+            .expect_err("CTE name matching model table must be rejected");
+        match err {
+            crate::DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("mini_nodes"),
+                    "message names the identifier: {msg}"
+                );
+                assert!(
+                    msg.contains("conflicts with the model table"),
+                    "message describes conflict: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cte_name_colliding_with_model_table_is_rejected_case_insensitively() {
+        let err = MiniNode::objects()
+            .with("MINI_NODES", MiniNode::objects())
+            .expect_err("case-folded collision must also reject");
+        assert!(matches!(err, crate::DjogiError::Validation(_)), "{err:?}");
+    }
+
+    #[test]
     fn from_cte_rejects_undeclared_term() {
         let err = MiniNode::objects()
             .with("recent", MiniNode::objects())
@@ -1169,6 +1238,45 @@ mod tests {
             .expect("from_cte");
         let sql = cte.render_cte_sql_for_testing().expect("render");
         assert!(sql.contains("FROM recent WHERE FALSE"), "{sql}");
+    }
+
+    #[test]
+    fn render_without_from_cte_returns_validation_error() {
+        // Construct a CTE but never call from_cte() — consumer target is None.
+        let cte = MiniNode::objects()
+            .with("recent", MiniNode::objects())
+            .expect("with should succeed");
+        let result = cte.render_cte_sql_for_testing();
+        match result {
+            Err(crate::DjogiError::Validation(msg)) => {
+                assert!(
+                    msg.contains("from_cte"),
+                    "error message must mention from_cte, got: {msg}"
+                );
+            }
+            Ok(sql) => panic!("expected Err but got Ok: {sql}"),
+            Err(other) => panic!("expected DjogiError::Validation, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn consumer_none_short_circuits_without_sql() {
+        // Build a CTE where the consumer queryset was none()-ed.
+        // render_cte_sql_for_testing still emits WHERE FALSE (sql shape
+        // test already covers that at the consumer_none_emits_where_false test).
+        // This test confirms the is_empty() field is visible to the
+        // short-circuit path in the terminal methods.
+        let cte = MiniNode::objects()
+            .none()
+            .with("recent", MiniNode::objects())
+            .expect("with should succeed");
+        assert!(
+            cte.consumer.is_empty(),
+            "consumer should carry the none() flag"
+        );
+        // No from_cte needed — the is_empty check fires before from is read.
+        // (This is a unit-level structural check; integration coverage
+        //  of the actual terminal short-circuit is in tests/integration/cte_live.rs)
     }
 
     #[test]
@@ -1352,6 +1460,40 @@ mod tests {
         assert!(
             matches!(err, Err(crate::DjogiError::Validation(_))),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_anchor_proxy_default_ordering_passes_validation() {
+        // Simulate proxy queryset: ordering seeded by QuerySet::new() but
+        // has_explicit_ordering stays false — same state as a proxy model
+        // with default_order_by() returning entries.
+        let mut anchor: QuerySet<MiniNode> = MiniNode::objects();
+        // Seed ordering manually to simulate proxy behavior without
+        // setting has_explicit_ordering (QuerySet::new() path).
+        anchor
+            .ordering
+            .push(crate::query::order::OrderExpr::__from_macro_column(
+                "active",
+                crate::query::order::Direction::Asc,
+                crate::query::order::NullsOrder::Default,
+            ));
+        assert!(!anchor.has_explicit_ordering);
+        let result = validate_recursive_anchor(&anchor);
+        assert!(
+            result.is_ok(),
+            "proxy default ordering must pass: {result:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_anchor_explicit_ordering_still_rejected() {
+        let anchor = MiniNode::objects().order_by(|f| f.active().asc());
+        assert!(anchor.has_explicit_ordering);
+        let result = validate_recursive_anchor(&anchor);
+        assert!(
+            matches!(result, Err(crate::DjogiError::Validation(ref msg)) if msg.contains("order_by")),
+            "explicit order_by must still be rejected: {result:?}"
         );
     }
 
