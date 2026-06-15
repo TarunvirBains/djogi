@@ -76,6 +76,68 @@ pub(crate) fn validate_cte_name(name: &str) -> Result<(), DjogiError> {
         .map_err(|e| DjogiError::Validation(format!("invalid CTE name {name:?}: {e:?}")))
 }
 
+fn ensure_unique_term_name(terms: &[CteTerm], name: &'static str) -> Result<(), DjogiError> {
+    if terms.iter().any(|term| term.name == name) {
+        return Err(DjogiError::Validation(format!(
+            "CTE term name {name:?} declared more than once"
+        )));
+    }
+    Ok(())
+}
+
+fn find_term<'a>(terms: &'a [CteTerm], name: &str) -> Option<&'a CteTerm> {
+    terms.iter().find(|term| term.name == name)
+}
+
+fn build_cte_queryset_body<M: Model + FromPgRow>(
+    qs: &QuerySet<M>,
+) -> Result<SqlAccumulator, DjogiError> {
+    if qs.is_empty() {
+        let mut acc = SqlAccumulator::new("SELECT ");
+        acc.push_sql(<M as FromPgRow>::COLUMN_LIST);
+        acc.push_sql(" FROM ");
+        acc.push_sql(M::table_name());
+        acc.push_sql(" WHERE FALSE");
+        return Ok(acc);
+    }
+    crate::query::sql::build_select(qs).map_err(DjogiError::from)
+}
+
+fn validate_recursive_anchor<M: Model>(anchor: &QuerySet<M>) -> Result<(), DjogiError> {
+    let mut rejected: Vec<&'static str> = Vec::new();
+    if !anchor.ordering.is_empty() {
+        rejected.push("order_by");
+    }
+    if anchor.limit.is_some() {
+        rejected.push("limit");
+    }
+    if anchor.offset.is_some() {
+        rejected.push("offset");
+    }
+    if !matches!(anchor.distinct, crate::query::DistinctMode::None) {
+        rejected.push("distinct");
+    }
+    if anchor.lock != crate::query::lock::LockMode::None {
+        rejected.push("row locks");
+    }
+    if !anchor.prefetch_paths.is_empty() {
+        rejected.push("prefetch");
+    }
+    if !anchor.select_related_paths.is_empty() {
+        rejected.push("select_related");
+    }
+    if anchor.cache_target.is_some() {
+        rejected.push("cache_target");
+    }
+    if rejected.is_empty() {
+        return Ok(());
+    }
+    Err(DjogiError::Validation(format!(
+        "with_recursive() anchor does not support queryset read-tail modifiers ({})",
+        rejected.join(", ")
+    )))
+}
+
 mod sealed {
     pub trait Sealed {}
     impl<M: super::Model> Sealed for super::QuerySet<M> {}
@@ -98,7 +160,7 @@ impl<M: Model + FromPgRow> IntoCteBody<M> for QuerySet<M> {
     fn into_cte_body_recipe(
         self,
     ) -> Box<dyn Fn() -> Result<SqlAccumulator, DjogiError> + Send + Sync> {
-        Box::new(move || crate::query::sql::build_select(&self).map_err(DjogiError::from))
+        Box::new(move || build_cte_queryset_body(&self))
     }
 }
 
@@ -220,6 +282,7 @@ impl<M: Model> CteQuerySet<M> {
         body: B,
     ) -> Result<Self, DjogiError> {
         validate_cte_name(name)?;
+        ensure_unique_term_name(&[], name)?;
         let recipe = body.into_cte_body_recipe();
         recipe()?;
         Ok(Self {
@@ -240,6 +303,11 @@ impl<M: Model> CteQuerySet<M> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn from_cte(mut self, name: &'static str) -> Result<Self, DjogiError> {
         validate_cte_name(name)?;
+        if find_term(&self.terms, name).is_none() {
+            return Err(DjogiError::Validation(format!(
+                "from_cte({name:?}) references an undeclared CTE term"
+            )));
+        }
         self.from = Some(name);
         Ok(self)
     }
@@ -252,6 +320,7 @@ impl<M: Model> CteQuerySet<M> {
         body: B,
     ) -> Result<Self, DjogiError> {
         validate_cte_name(name)?;
+        ensure_unique_term_name(&self.terms, name)?;
         let recipe = body.into_cte_body_recipe();
         recipe()?;
         self.terms.push(CteTerm {
@@ -289,6 +358,7 @@ impl<M: Model> CteQuerySet<M> {
         M: FromPgRow,
     {
         validate_cte_name(name)?;
+        ensure_unique_term_name(&self.terms, name)?;
         validate_cte_name(arm.cte_name)?;
         if arm.cte_name != name {
             return Err(DjogiError::Validation(format!(
@@ -302,6 +372,7 @@ impl<M: Model> CteQuerySet<M> {
                     .to_string(),
             ));
         }
+        validate_recursive_anchor(&anchor)?;
         let recipe = Box::new(move || build_recursive_cte_body(&anchor, &arm, name));
         recipe()?;
         self.terms.push(CteTerm {
@@ -394,6 +465,14 @@ impl<M: Model + FromPgRow> CteQuerySet<M> {
             .map_err(|e| DjogiError::Validation(format!("invalid CYCLE USING column: {e}")))?;
 
         let cols = <M as FromPgRow>::COLUMNS;
+        for col in cycle_columns {
+            if !cols.contains(col) {
+                return Err(DjogiError::Validation(format!(
+                    "CYCLE column {col:?} is not present in model {:?} output",
+                    M::table_name()
+                )));
+            }
+        }
         if cols.contains(&mark_column) {
             return Err(DjogiError::Validation(format!(
                 "CYCLE SET column {mark_column:?} collides with a column of model {:?}",
@@ -438,18 +517,19 @@ impl<M: Model + FromPgRow> CteQuerySet<M> {
     /// `WHERE NOT <mark>` on the outer consumer `SELECT`.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude_cycle_rows(mut self) -> Result<Self, DjogiError> {
-        let mark = self
-            .terms
-            .iter()
-            .rev()
-            .find(|t| t.recursive)
-            .and_then(|t| t.cycle.as_ref())
+        let from = self.from.ok_or_else(|| {
+            DjogiError::Validation(
+                "exclude_cycle_rows() requires `.from_cte(<name>)` before it can bind a cycle mark"
+                    .to_string(),
+            )
+        })?;
+        let mark = find_term(&self.terms, from)
+            .and_then(|term| term.cycle.as_ref())
             .map(|cycle| cycle.mark_column)
             .ok_or_else(|| {
-                DjogiError::Validation(
-                    "exclude_cycle_rows() requires a recursive term with a CYCLE clause"
-                        .to_string(),
-                )
+                DjogiError::Validation(format!(
+                    "exclude_cycle_rows() requires selected term {from:?} to carry a CYCLE clause"
+                ))
             })?;
         self.consumer_exclude_cycle_mark = Some(mark);
         Ok(self)
@@ -494,6 +574,10 @@ fn push_consumer_where<M: Model>(
     acc: &mut SqlAccumulator,
     cte: &CteQuerySet<M>,
 ) -> Result<(), DjogiError> {
+    if cte.consumer.is_empty() {
+        acc.push_sql(" WHERE FALSE");
+        return Ok(());
+    }
     match (
         cte.consumer_exclude_cycle_mark,
         crate::query::sql::has_consumer_where(&cte.consumer),
@@ -565,7 +649,7 @@ pub(crate) fn build_recursive_cte_body<M: Model + FromPgRow>(
     })?;
 
     let mut acc = SqlAccumulator::new("");
-    acc.extend_with(crate::query::sql::build_select(anchor).map_err(DjogiError::from)?);
+    acc.extend_with(build_cte_queryset_body(anchor)?);
     acc.push_sql(" UNION ALL SELECT ");
     push_qualified_columns_for_arm::<M>(&mut acc, "t");
     acc.push_sql(" FROM ");
@@ -924,6 +1008,49 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_cte_name_is_rejected() {
+        let err = MiniNode::objects()
+            .with("dup", MiniNode::objects())
+            .expect("first with")
+            .with("dup", MiniNode::objects())
+            .expect_err("duplicate CTE name must reject");
+        assert!(matches!(err, crate::DjogiError::Validation(_)), "{err:?}");
+    }
+
+    #[test]
+    fn from_cte_rejects_undeclared_term() {
+        let err = MiniNode::objects()
+            .with("recent", MiniNode::objects())
+            .expect("with")
+            .from_cte("missing")
+            .expect_err("undeclared term must reject");
+        assert!(matches!(err, crate::DjogiError::Validation(_)), "{err:?}");
+    }
+
+    #[test]
+    fn non_recursive_none_body_emits_where_false() {
+        let cte = MiniNode::objects()
+            .with("recent", MiniNode::objects().none())
+            .expect("with")
+            .from_cte("recent")
+            .expect("from_cte");
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+        assert!(sql.contains("FROM mini_nodes WHERE FALSE"), "{sql}");
+    }
+
+    #[test]
+    fn consumer_none_emits_where_false() {
+        let cte = MiniNode::objects()
+            .none()
+            .with("recent", MiniNode::objects())
+            .expect("with")
+            .from_cte("recent")
+            .expect("from_cte");
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+        assert!(sql.contains("FROM recent WHERE FALSE"), "{sql}");
+    }
+
+    #[test]
     fn recursive_arm_captures_name_self_edge_and_filter() {
         let arm = RecursiveArm::<MiniNode>::referencing("ancestors")
             .join_on("parent_id", "id")
@@ -1034,6 +1161,41 @@ mod tests {
     }
 
     #[test]
+    fn with_recursive_rejects_anchor_order_and_limit_tail() {
+        let err = MiniNode::objects().with_recursive(
+            "ancestors",
+            MiniNode::objects().order_by(|f| f.active().asc()).limit(1),
+            RecursiveArm::<MiniNode>::referencing("ancestors")
+                .join_on("parent_id", "id")
+                .expect("join_on"),
+        );
+        assert!(
+            matches!(err, Err(crate::DjogiError::Validation(_))),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn recursive_none_anchor_emits_where_false() {
+        let cte = MiniNode::objects()
+            .with_recursive(
+                "ancestors",
+                MiniNode::objects().none(),
+                RecursiveArm::<MiniNode>::referencing("ancestors")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive")
+            .from_cte("ancestors")
+            .expect("from_cte");
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+        assert!(
+            sql.contains("FROM mini_nodes WHERE FALSE UNION ALL"),
+            "{sql}"
+        );
+    }
+
+    #[test]
     fn with_recursive_arm_filter_emits_qualified_where() {
         let cte = MiniNode::objects()
             .with_recursive(
@@ -1087,15 +1249,31 @@ mod tests {
                     .expect("join_on"),
             )
             .expect("with_recursive")
-            .cycle(&["source_id", "ancestor_id"], "is_cycle", "cycle_path")
+            .cycle(&["id", "parent_id"], "is_cycle", "cycle_path")
             .expect("cycle")
             .from_cte("walk")
             .expect("from_cte");
         let sql = cte.render_cte_sql_for_testing().expect("render");
         assert!(
-            sql.contains("CYCLE source_id, ancestor_id SET is_cycle USING cycle_path"),
+            sql.contains("CYCLE id, parent_id SET is_cycle USING cycle_path"),
             "{sql}"
         );
+    }
+
+    #[test]
+    fn cycle_rejects_column_not_in_model_output() {
+        let err = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive")
+            .cycle(&["source_id"], "is_cycle", "cycle_path")
+            .expect_err("non-output cycle column must reject");
+        assert!(matches!(err, crate::DjogiError::Validation(_)), "{err:?}");
     }
 
     #[test]
@@ -1199,6 +1377,28 @@ mod tests {
             .exclude_cycle_rows()
             .expect_err("no cycle should reject");
         assert!(matches!(err, crate::DjogiError::Validation(_)));
+    }
+
+    #[test]
+    fn exclude_cycle_rows_rejects_selected_term_without_mark() {
+        let err = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle")
+            .with("recent", MiniNode::objects())
+            .expect("with")
+            .from_cte("recent")
+            .expect("from_cte")
+            .exclude_cycle_rows()
+            .expect_err("selected term without cycle mark must reject");
+        assert!(matches!(err, crate::DjogiError::Validation(_)), "{err:?}");
     }
 
     #[test]

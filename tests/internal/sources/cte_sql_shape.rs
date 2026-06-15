@@ -30,6 +30,19 @@ fn non_recursive_cte_shape() {
 }
 
 #[test]
+fn non_recursive_cte_renumbers_body_and_consumer_binds() {
+    let cte = Node::objects()
+        .with("recent", Node::objects().filter(|f| f.active().eq(true)))
+        .expect("with")
+        .from_cte("recent")
+        .expect("from_cte")
+        .filter(|f| f.parent_id().eq(7_i64));
+    let sql = cte.__sql_for_test().expect("sql");
+    assert!(sql.contains("active = $1"), "{sql}");
+    assert!(sql.contains("FROM recent WHERE parent_id = $2"), "{sql}");
+}
+
+#[test]
 fn recursive_cte_with_cycle_shape() {
     let anchor = Node::objects().filter(|f| f.parent_id().eq(0_i64));
     let arm = RecursiveArm::<Node>::referencing("walk")
