@@ -1638,6 +1638,24 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
                                 )));
                             }
                         }
+                        // Defense-in-depth: columns is a Vec reachable for
+                        // post-construction mutation. The membership check
+                        // above restricts entries to descriptor field names
+                        // (themselves macro-validated), but re-assert the
+                        // plain-ident contract so any future divergence
+                        // between "is a descriptor field" and "is a plain
+                        // identifier" cannot reach push_sql unvalidated.
+                        // check_reserved = true: columns land unquoted in
+                        // `ON CONFLICT (<col>, ...)`.
+                        for col in columns {
+                            if crate::ident::check_plain_ident(col, true).is_err() {
+                                return Err(DjogiError::Validation(format!(
+                                    "insert_into::<{}>: ON CONFLICT conflict target column '{}' is not a valid Postgres identifier",
+                                    T::table_name(),
+                                    col,
+                                )));
+                            }
+                        }
                         if inference_predicate
                             .as_deref()
                             .is_some_and(|pred| expr_node_contains_excluded(&pred.node))
@@ -1649,9 +1667,24 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
                         }
                     }
                     ConflictTarget::Constraint {
+                        name,
                         inference_predicate,
-                        ..
                     } => {
+                        // Defense-in-depth: `name` is a public field on a
+                        // #[non_exhaustive] variant. The `constraint(...)`
+                        // constructor validates it, but external code can
+                        // overwrite the field afterward and the value flows
+                        // straight to push_sql in the emitter. Re-validate
+                        // here — the last gate before SQL emission.
+                        // check_reserved = true: the name lands unquoted in
+                        // `ON CONFLICT ON CONSTRAINT <name>`.
+                        if crate::ident::check_plain_ident(name, true).is_err() {
+                            return Err(DjogiError::Validation(format!(
+                                "insert_into::<{}>: ON CONFLICT conflict constraint name '{}' is not a valid Postgres identifier (must be a non-empty, <=63-byte ASCII identifier that is not a reserved keyword); reject post-construction mutation of ConflictTarget::Constraint::name",
+                                T::table_name(),
+                                name,
+                            )));
+                        }
                         if inference_predicate.is_some() {
                             return Err(DjogiError::Validation(format!(
                                 "insert_into::<{}>: ON CONFLICT ON CONSTRAINT does not accept a WHERE inference predicate; use ConflictTarget::columns(...).where_predicate(...) instead",
@@ -2513,5 +2546,72 @@ mod tests {
             err,
             DjogiError::Validation(ref m) if m.contains("cannot reference EXCLUDED")
         ));
+    }
+
+    #[test]
+    fn validate_rejects_mutated_constraint_name_with_injection() {
+        // The validating constructor `ConflictTarget::constraint` runs
+        // assert_plain_ident, but the `name` field is public and mutable.
+        // External code can build a valid target, then overwrite `name`
+        // with an injection payload that bypasses the constructor. The
+        // runtime validator is the last gate before the name reaches
+        // push_sql (sql.rs), so it must re-validate.
+        let qs: QuerySet<Source> = QuerySet::new();
+        let mut stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            .on_conflict_do_nothing(ConflictTarget::<Target>::constraint(
+                "targets_view_count_key",
+            ));
+
+        // Reach into the public field and mutate it post-construction,
+        // bypassing the constructor's assert_plain_ident.
+        if let Some(clause) = stmt.on_conflict.as_mut()
+            && let Some(ConflictTarget::Constraint { name, .. }) = clause.target.as_mut()
+        {
+            *name = "targets'; DROP TABLE targets;--";
+        }
+
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m) if m.contains("conflict constraint name")),
+            "mutated constraint name must be rejected by validate_execute, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_mutated_conflict_column_with_bad_ident() {
+        // ConflictTarget::Columns.columns is a Vec<&'static str> built from
+        // validated FieldRefs, but the Vec is reachable for post-construction
+        // mutation. The existing membership check (known.contains(col))
+        // rejects names absent from the descriptor, but does not run the
+        // identifier-shape contract on the static string. A defense-in-depth
+        // re-validation closes the gap for any future path where a
+        // descriptor field name and a plain-ident string could diverge.
+        let qs: QuerySet<Source> = QuerySet::new();
+        let stmt = qs
+            .insert_into::<Target, _, _>(|_t, _s| {
+                let tc: FieldRef<Target, i32> = FieldRef::new("view_count");
+                let sc: FieldRef<Source, i32> = FieldRef::new("score");
+                vec![tc.copy_from(sc.as_insert_source())]
+            })
+            // A non-identifier payload is rejected by both the membership
+            // check (it is not a descriptor field) and the defense-in-depth
+            // ident re-check. The assertion tolerates either message so a
+            // future reorder of the two checks does not make the test
+            // brittle.
+            .on_conflict_do_nothing(ConflictTarget::<Target>::Columns {
+                columns: vec!["view_count) OR 1=1 --"],
+                inference_predicate: None,
+            });
+        let err = stmt.validate_execute().unwrap_err();
+        assert!(
+            matches!(err, DjogiError::Validation(ref m)
+                if m.contains("not a column") || m.contains("not a valid Postgres identifier")),
+            "a non-identifier conflict column must be rejected, got: {err:?}"
+        );
     }
 }
