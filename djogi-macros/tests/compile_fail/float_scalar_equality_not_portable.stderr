@@ -4,9 +4,9 @@ error[E0599]: the method `eq` exists for struct `DjogiField<Widget, f64>`, but i
  21 |     let _bad = Widget::objects().filter(|f| f.score().eq(f64::NAN));
     |                                                       ^^ method cannot be called on `DjogiField<Widget, f64>` due to unsatisfied trait bounds
     |
-   ::: djogi/src/query/field.rs:748:1
+   ::: djogi/src/query/field.rs:666:1
     |
-748 | pub struct DjogiField<M: Model, V> {
+666 | pub struct DjogiField<M: Model, V> {
     | ---------------------------------- doesn't satisfy `DjogiField<Widget, f64>: Iterator`
     |
     = note: the following trait bounds were not satisfied:
