@@ -843,8 +843,18 @@ impl<T: Model> FieldRef<T, bool> {
 }
 
 impl<T: Model, V> FieldRef<T, Option<V>> {
-    /// Build a predicate that is true when this target column is NULL, for
-    /// use in a conflict `WHERE` guard.
+    /// Build a predicate that is true when this target-table column is NULL.
+    ///
+    /// This references the target-table column directly (not `EXCLUDED`), so
+    /// it is valid in both positions of an `ON CONFLICT` clause:
+    /// - An arbiter inference predicate
+    ///   ([`ConflictTarget::where_predicate`]) that narrows a partial unique
+    ///   index.
+    /// - A `DO UPDATE … WHERE` action guard passed to
+    ///   [`on_conflict_do_update_where`](crate::query::QuerySet::on_conflict_do_update_where).
+    ///
+    /// For a NULL test on the *incoming* `EXCLUDED` row, use
+    /// [`ExcludedRef::conflict_is_null`] instead (action guard only).
     /// ```ignore
     /// .on_conflict_do_update_where(
     ///     ConflictTarget::columns([Doc::fields().slug()]),
@@ -861,8 +871,19 @@ impl<T: Model, V> FieldRef<T, Option<V>> {
         }
     }
 
-    /// Build a predicate that is true when this target column is not NULL,
-    /// for use in a conflict `WHERE` guard.
+    /// Build a predicate that is true when this target-table column is not
+    /// NULL.
+    ///
+    /// This references the target-table column directly (not `EXCLUDED`), so
+    /// it is valid in both positions of an `ON CONFLICT` clause:
+    /// - An arbiter inference predicate
+    ///   ([`ConflictTarget::where_predicate`]) that narrows a partial unique
+    ///   index.
+    /// - A `DO UPDATE … WHERE` action guard passed to
+    ///   [`on_conflict_do_update_where`](crate::query::QuerySet::on_conflict_do_update_where).
+    ///
+    /// For a NOT NULL test on the *incoming* `EXCLUDED` row, use
+    /// [`ExcludedRef::conflict_is_not_null`] instead (action guard only).
     /// ```ignore
     /// .on_conflict_do_update_where(
     ///     ConflictTarget::columns([Doc::fields().slug()]),
@@ -1005,8 +1026,18 @@ impl<T: Model, V> ExcludedRef<T, V> {
 }
 
 impl<T: Model, V> ExcludedRef<T, Option<V>> {
-    /// Build a predicate that is true when this `EXCLUDED` column is NULL,
-    /// for use in a conflict `WHERE` guard.
+    /// Build a predicate that is true when the incoming `EXCLUDED` column is
+    /// NULL.
+    ///
+    /// This references `EXCLUDED.<column>` — the proposed value from the
+    /// conflicting row — so it is valid only in a `DO UPDATE … WHERE` action
+    /// guard or a `DO UPDATE SET` assignment. It **cannot** be used in an
+    /// arbiter inference predicate ([`ConflictTarget::where_predicate`]);
+    /// `validate_execute` rejects any arbiter predicate that references
+    /// `EXCLUDED`.
+    ///
+    /// For a NULL test on the *existing* target-table column (valid in either
+    /// position), use [`FieldRef::conflict_is_null`] instead.
     /// ```ignore
     /// .on_conflict_do_update_where(
     ///     ConflictTarget::columns([Doc::fields().slug()]),
@@ -1021,8 +1052,18 @@ impl<T: Model, V> ExcludedRef<T, Option<V>> {
         }
     }
 
-    /// Build a predicate that is true when this `EXCLUDED` column is not
-    /// NULL, for use in a conflict `WHERE` guard.
+    /// Build a predicate that is true when the incoming `EXCLUDED` column is
+    /// not NULL.
+    ///
+    /// This references `EXCLUDED.<column>` — the proposed value from the
+    /// conflicting row — so it is valid only in a `DO UPDATE … WHERE` action
+    /// guard or a `DO UPDATE SET` assignment. It **cannot** be used in an
+    /// arbiter inference predicate ([`ConflictTarget::where_predicate`]);
+    /// `validate_execute` rejects any arbiter predicate that references
+    /// `EXCLUDED`.
+    ///
+    /// For a NOT NULL test on the *existing* target-table column (valid in
+    /// either position), use [`FieldRef::conflict_is_not_null`] instead.
     /// ```ignore
     /// .on_conflict_do_update_where(
     ///     ConflictTarget::columns([Doc::fields().slug()]),
