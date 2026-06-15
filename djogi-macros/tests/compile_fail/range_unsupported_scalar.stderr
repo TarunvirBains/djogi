@@ -117,7 +117,7 @@ error[E0277]: the trait bound `std::string::String: RangeSubtype` is not satisfi
 note: required by a bound in `djogi::pg::decode::decode_at`
    --> djogi/src/pg/decode.rs:151:8
     |
-149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -...
     |        --------- required by a bound in this function
 150 | where
 151 |     T: FromSql<'a>,
@@ -145,7 +145,7 @@ error[E0277]: the trait bound `bool: RangeSubtype` is not satisfied
 note: required by a bound in `djogi::pg::decode::decode_at`
    --> djogi/src/pg/decode.rs:151:8
     |
-149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+149 | pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -...
     |        --------- required by a bound in this function
 150 | where
 151 |     T: FromSql<'a>,
