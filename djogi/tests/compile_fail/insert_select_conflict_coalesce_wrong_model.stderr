@@ -8,7 +8,7 @@ error[E0277]: the trait bound `ConflictExpr<..., ...>: IntoConflictExpr<..., ...
   41 | |                         .conflict_coalesce_excluded(),
      | |_____________________________________________________^ unsatisfied trait bound
      |
-help: the trait `IntoConflictExpr<ConflictCoalesceWrongModelTarget, Option<_>>` is not implemented for `ConflictExpr<..., ...>`
+help: the trait `IntoConflictExpr<ConflictCoalesceWrongModelTarget, Option<_>>` is not implemented for `ConflictExpr<ConflictCoalesceWrongModelOtherTarget, Option<i32>>`
       but trait `IntoConflictExpr<ConflictCoalesceWrongModelOtherTarget, Option<_>>` is implemented for it
     --> djogi/src/query/insert_select.rs:1577:1
      |

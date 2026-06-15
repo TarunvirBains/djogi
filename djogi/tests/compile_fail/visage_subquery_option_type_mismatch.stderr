@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
     --> $DIR/visage_subquery_option_type_mismatch.rs:21:66
      |
-  21 | ... f.maybe_score().in_visage(wrong_subquery));
-     |                     --------- ^^^^^^^^^^^^^^ expected `VisageSubquery<_, i64>`, found `VisageSubquery<ScoreLogPublic, i32>`
-     |                     |
-     |                     arguments to this method are incorrect
+  21 |     let _ = User::objects().filter(|f| f.maybe_score().in_visage(wrong_subquery));
+     |                                                        --------- ^^^^^^^^^^^^^^ expected `VisageSubquery<_, i64>`, found `VisageSubquery<ScoreLogPublic, i32>`
+     |                                                        |
+     |                                                        arguments to this method are incorrect
      |
      = note: expected struct `VisageSubquery<_, i64>`
                 found struct `VisageSubquery<ScoreLogPublic, i32>`

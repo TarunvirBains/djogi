@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
     --> $DIR/insert_select_on_conflict_wrong_model_excluded.rs:23:45
      |
-  23 | ...().conflict_set(WrongExclSource::fields().label().excluded())],
-     |       ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ExcludedRef<WrongExclTarget, String>`, found `ExcludedRef<WrongExclSource, String>`
-     |       |
-     |       arguments to this method are incorrect
+  23 |             |t| vec![t.label().conflict_set(WrongExclSource::fields().label().excluded())],
+     |                                ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ExcludedRef<WrongExclTarget, String>`, found `ExcludedRef<WrongExclSource, String>`
+     |                                |
+     |                                arguments to this method are incorrect
      |
      = note: expected struct `ExcludedRef<WrongExclTarget, _>`
                 found struct `ExcludedRef<WrongExclSource, _>`

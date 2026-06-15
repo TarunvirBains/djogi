@@ -1,10 +1,10 @@
 error[E0308]: mismatched types
     --> $DIR/visage_nullable_fieldref_wrong_subquery.rs:22:67
      |
-  22 | ... f.maybe_score().in_visage(wrong_subquery));
-     |                     --------- ^^^^^^^^^^^^^^ expected `VisageSubquery<_, i64>`, found `VisageSubquery<TierPublic, i32>`
-     |                     |
-     |                     arguments to this method are incorrect
+  22 |     let _ = NullScorePublic::filter(|f| f.maybe_score().in_visage(wrong_subquery));
+     |                                                         --------- ^^^^^^^^^^^^^^ expected `VisageSubquery<_, i64>`, found `VisageSubquery<TierPublic, i32>`
+     |                                                         |
+     |                                                         arguments to this method are incorrect
      |
      = note: expected struct `VisageSubquery<_, i64>`
                 found struct `VisageSubquery<TierPublic, i32>`

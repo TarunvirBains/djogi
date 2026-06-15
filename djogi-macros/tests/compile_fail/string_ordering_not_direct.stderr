@@ -4,9 +4,9 @@ error[E0599]: the method `gt` exists for struct `DjogiField<Widget, std::string:
  35 |     let _bad = Widget::objects().filter(|f| f.name().gt("m"));
     |                                                      ^^ method cannot be called on `DjogiField<Widget, std::string::String>` due to unsatisfied trait bounds
     |
-   ::: djogi/src/query/field.rs:666:1
+   ::: djogi/src/query/field.rs:748:1
     |
-666 | pub struct DjogiField<M: Model, V> {
+748 | pub struct DjogiField<M: Model, V> {
     | ---------------------------------- doesn't satisfy `DjogiField<Widget, std::string::String>: Iterator`
     |
    ::: $RUST/lib/rustlib/src/rust/library/alloc/src/string.rs:353:1
