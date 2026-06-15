@@ -6,6 +6,7 @@ use djogi::prelude::*;
 pub struct OcSource {
     pub slug: String,
     pub hits: i32,
+    pub maybe_hits: Option<i32>,
     pub published: bool,
 }
 
@@ -18,6 +19,7 @@ pub struct OcSource {
 pub struct OcTarget {
     pub slug: String,
     pub hits: i32,
+    pub maybe_hits: Option<i32>,
     pub published: bool,
 }
 
@@ -30,6 +32,7 @@ pub struct OcTarget {
 pub struct OcPartialTarget {
     pub slug: String,
     pub hits: i32,
+    pub maybe_hits: Option<i32>,
     pub published: bool,
 }
 
@@ -39,6 +42,7 @@ async fn seed_source(ctx: &mut djogi::DjogiContext, slug: &str, hits: i32, publi
         OcSource {
             slug: slug.to_string(),
             hits,
+            maybe_hits: None,
             published,
             ..Default::default()
         },
@@ -53,6 +57,48 @@ async fn seed_target(ctx: &mut djogi::DjogiContext, slug: &str, hits: i32) {
         OcTarget {
             slug: slug.to_string(),
             hits,
+            maybe_hits: None,
+            published: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn seed_source_with_nullable(
+    ctx: &mut djogi::DjogiContext,
+    slug: &str,
+    hits: i32,
+    maybe_hits: Option<i32>,
+    published: bool,
+) {
+    OcSource::create(
+        ctx,
+        OcSource {
+            slug: slug.to_string(),
+            hits,
+            maybe_hits,
+            published,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn seed_target_with_nullable(
+    ctx: &mut djogi::DjogiContext,
+    slug: &str,
+    hits: i32,
+    maybe_hits: Option<i32>,
+) {
+    OcTarget::create(
+        ctx,
+        OcTarget {
+            slug: slug.to_string(),
+            hits,
+            maybe_hits,
             published: true,
             ..Default::default()
         },
@@ -223,6 +269,120 @@ async fn do_update_where_skips_when_guard_false(mut ctx: djogi::DjogiContext) {
         .await
         .unwrap();
     assert_eq!(gamma.hits, 50);
+}
+
+#[djogi::djogi_test(sync_models = [OcSource, OcTarget])]
+async fn do_update_where_with_conflict_is_null_updates_only_empty_targets(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_target_with_nullable(&mut ctx, "alpha", 1, Some(100)).await;
+    seed_target_with_nullable(&mut ctx, "beta", 1, None).await;
+    seed_source_with_nullable(&mut ctx, "alpha", 5, Some(5), true).await;
+    seed_source_with_nullable(&mut ctx, "beta", 6, Some(6), true).await;
+
+    OcSource::objects()
+        .insert_into::<OcTarget, _, _>(|t, s| {
+            vec![
+                t.slug().copy_from(s.slug().as_insert_source()),
+                t.hits().copy_from(s.hits().as_insert_source()),
+                t.maybe_hits().copy_from(s.maybe_hits().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+            ]
+        })
+        .on_conflict_do_update_where(
+            ConflictTarget::columns([OcTarget::fields().slug()]),
+            |t| vec![t.maybe_hits().conflict_set(t.maybe_hits().excluded())],
+            |t| t.maybe_hits().conflict_is_null(),
+        )
+        .execute(&mut ctx)
+        .await
+        .unwrap();
+
+    let rows = OcTarget::objects()
+        .order_by(|f| f.slug().asc())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(rows[0].slug, "alpha");
+    assert_eq!(rows[0].maybe_hits, Some(100));
+    assert_eq!(rows[1].slug, "beta");
+    assert_eq!(rows[1].maybe_hits, Some(6));
+}
+
+#[djogi::djogi_test(sync_models = [OcSource, OcTarget])]
+async fn do_update_with_conflict_coalesce_excluded_keeps_existing_non_null_values(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_target_with_nullable(&mut ctx, "alpha", 1, Some(100)).await;
+    seed_target_with_nullable(&mut ctx, "beta", 1, None).await;
+    seed_source_with_nullable(&mut ctx, "alpha", 5, Some(5), true).await;
+    seed_source_with_nullable(&mut ctx, "beta", 6, Some(6), true).await;
+
+    OcSource::objects()
+        .insert_into::<OcTarget, _, _>(|t, s| {
+            vec![
+                t.slug().copy_from(s.slug().as_insert_source()),
+                t.hits().copy_from(s.hits().as_insert_source()),
+                t.maybe_hits().copy_from(s.maybe_hits().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+            ]
+        })
+        .on_conflict_do_update(ConflictTarget::columns([OcTarget::fields().slug()]), |t| {
+            vec![t
+                .maybe_hits()
+                .conflict_set_expr(t.maybe_hits().conflict_coalesce_excluded())]
+        })
+        .execute(&mut ctx)
+        .await
+        .unwrap();
+
+    let rows = OcTarget::objects()
+        .order_by(|f| f.slug().asc())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(rows[0].slug, "alpha");
+    assert_eq!(rows[0].maybe_hits, Some(100));
+    assert_eq!(rows[1].slug, "beta");
+    assert_eq!(rows[1].maybe_hits, Some(6));
+}
+
+#[djogi::djogi_test(sync_models = [OcSource, OcTarget])]
+async fn do_update_where_with_conflict_is_not_null_updates_only_filled_targets(
+    mut ctx: djogi::DjogiContext,
+) {
+    seed_target_with_nullable(&mut ctx, "alpha", 1, Some(100)).await;
+    seed_target_with_nullable(&mut ctx, "beta", 1, None).await;
+    seed_source_with_nullable(&mut ctx, "alpha", 5, Some(5), true).await;
+    seed_source_with_nullable(&mut ctx, "beta", 6, Some(6), true).await;
+
+    OcSource::objects()
+        .insert_into::<OcTarget, _, _>(|t, s| {
+            vec![
+                t.slug().copy_from(s.slug().as_insert_source()),
+                t.hits().copy_from(s.hits().as_insert_source()),
+                t.maybe_hits().copy_from(s.maybe_hits().as_insert_source()),
+                t.published().copy_from(s.published().as_insert_source()),
+            ]
+        })
+        .on_conflict_do_update_where(
+            ConflictTarget::columns([OcTarget::fields().slug()]),
+            |t| vec![t.maybe_hits().conflict_set(t.maybe_hits().excluded())],
+            |t| t.maybe_hits().conflict_is_not_null(),
+        )
+        .execute(&mut ctx)
+        .await
+        .unwrap();
+
+    let rows = OcTarget::objects()
+        .order_by(|f| f.slug().asc())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap();
+    assert_eq!(rows[0].slug, "alpha");
+    assert_eq!(rows[0].maybe_hits, Some(5));
+    assert_eq!(rows[1].slug, "beta");
+    assert_eq!(rows[1].maybe_hits, None);
 }
 
 #[djogi::djogi_test(sync_models = [OcSource, OcPartialTarget])]

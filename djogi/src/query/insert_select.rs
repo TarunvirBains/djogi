@@ -842,6 +842,64 @@ impl<T: Model> FieldRef<T, bool> {
     }
 }
 
+impl<T: Model, V> FieldRef<T, Option<V>> {
+    /// Build a predicate that is true when this target column is NULL, for
+    /// use in a conflict `WHERE` guard.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNull(Box::new(ExprNode::Field {
+                column: self.column(),
+            })),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build a predicate that is true when this target column is not NULL,
+    /// for use in a conflict `WHERE` guard.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_not_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_not_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNotNull(Box::new(ExprNode::Field {
+                column: self.column(),
+            })),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build `COALESCE(target.column, EXCLUDED.column)` over this nullable
+    /// target column, for use in a conflict `DO UPDATE SET` assignment.
+    /// ```ignore
+    /// .on_conflict_do_update(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set_expr(t.body().conflict_coalesce_excluded())],
+    /// )
+    /// ```
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn conflict_coalesce_excluded(self) -> ConflictExpr<T, Option<V>> {
+        ConflictExpr::from_node(ExprNode::Coalesce(vec![
+            ExprNode::Field {
+                column: self.column(),
+            },
+            ExprNode::Excluded {
+                column: self.column(),
+            },
+        ]))
+    }
+}
+
 impl<T: Model, V> ExcludedRef<T, V> {
     /// Build an equality predicate comparing this `EXCLUDED` column to
     /// another conflict expression, for use in a conflict `WHERE` guard.
@@ -943,6 +1001,40 @@ impl<T: Model, V> ExcludedRef<T, V> {
     {
         let e: Expr<V> = value.into();
         conflict_condition(self.node, CmpOp::Lte, e.node)
+    }
+}
+
+impl<T: Model, V> ExcludedRef<T, Option<V>> {
+    /// Build a predicate that is true when this `EXCLUDED` column is NULL,
+    /// for use in a conflict `WHERE` guard.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().excluded().conflict_is_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNull(Box::new(self.node)),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Build a predicate that is true when this `EXCLUDED` column is not
+    /// NULL, for use in a conflict `WHERE` guard.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().excluded().conflict_is_not_null(),
+    /// )
+    /// ```
+    pub fn conflict_is_not_null(self) -> ConflictCondition<T> {
+        ConflictCondition {
+            node: ExprNode::IsNotNull(Box::new(self.node)),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -2057,6 +2149,11 @@ impl<S: Model, T: Model> InsertSelectStmt<S, T> {
     /// `updated_at` policy as
     /// [`on_conflict_do_update`](Self::on_conflict_do_update) applies:
     /// nothing stamps `updated_at` unless the update closure assigns it.
+    /// Nullable columns can participate directly through
+    /// [`FieldRef::conflict_is_null`](crate::query::FieldRef::conflict_is_null),
+    /// [`FieldRef::conflict_is_not_null`](crate::query::FieldRef::conflict_is_not_null),
+    /// and the matching `EXCLUDED` helpers when the guard should depend on
+    /// whether a nullable value is present.
     /// # Example
     /// ```ignore
     /// .on_conflict_do_update_where(
@@ -2357,6 +2454,10 @@ mod tests {
             FieldRef::new("view_count")
         }
 
+        fn maybe_view_count(self) -> FieldRef<Target, Option<i32>> {
+            FieldRef::new("maybe_view_count")
+        }
+
         fn published(self) -> FieldRef<Target, bool> {
             FieldRef::new("published")
         }
@@ -2368,6 +2469,7 @@ mod tests {
         pk_type: PkType::HeerIdDesc,
         fields: &[
             field_descriptor("view_count", FieldSqlType::Integer, false),
+            field_descriptor("maybe_view_count", FieldSqlType::Integer, true),
             field_descriptor("published", FieldSqlType::Boolean, false),
         ],
         partition_by: None,
@@ -2672,6 +2774,42 @@ mod tests {
         );
         assert_eq!(asgn.target_column(), "view_count");
         assert!(matches!(asgn.value_node(), ExprNode::Add(_, _)));
+    }
+
+    #[test]
+    fn conflict_is_null_builds_target_postfix_predicate() {
+        let cond = FieldRef::<Target, Option<i32>>::new("maybe_view_count").conflict_is_null();
+        assert!(matches!(
+            cond.node,
+            ExprNode::IsNull(inner)
+                if matches!(*inner, ExprNode::Field { column } if column == "maybe_view_count")
+        ));
+    }
+
+    #[test]
+    fn conflict_is_not_null_builds_excluded_postfix_predicate() {
+        let cond = FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+            .excluded()
+            .conflict_is_not_null();
+        assert!(matches!(
+            cond.node,
+            ExprNode::IsNotNull(inner)
+                if matches!(*inner, ExprNode::Excluded { column } if column == "maybe_view_count")
+        ));
+    }
+
+    #[test]
+    fn conflict_coalesce_excluded_builds_same_column_coalesce_expr() {
+        let expr = FieldRef::<Target, Option<i32>>::new("maybe_view_count")
+            .conflict_coalesce_excluded();
+        match expr.node {
+            ExprNode::Coalesce(args) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], ExprNode::Field { column } if column == "maybe_view_count"));
+                assert!(matches!(args[1], ExprNode::Excluded { column } if column == "maybe_view_count"));
+            }
+            other => panic!("expected Coalesce(Field, Excluded), got {other:?}"),
+        }
     }
 
     #[test]

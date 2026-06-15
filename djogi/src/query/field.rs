@@ -1209,6 +1209,54 @@ impl<M: Model> DjogiField<M, bool> {
     }
 }
 
+impl<M: Model, V> DjogiField<M, Option<V>> {
+    /// Mirror of
+    /// [`FieldRef::conflict_is_null`](crate::query::FieldRef::conflict_is_null)
+    /// — see that method for the full contract.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_null(),
+    /// )
+    /// ```
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_null(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_null()
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_is_not_null`](crate::query::FieldRef::conflict_is_not_null)
+    /// — see that method for the full contract.
+    /// ```ignore
+    /// .on_conflict_do_update_where(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set(t.body().excluded())],
+    ///     |t| t.body().conflict_is_not_null(),
+    /// )
+    /// ```
+    #[must_use = "a ConflictCondition is inert until placed in an OnConflictClause"]
+    pub fn conflict_is_not_null(self) -> crate::query::insert_select::ConflictCondition<M> {
+        self.sql.conflict_is_not_null()
+    }
+
+    /// Mirror of
+    /// [`FieldRef::conflict_coalesce_excluded`](crate::query::FieldRef::conflict_coalesce_excluded)
+    /// — see that method for the full contract.
+    /// ```ignore
+    /// .on_conflict_do_update(
+    ///     ConflictTarget::columns([Doc::fields().slug()]),
+    ///     |t| vec![t.body().conflict_set_expr(t.body().conflict_coalesce_excluded())],
+    /// )
+    /// ```
+    #[must_use = "a ConflictExpr is lazy — use it in a DO UPDATE SET assignment"]
+    pub fn conflict_coalesce_excluded(
+        self,
+    ) -> crate::query::insert_select::ConflictExpr<M, Option<V>> {
+        self.sql.conflict_coalesce_excluded()
+    }
+}
+
 impl<M: Model, V> DjogiField<M, V> {
     /// `COUNT(column)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -6061,6 +6109,7 @@ pub mod optional_relation_support {
 mod tests {
     use super::*;
     use crate::__private::pg::SqlAccumulator;
+    use crate::expr::node::ExprNode;
     use crate::query::condition::{Condition, LookupOp};
 
     // Test-local fake model — satisfies the `Model` trait enough to feed
@@ -6468,6 +6517,42 @@ mod tests {
                 assert_eq!(field.value_as::<()>(), Some(&()));
             }
             other => panic!("expected IsNull field predicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn djogi_field_conflict_null_helpers_forward_to_sql_field_ref() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        assert!(matches!(
+            f.conflict_is_null().node,
+            ExprNode::IsNull(inner)
+                if matches!(*inner, ExprNode::Field { column } if column == "maybe_age")
+        ));
+        assert!(matches!(
+            f.conflict_is_not_null().node,
+            ExprNode::IsNotNull(inner)
+                if matches!(*inner, ExprNode::Field { column } if column == "maybe_age")
+        ));
+    }
+
+    #[test]
+    fn djogi_field_conflict_coalesce_excluded_forwards_to_sql_field_ref() {
+        let f = djogi_field_macro_support::__make_djogi_field::<FakeRow, Option<i64>>(
+            "maybe_age",
+            |row| &row.maybe_age,
+        );
+
+        match f.conflict_coalesce_excluded().node {
+            ExprNode::Coalesce(args) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], ExprNode::Field { column } if column == "maybe_age"));
+                assert!(matches!(args[1], ExprNode::Excluded { column } if column == "maybe_age"));
+            }
+            other => panic!("expected Coalesce(Field, Excluded), got {other:?}"),
         }
     }
 
