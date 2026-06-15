@@ -1,4 +1,4 @@
-//! Cluster 8δ T7.2 — runtime checks for the auto-emitted
+//! Runtime checks for the auto-emitted
 //! `impl Cacheable for {Model}` and `impl DeltaSyncCacheable for {Model}`.
 //!
 //! Ships in `djogi-macros/tests/` rather than `djogi/tests/` because
@@ -19,7 +19,7 @@
 //! `assert_id_type::<Model, ExpectedId>()` call at monomorphisation.
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//!   Plan: cluster-8delta-granular
 //!   §3 commit T7.2 — "Test names + assertions" bullet, plus the
 //!   T7.2 phase amendment block (Codex Finding 6 PK-variant fan-out).
 
@@ -92,7 +92,7 @@ pub struct SerialModel {
 }
 
 // `primary_key!`-declared custom PK type. The newtype wraps `i64` and
-// the auto-derive set added in Cluster 8δ T7.2 (Ord / PartialOrd /
+// the auto-derive set (Ord / PartialOrd /
 // serde::Serialize / Deserialize on top of the previous Debug / Clone /
 // Copy / PartialEq / Eq / Hash) ensures the inner value passes the
 // `Cacheable::Id: Hash + Eq + Clone + Ord + Send + Sync + 'static`
@@ -563,7 +563,7 @@ where
 /// `Cacheable::Fields` for every PK strategy resolves to the djogi-emitted
 /// `{Model}Fields` companion — never `()`, never a sassi-codegen-emitted
 /// collision struct. This is the load-bearing surface check for the
-/// Cluster 2 issue #121 cutover (route Cacheable emit through
+/// issue #121 cutover (route Cacheable emit through
 /// `sassi_codegen::generate_cacheable_impl` with
 /// `CacheableFieldsMode::external(...)`).
 #[test]

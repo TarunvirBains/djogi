@@ -1,4 +1,4 @@
-//! Adopter-crate isolation fixture for Cluster 8δ T7.4 macro path-routing.
+//! Adopter-crate isolation fixture for macro path-routing.
 //!
 //! See `../Cargo.toml` for the why-this-is-its-own-crate explanation.
 //! In short: this crate's `[dependencies]` table contains exactly one
@@ -52,7 +52,7 @@
 //! the trybuild era and still holds under lihaaf).
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//!   Plan: cluster-8delta-granular
 //!   §3 commit T7.4 — compile-fixture bullet.
 //!
 //! GitHub: djogi#124.
@@ -180,7 +180,7 @@ fn _build_punnu_watermarked() -> ::djogi::cache::Punnu<WatermarkedRow> {
 
 /// Witnesses that `DjogiDeltaSyncMeta::WATERMARK_COLUMN` resolves
 /// through `djogi::cache` for both branches. The macro emits this impl
-/// alongside `DeltaSyncCacheable` (cluster 8δ T8.5) so the fetcher can
+/// alongside `DeltaSyncCacheable` so the fetcher can
 /// generate `WHERE <col> >= $since` SQL without runtime field-name
 /// reflection.
 fn _watermark_column_default() -> &'static str {
