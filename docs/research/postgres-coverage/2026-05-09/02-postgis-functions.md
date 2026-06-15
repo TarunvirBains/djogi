@@ -1,4 +1,4 @@
-> [Back to README](../../../../ReadMe.MD)
+> [Back to README](../../../../README.md)
 
 # PostGIS function coverage (2026-05-09)
 

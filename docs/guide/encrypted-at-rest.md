@@ -1,6 +1,6 @@
 # Encrypted at Rest
 
-> [Back to index](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to index](./index.md) · [Back to README](../../README.md)
 
 Djogi ships a built-in **encrypted-at-rest field codec** — `aes256_gcm_v1` —
 that transparently encrypts a model's `String` field on write and decrypts it on

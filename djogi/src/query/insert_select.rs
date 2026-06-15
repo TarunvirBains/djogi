@@ -2539,7 +2539,7 @@ mod tests {
     //! We reach through the `FieldRef` API to build column mappings so
     //! the `pub(crate)` fields on [`InsertSelectColumn`] never leak
     //! into the test module's observed surface (same pattern as the
-    //! Task 8 `FilterClause` tests and the bulk-update builder tests).
+    //! `FilterClause` tests and the bulk-update builder tests).
 
     use super::*;
     use crate::descriptor::{FieldSqlType, ModelDescriptor, PkType, field_descriptor};

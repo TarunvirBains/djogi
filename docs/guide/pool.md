@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Connection Pool — DjogiPool
 
@@ -407,6 +407,58 @@ runtime application pools remain caller-owned.
 
 See https://github.com/TarunvirBains/heeranjid-sql/blob/main/README.md and
 https://github.com/TarunvirBains/HeeRanjID/issues/49.
+
+---
+
+## Context Ownership & Pool-Based Sharing
+
+When writing services or web handlers (e.g. using Axum), developers often attempt to store `DjogiContext` inside shared application state or clone it across task boundaries. This fails because **`DjogiContext` does not implement `Clone`**. 
+
+### Why DjogiContext is not Clone
+
+`DjogiContext` is a stateful handle that tracks:
+* Active transaction scopes (`atomic()` blocks) and savepoints.
+* The currently applied tenant ID and `SET LOCAL app.tenant_id` state.
+* Authentication context and user-facing redaction rules.
+* Statement/pool state at the database driver boundary.
+
+Cloning a context would lead to race conditions and inconsistent connection state (such as multiple concurrent tasks attempting to mutate transaction properties or GUCs on the same connection).
+
+### The Pool-Sharing Pattern
+
+The correct architecture is to store and clone the **`DjogiPool`**, which implements `Clone` and is safe to share across threads/tasks. You then derive a fresh, short-lived `DjogiContext` on demand for each operation.
+
+```rust
+use djogi::prelude::*;
+
+#[derive(Clone)]
+pub struct UserService {
+    pool: DjogiPool,
+}
+
+impl UserService {
+    pub fn new(pool: DjogiPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn fetch_user(&self, id: HeerId) -> Result<User, DjogiError> {
+        // Create a fresh context from the cloned pool handle
+        let mut ctx = DjogiContext::from_pool(self.pool.clone());
+        
+        User::objects()
+            .filter(|f| f.id().eq(id))
+            .fetch_one(&mut ctx)
+            .await
+    }
+}
+```
+
+### Anti-Patterns to Avoid
+
+> [!WARNING]
+> Do not attempt to bypass `DjogiContext` non-clonability with interior mutability wraps:
+> * **Wrapping in `RefCell<DjogiContext>`:** This breaks `Send` bounds, preventing the service from being used inside async tasks or route handlers (like Axum or Actix).
+> * **Wrapping in `Arc<Mutex<DjogiContext>>`:** This serializes all database queries across your application, causing severe performance bottlenecks, query queue contention, and potential deadlocks when nested under transactions.
 
 ---
 

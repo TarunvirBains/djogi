@@ -1288,7 +1288,7 @@ pub(crate) fn push_tail_with_ctx<T: Model>(
     push_order_limit_offset(acc, qs, ctx);
     // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
     // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
-    // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
+    // `LockMode::None` is a no-op so the SELECT shape without row-lock is
     // byte-for-byte preserved for querysets that never touched the
     // lock builders.
     qs.lock.push_tail(acc);
@@ -3493,7 +3493,7 @@ mod tests {
         assert_eq!(sql, "SELECT id FROM fakes");
     }
 
-    // ── Task 9: UPDATE / DELETE emitter ───────────────────────────────
+    // ── UPDATE / DELETE emitter ───────────────────────────────────────
 
     #[test]
     fn update_single_assignment_emits_set_and_updated_at() {

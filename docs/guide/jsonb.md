@@ -1,4 +1,4 @@
-> [Back to Guides](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to Guides](./index.md) · [Back to README](../../README.md)
 
 Spec: [`docs/spec/jsonb.md`](../spec/jsonb.md) — full JSONB schema field specification.
 

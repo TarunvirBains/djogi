@@ -52,7 +52,7 @@
 //! is safe — the fixture's target subdir is isolated.
 //!
 //! Spec anchor:
-//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//!   Plan: cluster-8delta-granular
 //!   §3 commit T7.4 — compile-fixture bullet (this driver invokes the
 //!   stronger sibling complementing the same-named lihaaf compile_pass
 //!   fixture).

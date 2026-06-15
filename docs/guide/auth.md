@@ -1,6 +1,6 @@
 # Authentication
 
-> [Back to index](./index.md) · [Back to README](../../ReadMe.MD)
+> [Back to index](./index.md) · [Back to README](../../README.md)
 
 Djogi ships a **narrow authentication substrate** — typed primitives you plug your own provider into, not a full session platform. Phase 5.5 gives you:
 

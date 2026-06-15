@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Model-first web framework for Rust — web-framework-agnostic core; Axum integration opt-in via the `axum` feature flag"
 documentation = "https://docs.rs/djogi"
-readme = "../ReadMe.MD"
+readme = "../README.md"
 keywords = ["orm", "postgres", "web-framework", "model", "migrations"]
 categories = ["database", "web-programming", "asynchronous"]
 

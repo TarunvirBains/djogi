@@ -125,7 +125,7 @@ Djogi is a **Model-first framework** — it owns the data layer
 derivation chain (ORM, migrations, descriptors, audit trail,
 shell bindings). It explicitly does not wrap or compete with
 HTTP frameworks; integrations with Axum / Warp / Actix / etc.
-ship behind opt-in feature flags. See `ReadMe.MD` and
+ship behind opt-in feature flags. See `README.md` and
 `docs/spec/scope.md` for the boundaries.
 
 ## Pre-publish framing

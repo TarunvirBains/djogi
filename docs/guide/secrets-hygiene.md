@@ -2,7 +2,7 @@
      detects; every URL, password, and env-assignment in the prose below is an
      obvious pedagogical example, not a real credential. -->
 
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to README](../../README.md) | [All Guides](./index.md)
 
 # Secrets Hygiene
 

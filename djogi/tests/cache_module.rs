@@ -1,19 +1,19 @@
-//! Cluster 8δ T7.1 — `djogi::cache` re-export module tests.
+//! `djogi::cache` re-export module tests.
 //!
 //! Pins the surface at the type level: every test compiles a value of
 //! the re-exported type to prove the symbol is reachable through
 //! `djogi::cache::*` without an explicit `sassi` dep on the consumer
 //! side. The auto-emitted `Cacheable` impl from `#[derive(Model)]`
-//! (T7.2) does NOT exist yet in this commit, so the tests hand-roll a
+//! does NOT exist yet, so the tests hand-roll a
 //! minimal `Cacheable` impl on a tiny test type instead of leaning on
 //! `#[model]`.
 //!
-//! Spec anchor: `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 commit T7.1 — "Test names + assertions" bullet.
+//! Spec anchor: `Plan: cluster-8delta-granular`
+//! "Test names + assertions" bullet.
 //!
 //! # Why these tests live in `djogi/tests/`
 //!
-//! Per the cluster plan, the surface check is an integration-level
+//! The surface check is an integration-level
 //! consumer test: it verifies that someone writing
 //! `use djogi::cache::*;` (and only `djogi` in their `Cargo.toml`)
 //! can actually reach `Punnu`, `BasicPredicate`, etc. Putting it in

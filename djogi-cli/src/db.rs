@@ -27,7 +27,7 @@
 //! CI script can treat any `2` as "operator must intervene; nothing
 //! happened" without distinguishing the two cases. `1` is reserved
 //! for "we tried; something broke" so a CI can retry. The matrix is
-//! also documented in `ReadMe.MD` and `docs/spec/configuration.md`
+//! also documented in `README.md` and `docs/spec/configuration.md`
 //! so the operator-facing surface stays in sync.
 
 use std::io::{BufRead, Write};
