@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [Gap Analysis](../spec/orm-gap-analysis.md)
+> [Back to README](../../README.md) | [Gap Analysis](../spec/orm-gap-analysis.md)
 
 # Django 6.0 Transactions & Model Inheritance — Deep Dive for Djogi
 

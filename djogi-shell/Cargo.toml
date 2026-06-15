@@ -9,7 +9,7 @@ authors.workspace = true
 rust-version.workspace = true
 description = "Interactive Rhai shell for the Djogi framework — model bindings, transaction control, REPL"
 documentation = "https://docs.rs/djogi-shell"
-readme = "../ReadMe.MD"
+readme = "../README.md"
 keywords = ["djogi", "rhai", "shell", "repl", "orm"]
 categories = ["command-line-utilities", "database"]
 # The Rhai shell is deferred in v0.1.0-alpha.0; not part of the alpha

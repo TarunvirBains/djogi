@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD) | [Shipped guides](../guide/index.md)
+> [Back to README](../../README.md) | [Shipped guides](../guide/index.md)
 
 # Djogi Roadmap
 

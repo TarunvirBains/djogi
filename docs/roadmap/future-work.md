@@ -1,4 +1,4 @@
-> [Back to roadmap index](./index.md) | [Back to README](../../ReadMe.MD)
+> [Back to roadmap index](./index.md) | [Back to README](../../README.md)
 
 # Djogi Roadmap — Future Work
 

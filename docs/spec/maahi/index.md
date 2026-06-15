@@ -1,4 +1,4 @@
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md)
 
 # Maahi — Djogi's Admin Console
 
@@ -54,4 +54,4 @@ The legacy HTMX + Askama renderer described in earlier draft specs is not implem
 
 ---
 
-> [Back to README](../../../ReadMe.MD) | [All Specs](../index.md)
+> [Back to README](../../../README.md) | [All Specs](../index.md)

@@ -1,11 +1,11 @@
-> [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
+> [Back to README](../../README.md) | [All Specs](./index.md)
 
 # Positioning — Djogi in the Rust Data Tier
 
 **Last verified:** 2026-05-10
 **Refresh cadence:** spot-check upstream feature lists at each minor version (currently pre-v0.1.0; first scheduled re-verification immediately precedes the v0.1.0 publish gate).
 **Source draft baseline:** the migration-only matrix at [`../research/migrations/2026-04-22/topics/12-rust-ecosystem-contrast.md`](../research/migrations/2026-04-22/topics/12-rust-ecosystem-contrast.md) and the broader 2026-05-09 working draft.
-**Companion:** the [`ReadMe.MD`](../../ReadMe.MD) opening sets Djogi's design-north-star and what Djogi owns versus delegates; this doc widens the lens to where Djogi sits relative to other Rust data-tier projects so adopters can decide quickly.
+**Companion:** the [`README.md`](../../README.md) opening sets Djogi's design-north-star and what Djogi owns versus delegates; this doc widens the lens to where Djogi sits relative to other Rust data-tier projects so adopters can decide quickly.
 
 ---
 

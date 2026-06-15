@@ -138,6 +138,6 @@ All of those land in the Phase 7.5 plan when it kicks off.
 
 - Gem source: <https://github.com/fatkodima/online_migrations>
 - README dangerous-ops list: see the gem's "Checks" section
-- Djogi roadmap: [`ReadMe.MD` Status section](../../ReadMe.MD)
+- Djogi roadmap: [`README.md` Status section](../../README.md)
 - Djogi migration spec: [`docs/spec/migrations.md`](./migrations.md)
 - Djogi decisions log: [`docs/spec/decisions.md`](./decisions.md) (rows §78 + §79 cover the Phase 7 / 7.5 classification handoff)

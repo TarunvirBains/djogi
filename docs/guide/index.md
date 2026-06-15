@@ -1,4 +1,4 @@
-> [Back to README](../../ReadMe.MD)
+> [Back to README](../../README.md)
 
 # Djogi Guides
 
