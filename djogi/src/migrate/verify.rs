@@ -43,8 +43,8 @@
 //! reviewer ding. Current assignments:
 //! | Code | Severity | Meaning |
 //! |------|----------|---------|
-//! | D601 | Error | Snapshot table missing from live DB. |
-//! | D602 | Error | Live table not present in snapshot. |
+//! | D601 | Error | Snapshot table missing from live DB. Ancillary `{table}_outbox` tables are scoped with their parent model. |
+//! | D602 | Error | Live table not present in snapshot. Auto-generated `{table}_outbox` tables are claimed by their parent's bucket. |
 //! | D603 | Error | Snapshot column missing from live DB. |
 //! | D604 | Error | Live column not present in snapshot. |
 //! | D605 | Error | Nullability drift between snapshot and live. |
@@ -548,6 +548,49 @@ pub async fn verify_bucket(
         applied_count,
         unfinished_count,
     })
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ScopeTableSets {
+    this_bucket_tables: std::collections::BTreeSet<String>,
+    all_app_tables: std::collections::BTreeSet<String>,
+    inventory_is_empty: bool,
+}
+
+fn scope_table_sets<'a, I>(descriptors: I, bucket_app: &str) -> ScopeTableSets
+where
+    I: IntoIterator<Item = &'a crate::descriptor::ModelDescriptor>,
+{
+    use crate::AppDescriptor;
+    use crate::migrate::naming::outbox_table_name;
+
+    let mut sets = ScopeTableSets {
+        inventory_is_empty: true,
+        ..ScopeTableSets::default()
+    };
+    for m in descriptors {
+        sets.inventory_is_empty = false;
+        let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+        let is_named = label != AppDescriptor::GLOBAL_LABEL;
+        let matches_bucket = label == bucket_app;
+
+        if matches_bucket {
+            sets.this_bucket_tables.insert(m.table_name.to_string());
+        }
+        if is_named {
+            sets.all_app_tables.insert(m.table_name.to_string());
+        }
+        if m.has_outbox {
+            let outbox = outbox_table_name(m.table_name);
+            if matches_bucket {
+                sets.this_bucket_tables.insert(outbox.clone());
+            }
+            if is_named {
+                sets.all_app_tables.insert(outbox);
+            }
+        }
+    }
+    sets
 }
 
 /// Walk the ledger rows and emit a D622 diagnostic for each row whose
@@ -1286,6 +1329,14 @@ async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>
 /// - D607 — column DEFAULT differs (Error).
 /// - D608 — primary key column list differs (Error).
 /// - D609 — foreign-key shape differs (Error).
+/// # Ancillary outbox tables (djogi#424)
+///
+/// Models that opt into `#[model(events)]` (`has_outbox == true`) own
+/// an ancillary `{table}_outbox` table with no descriptor of its own.
+/// `live_schema_for_repair` scopes that outbox table into the same
+/// bucket as its parent, so it appears in both the snapshot and the
+/// scoped live projection and therefore triggers neither D601 nor
+/// D602.
 fn diff_tables(
     snapshot: &AppliedSchema,
     live: &AppliedSchema,
@@ -1938,21 +1989,14 @@ pub(super) async fn live_schema_for_repair(
     // an empty descriptor inventory means no model crate is linked, so
     // a named bucket cannot be scoped from inventory at all.
     use crate::AppDescriptor;
-    use crate::descriptor::ModelDescriptor;
-    let mut this_bucket_tables: std::collections::BTreeSet<&str> =
-        std::collections::BTreeSet::new();
-    let mut all_app_tables: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    let mut inventory_is_empty = true;
-    for m in inventory::iter::<ModelDescriptor> {
-        inventory_is_empty = false;
-        let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
-        if label == bucket.app.as_str() {
-            this_bucket_tables.insert(m.table_name);
-        }
-        if label != AppDescriptor::GLOBAL_LABEL {
-            all_app_tables.insert(m.table_name);
-        }
-    }
+    let ScopeTableSets {
+        this_bucket_tables,
+        all_app_tables,
+        inventory_is_empty,
+    } = scope_table_sets(
+        inventory::iter::<crate::descriptor::ModelDescriptor>(),
+        bucket.app.as_str(),
+    );
 
     let is_global_bucket = bucket.app.as_str() == AppDescriptor::GLOBAL_LABEL;
 
@@ -2006,6 +2050,8 @@ pub(super) async fn live_schema_for_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::descriptor::model_descriptor;
+    use crate::descriptor::{ModelDescriptor, PkType};
     use crate::migrate::schema::{
         ColumnSchema, ForeignKeySchema, IndexKindSchema, IndexSchema, IndexTargetSchema,
         IndexTypeSchema, OnDeleteSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema,
@@ -2157,7 +2203,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scope_named_bucket_includes_outbox_table() {
+        static M: ModelDescriptor = ModelDescriptor {
+            app: Some("billing"),
+            has_outbox: true,
+            ..model_descriptor("Invoice", "invoices", PkType::HeerIdDesc, &[])
+        };
+        let sets = scope_table_sets([&M], "billing");
+        assert!(sets.this_bucket_tables.contains("invoices"));
+        assert!(sets.this_bucket_tables.contains("invoices_outbox"));
+        assert!(!sets.inventory_is_empty);
+    }
+
+    #[test]
+    fn scope_global_bucket_excludes_named_app_outbox_table() {
+        static M: ModelDescriptor = ModelDescriptor {
+            app: Some("billing"),
+            has_outbox: true,
+            ..model_descriptor("Invoice", "invoices", PkType::HeerIdDesc, &[])
+        };
+        let sets = scope_table_sets([&M], "");
+        assert!(sets.all_app_tables.contains("invoices"));
+        assert!(sets.all_app_tables.contains("invoices_outbox"));
+        assert!(sets.this_bucket_tables.is_empty());
+    }
+
+    #[test]
+    fn scope_global_outbox_stays_global() {
+        static M: ModelDescriptor = ModelDescriptor {
+            app: None,
+            has_outbox: true,
+            ..model_descriptor("Event", "events", PkType::HeerIdDesc, &[])
+        };
+        let sets = scope_table_sets([&M], "");
+        assert!(sets.all_app_tables.is_empty());
+        assert!(sets.this_bucket_tables.contains("events"));
+        assert!(sets.this_bucket_tables.contains("events_outbox"));
+    }
+
+    #[test]
+    fn scope_orphan_outbox_lookalike_still_unclaimed() {
+        static M: ModelDescriptor = ModelDescriptor {
+            app: Some("chat"),
+            has_outbox: false,
+            ..model_descriptor("Message", "messages", PkType::HeerIdDesc, &[])
+        };
+        let sets = scope_table_sets([&M], "chat");
+        assert!(sets.this_bucket_tables.contains("messages"));
+        assert!(!sets.this_bucket_tables.contains("messages_outbox"));
+        assert!(!sets.all_app_tables.contains("messages_outbox"));
+    }
+
+    #[test]
+    fn scope_empty_inventory_sets_standalone_signal() {
+        let sets = scope_table_sets(std::iter::empty(), "billing");
+        assert!(sets.inventory_is_empty);
+        assert!(sets.this_bucket_tables.is_empty());
+        assert!(sets.all_app_tables.is_empty());
+    }
+
     // ── diff_tables ──────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_tables_outbox_in_scope_emits_no_d601_d602() {
+        let mut snap = empty_snapshot();
+        snap.models.insert(
+            "invoices".to_string(),
+            table("invoices", vec![col("id", "BIGINT", false)]),
+        );
+        snap.models.insert(
+            "invoices_outbox".to_string(),
+            table("invoices_outbox", vec![col("id", "BIGINT", false)]),
+        );
+
+        let mut live = empty_snapshot();
+        live.models.insert(
+            "invoices".to_string(),
+            table("invoices", vec![col("id", "bigint", false)]),
+        );
+        live.models.insert(
+            "invoices_outbox".to_string(),
+            table("invoices_outbox", vec![col("id", "bigint", false)]),
+        );
+
+        let mut diagnostics = Vec::new();
+        diff_tables(&snap, &live, &mut diagnostics);
+
+        let outbox_d601 = diagnostics
+            .iter()
+            .any(|d| d.code == "D601" && d.location.as_deref() == Some("invoices_outbox"));
+        let outbox_d602 = diagnostics
+            .iter()
+            .any(|d| d.code == "D602" && d.location.as_deref() == Some("invoices_outbox"));
+        assert!(!outbox_d601);
+        assert!(!outbox_d602);
+    }
 
     #[test]
     fn diff_tables_clean_match_emits_no_diagnostics() {

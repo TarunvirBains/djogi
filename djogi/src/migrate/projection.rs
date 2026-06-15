@@ -995,7 +995,7 @@ fn project_outbox_table(
         .get(m.type_name)
         .cloned()
         .unwrap_or_else(|| pk_sql_type_text(&m.pk_type));
-    let table = format!("{}_outbox", m.table_name);
+    let table = crate::migrate::naming::outbox_table_name(m.table_name);
 
     TableSchema {
         app: m.app.map(|s| s.to_string()),
@@ -1037,7 +1037,7 @@ fn project_outbox_table(
 }
 
 fn project_outbox_pending_index(table: &str) -> IndexSchema {
-    let outbox_table = format!("{table}_outbox");
+    let outbox_table = crate::migrate::naming::outbox_table_name(table);
     IndexSchema {
         extension_dependency: None,
         include: Vec::new(),

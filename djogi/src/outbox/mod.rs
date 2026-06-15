@@ -180,7 +180,7 @@ where
     // valid 57-63 byte table name past Postgres's 63-byte identifier
     // limit. Matches the defense-in-depth check in
     // `query::refresh::fetch_delta` and `outbox::worker::validate_table_ident`.
-    let outbox_table = format!("{}_outbox", T::table_name());
+    let outbox_table = crate::migrate::naming::outbox_table_name(T::table_name());
     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
         DjogiError::Db(crate::error::DbError::other(format!(
             "outbox emit_event: invalid outbox table name {outbox_table:?}: {e:?}"
@@ -239,7 +239,7 @@ where
         return Ok(());
     }
 
-    let outbox_table = format!("{}_outbox", T::table_name());
+    let outbox_table = crate::migrate::naming::outbox_table_name(T::table_name());
     crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
         DjogiError::Db(crate::error::DbError::other(format!(
             "outbox emit_save_events_batch: invalid outbox table name {outbox_table:?}: {e:?}"

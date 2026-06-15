@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.17] - 2026-06-15
+
 ### Added
 
 - feat(#442): typed CTE query builder — `QuerySet::with` and
@@ -15,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `offset`, `cycle`, `exclude_cycle_rows`, and typed terminal methods
   (`fetch_all`, `first`, `count`, `exists`). `RecursiveArm<M>` builds
   self-referential recursive terms with a typed join edge.
+
+### Fixed
+
+- fix(#424): `djogi migrations verify` no longer emits contradictory D601/D602
+  diagnostics for auto-generated `{parent}_outbox` tables of named-app models.
+  Outbox tables are now scoped with their parent model's bucket during verify
+  bucket projection. `migrate::naming::outbox_table_name` is the single source
+  of truth for the `{parent}_outbox` naming convention across projection,
+  verify, runtime outbox writes, and refresh polling.
 
 ## [0.1.0-alpha.15] - 2026-06-13
 
