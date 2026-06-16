@@ -4979,7 +4979,8 @@ mod tests {
 
     #[test]
     fn parses_scope_to_custom_ident_pairs() {
-        let list: syn::MetaList = parse_quote!(visage_names(public = UserSummary, admin = AdminUserView));
+        let list: syn::MetaList =
+            parse_quote!(visage_names(public = UserSummary, admin = AdminUserView));
         let parsed = parse_visage_names_list(&list).expect("valid visage_names parses");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].0, "public");

@@ -278,10 +278,7 @@ fn unknown_scope_error(
     )
 }
 
-fn validate_visage_names(
-    struct_item: &ItemStruct,
-    model_attrs: &ModelAttrs,
-) -> syn::Result<()> {
+fn validate_visage_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
     let source = &struct_item.ident;
     let custom_scope_keys: Vec<&str> = model_attrs
         .visage_scopes
@@ -328,7 +325,10 @@ fn validate_visage_names(
             let custom_part = if custom_scope_keys.is_empty() {
                 "no custom scopes declared on this model".to_string()
             } else {
-                format!("custom scopes on this model: {}", custom_scope_keys.join(", "))
+                format!(
+                    "custom scopes on this model: {}",
+                    custom_scope_keys.join(", ")
+                )
             };
             return Err(syn::Error::new(
                 custom_ident.span(),
