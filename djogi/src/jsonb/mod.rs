@@ -110,6 +110,23 @@ impl<T> Jsonb<T> {
     }
 }
 
+/// Structural equality over both the typed `data` and the preserved
+/// unknown-field `extra` map.
+///
+/// `extra` is compared deliberately: per-audience JSONB projections
+/// (`docs/spec/jsonb-per-audience-schema.md`) detect accidental
+/// admin-only-key leaks at runtime by observing whether unknown keys
+/// were preserved on a fetched projection. A `PartialEq` that ignored
+/// `extra` would let a leak through the parity gate
+/// (`djogi::testing::assert_derived_parity`) undetected. `UnknownField`
+/// is `serde_json::Value`, which implements `PartialEq`, so only
+/// `T: PartialEq` is required.
+impl<T: PartialEq> PartialEq for Jsonb<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.extra == other.extra
+    }
+}
+
 // ── Sassi cache-boundary projection ───────────────────────────────────────
 // `Jsonb<T>` is a *database* representation, not a Sassi wire type.
 // `to_jsahibon` is the explicit cache-boundary projection per the
@@ -452,5 +469,40 @@ mod tests {
         let back: serde_json::Value = mir.into();
         assert_eq!(back["name"], json!("x"));
         assert_eq!(back["value"], json!(9));
+    }
+
+    #[test]
+    fn partial_eq_compares_data_and_extra() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+        struct Schema {
+            a: i32,
+        }
+
+        // Equal data + equal (empty) extra → equal.
+        let lhs = Jsonb::new(Schema { a: 1 });
+        let rhs = Jsonb::new(Schema { a: 1 });
+        assert_eq!(lhs, rhs);
+
+        // Differing typed data → not equal.
+        let other_data = Jsonb::new(Schema { a: 2 });
+        assert_ne!(lhs, other_data);
+
+        // Equal typed data but one side carries an unknown key in `extra`
+        // (the exact leak shape the parity gate must catch). `extra` is
+        // pub(crate) with no public mutator, so populate it through
+        // Deserialize from a JSON object with an extra key.
+        let with_extra: Jsonb<Schema> =
+            serde_json::from_value(serde_json::json!({ "a": 1, "leaked": "x" }))
+                .expect("deserialize with unknown key");
+        assert!(
+            !with_extra.extra().is_empty(),
+            "guard: extra must be populated"
+        );
+        assert_ne!(
+            lhs, with_extra,
+            "PartialEq must observe the `extra` difference, not just `data`"
+        );
     }
 }
