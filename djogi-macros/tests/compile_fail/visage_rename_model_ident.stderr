@@ -1,7 +1,7 @@
 error: `visage_names(...)` custom name `User` collides with the model type `User`. Pick a name distinct from the model.
  --> $DIR/visage_rename_model_ident.rs:4:74
   |
-4 | ...nt_users", visage_names(public = User))]
-  |                                     ^^^^
+4 | #[model(table = "visage_rename_model_ident_users", visage_names(public = User))]
+  |                                                                          ^^^^
 
 error: aborting due to 1 previous error

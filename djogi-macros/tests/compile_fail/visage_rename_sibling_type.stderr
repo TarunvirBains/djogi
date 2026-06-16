@@ -1,7 +1,7 @@
 error: `visage_names(...)` custom name `UserFilter` collides with the `UserFilter` type the derive emits for model `User` (the `Filter` sibling). Pick a name that does not end in a reserved derive suffix (`Fields`, `SqlFields`, `Filter`, `Related`, `OuterRef`, `Path`, `Computed`) over the model name.
  --> $DIR/visage_rename_sibling_type.rs:7:75
   |
-7 | ...users", visage_names(public = UserFilter))]
-  |                                  ^^^^^^^^^^
+7 | #[model(table = "visage_rename_sibling_type_users", visage_names(public = UserFilter))]
+  |                                                                           ^^^^^^^^^^
 
 error: aborting due to 1 previous error
