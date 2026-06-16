@@ -375,6 +375,17 @@ fn parse_name_value(value: &Expr) -> syn::Result<syn::Ident> {
 }
 
 fn parse_ty_value(value: &Expr) -> syn::Result<syn::Type> {
+    // If the value is a string literal (e.g. `ty = "Jsonb<X>"`), parse its
+    // string content directly as a Rust type. This allows generic types
+    // containing angle brackets to bypass expression-parsing limits.
+    if let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(lit_str),
+        ..
+    }) = value
+    {
+        return lit_str.parse::<syn::Type>();
+    }
+
     // Common shape: `ty = Site` parses to `Expr::Path`. We promote the
     // path back into a `syn::Type` via stringification + reparse so
     // generic forms (`ty = Option<Site>`) and qualified paths also
@@ -1006,8 +1017,6 @@ pub fn cross_check(
     relation_form_exposures: &[(String, Vec<&'static str>)],
     pk_is_none: bool,
 ) -> syn::Result<()> {
-    let _ = storage_field_types;
-
     // E_DJG_VDF_015 — `pk = None` host model.
     if pk_is_none && !derived.is_empty() {
         return Err(syn::Error::new(
@@ -1090,6 +1099,37 @@ pub fn cross_check(
                          each derived entry's name must be unique within every scope \
                          it targets (E_DJG_VDF_003)",
                         scope.key
+                    ),
+                ));
+            }
+        }
+    }
+
+    // E_DJG_VDF_017 — JSONB simple-column passthrough. A derived entry
+    // whose `sql` is a simple reference (bare or simple-quoted ident) to a
+    // same-host storage column whose Rust type is `Jsonb<...>` would ship
+    // the full storage JSON to the wire; the projected Jsonb<NarrowSchema>
+    // deserializes admin-only keys into `extra` and re-emits them on
+    // serialize, leaking them to the narrow audience. The derived `name`
+    // and `ty` are NOT escape hatches — same-name, cross-name, quoted, and
+    // derived-side type-alias spellings all leak identically. Storage-side
+    // type aliases bypass condition 2 (token space cannot resolve them) and
+    // are caught at runtime by the parity gate (spec §OQ-5).
+    for d in derived {
+        for (col, col_ty) in storage_field_types {
+            if sql_is_simple_reference_to(&d.sql, col) && type_is_jsonb(col_ty) {
+                let ty_str = quote::ToTokens::to_token_stream(&d.ty).to_string();
+                return Err(syn::Error::new(
+                    d.sql_span,
+                    format!(
+                        "derived field projects storage `Jsonb` column `{col}` via \
+                         simple-column passthrough (`sql = \"{}\"`), which leaks every \
+                         key of `{col}` to the projected `{ty_str}` through its preserved \
+                         unknown-field (`extra`) map on re-serialize. Replace the \
+                         passthrough with an explicit narrowing builder, e.g. \
+                         `jsonb_build_object('field', {col}->'field', ...)`, naming only \
+                         the keys the narrow audience may see (E_DJG_VDF_017)",
+                        d.sql.trim(),
                     ),
                 ));
             }
@@ -1301,7 +1341,11 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
     // The last segment must be `Option` in every accepted spelling.
     // `syn::Ident` compares against `&str` directly (PartialEq<str>),
     // matching how the rest of the macro crate checks segment idents.
-    if !path.segments.last().is_some_and(|seg| seg.ident == "Option") {
+    if !path
+        .segments
+        .last()
+        .is_some_and(|seg| seg.ident == "Option")
+    {
         return false;
     }
     match path.segments.len() {
@@ -1349,8 +1393,7 @@ fn type_is_jsonb(ty: &syn::Type) -> bool {
         return false;
     };
     path.segments.last().is_some_and(|seg| {
-        seg.ident == "Jsonb"
-            && matches!(seg.arguments, syn::PathArguments::AngleBracketed(_))
+        seg.ident == "Jsonb" && matches!(seg.arguments, syn::PathArguments::AngleBracketed(_))
     })
 }
 
@@ -1659,7 +1702,8 @@ mod tests {
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["public"])];
-        let err = cross_check(&parsed, &columns, &[], &[], false).expect_err("collision must reject");
+        let err =
+            cross_check(&parsed, &columns, &[], &[], false).expect_err("collision must reject");
         assert!(err.to_string().contains("E_DJG_VDF_002"));
     }
 
@@ -1838,11 +1882,23 @@ mod tests {
         assert!(!sql_is_simple_reference_to("\"metadata\"", "other_col"));
         // Compound / non-simple shapes do NOT match (adopter-owned territory).
         assert!(!sql_is_simple_reference_to("(metadata)", "metadata"));
-        assert!(!sql_is_simple_reference_to("coalesce(metadata, '{}'::jsonb)", "metadata"));
-        assert!(!sql_is_simple_reference_to("metadata || '{}'::jsonb", "metadata"));
-        assert!(!sql_is_simple_reference_to("jsonb_set(metadata, '{}', '{}')", "metadata"));
+        assert!(!sql_is_simple_reference_to(
+            "coalesce(metadata, '{}'::jsonb)",
+            "metadata"
+        ));
+        assert!(!sql_is_simple_reference_to(
+            "metadata || '{}'::jsonb",
+            "metadata"
+        ));
+        assert!(!sql_is_simple_reference_to(
+            "jsonb_set(metadata, '{}', '{}')",
+            "metadata"
+        ));
         assert!(!sql_is_simple_reference_to("(SELECT metadata)", "metadata"));
-        assert!(!sql_is_simple_reference_to("jsonb_build_object('a', metadata)", "metadata"));
+        assert!(!sql_is_simple_reference_to(
+            "jsonb_build_object('a', metadata)",
+            "metadata"
+        ));
         // Doubly-quoted / embedded-quote shapes are NOT simple quoted idents.
         assert!(!sql_is_simple_reference_to("\"\"metadata\"\"", "metadata"));
         assert!(!sql_is_simple_reference_to("\"meta\"\"data\"", "metadata"));
@@ -1875,11 +1931,126 @@ mod tests {
         assert!(!type_is_jsonb(&ty("AdminMeta")));
         assert!(!type_is_jsonb(&ty("String")));
         assert!(!type_is_jsonb(&ty("NotJsonb<X>"))); // rightmost segment is NotJsonb
-        assert!(!type_is_jsonb(&ty("Jsonb")));       // no angle-bracket generics
+        assert!(!type_is_jsonb(&ty("Jsonb"))); // no angle-bracket generics
         // A user type literally named `Option` in their own module is not the
         // prelude Option, so it is NOT stripped; its last segment is `Option`,
         // not `Jsonb`, so it does not match (mirrors unwrap_option's prelude-
         // only recognition at attrs.rs:4040-4059).
         assert!(!type_is_jsonb(&ty("my_crate::Option<Jsonb<X>>")));
+    }
+
+    // Storage-type list builder for E_DJG_VDF_017 tests: (column, parsed type).
+    fn storage(pairs: &[(&str, &str)]) -> Vec<(String, syn::Type)> {
+        pairs
+            .iter()
+            .map(|(name, ty)| {
+                (
+                    name.to_string(),
+                    syn::parse_str::<syn::Type>(ty).expect("storage type parses"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vdf017_rejects_simple_passthrough_from_jsonb_column() {
+        let s = parse_struct(quote! {
+            #[derived(name = metadata, ty = "Jsonb<X>", scopes = [public],
+                      sql = "metadata", rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Jsonb<ProfileMetaAdmin>")]);
+        let err = cross_check(&parsed, &[], &cols, &[], false)
+            .expect_err("simple passthrough from a Jsonb column must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("E_DJG_VDF_017"), "msg was: {msg}");
+        assert!(
+            msg.contains("metadata"),
+            "msg names the source column: {msg}"
+        );
+    }
+
+    #[test]
+    fn vdf017_cross_name_passthrough_still_rejected() {
+        let s = parse_struct(quote! {
+            #[derived(name = metadata_public_view, ty = "Jsonb<X>", scopes = [public],
+                      sql = "metadata", rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Jsonb<ProfileMetaAdmin>")]);
+        let err = cross_check(&parsed, &[], &cols, &[], false)
+            .expect_err("cross-name passthrough must still be rejected");
+        assert!(err.to_string().contains("E_DJG_VDF_017"));
+    }
+
+    #[test]
+    fn vdf017_quoted_passthrough_rejected() {
+        let s = parse_struct(quote! {
+            #[derived(name = metadata, ty = "Jsonb<X>", scopes = [public],
+                      sql = "\"metadata\"", rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Jsonb<ProfileMetaAdmin>")]);
+        let err = cross_check(&parsed, &[], &cols, &[], false)
+            .expect_err("quoted simple passthrough must be rejected");
+        assert!(err.to_string().contains("E_DJG_VDF_017"));
+    }
+
+    #[test]
+    fn vdf017_rejects_passthrough_from_nullable_jsonb_column() {
+        // A nullable Option<Jsonb<_>> storage column leaks
+        // identically to a non-null one and MUST be guarded.
+        let s = parse_struct(quote! {
+            #[derived(name = metadata, ty = "Jsonb<X>", scopes = [public],
+                      sql = "metadata", rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Option<Jsonb<ProfileMetaAdmin>>")]);
+        let err = cross_check(&parsed, &[], &cols, &[], false)
+            .expect_err("passthrough from a nullable Jsonb column must be rejected");
+        assert!(err.to_string().contains("E_DJG_VDF_017"));
+    }
+
+    #[test]
+    fn vdf017_does_not_fire_on_narrowing_sql() {
+        let s = parse_struct(quote! {
+            #[derived(name = metadata, ty = "Jsonb<X>", scopes = [public],
+                      sql = "jsonb_build_object('display_name', metadata->'display_name')",
+                      rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Jsonb<ProfileMetaAdmin>")]);
+        cross_check(&parsed, &[], &cols, &[], false).expect("real narrowing SQL must be accepted");
+    }
+
+    #[test]
+    fn vdf017_does_not_fire_on_non_jsonb_column() {
+        let s = parse_struct(quote! {
+            #[derived(name = label, ty = String, scopes = [public],
+                      sql = "title", rust = "model.title.clone()")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("title", "String")]);
+        cross_check(&parsed, &[], &cols, &[], false)
+            .expect("passthrough from a non-Jsonb column is not VDF_017");
+    }
+
+    #[test]
+    fn vdf017_does_not_fire_on_compound_passthrough() {
+        let s = parse_struct(quote! {
+            #[derived(name = metadata, ty = "Jsonb<X>", scopes = [public],
+                      sql = "coalesce(metadata, '{}'::jsonb)", rust = "Jsonb::new(X {})")]
+            struct M { f: i32 }
+        });
+        let parsed = parse_derived_attrs(&s).expect("ok");
+        let cols = storage(&[("metadata", "Jsonb<ProfileMetaAdmin>")]);
+        cross_check(&parsed, &[], &cols, &[], false)
+            .expect("compound passthrough is adopter-owned; runtime parity is the catch");
     }
 }
