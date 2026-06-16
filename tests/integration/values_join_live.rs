@@ -11,7 +11,7 @@ use djogi::prelude::*;
 
 // ── Model ─────────────────────────────────────────────────────────────────────
 
-#[model(table = "c4b_values_animals", pk = HeerIdRecencyBiased)]
+#[model(table = "values_join_animals", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct C4bValuesAnimal {
     pub name: String,

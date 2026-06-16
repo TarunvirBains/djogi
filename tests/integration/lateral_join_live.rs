@@ -1,12 +1,12 @@
 use djogi::prelude::*;
 
-#[model(table = "c4b_lateral_live_projects", pk = HeerId)]
+#[model(table = "lateral_live_projects", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Project {
     pub name: String,
 }
 
-#[model(table = "c4b_lateral_live_tasks", pk = HeerId)]
+#[model(table = "lateral_live_tasks", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Task {
     pub project_id: HeerId,

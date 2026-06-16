@@ -47,9 +47,9 @@ use djogi::prelude::*;
 
 // ── Test model — all five narrow/unsigned types as scalar fields ──────────────
 
-#[model(table = "c2_190_narrow_ints", pk = HeerId, no_default)]
+#[model(table = "narrow_ints", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct C2190NarrowInts {
+pub struct NarrowInts {
     // djogi#186 types (SMALLINT and BIGINT, shim-bound from narrower Rust types)
     pub signed_byte: i8,
     pub unsigned_int: u32,
@@ -62,15 +62,15 @@ pub struct C2190NarrowInts {
 
 // ── Round-trip tests ──────────────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn narrow_ints_boundary_round_trip(mut ctx: djogi::DjogiContext) {
     // Test boundary values for all five narrow/unsigned types.
     // The typed `Model::create` + `Model::get` path exercises:
     //   - bind shim (Rust type → widened SQL wire type)
     //   - decode shim (widened SQL wire type → Rust type, bounds-checked)
-    let row = C2190NarrowInts::create(
+    let row = NarrowInts::create(
         &mut ctx,
-        C2190NarrowInts {
+        NarrowInts {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -92,7 +92,7 @@ async fn narrow_ints_boundary_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.unsigned_long, u64::MAX, "u64::MAX round-trip");
 
     // Re-fetch through Model::get to exercise the full decode path.
-    let fetched = C2190NarrowInts::get(&mut ctx, row.id)
+    let fetched = NarrowInts::get(&mut ctx, row.id)
         .await
         .expect("get should succeed");
     assert_eq!(fetched.signed_byte, i8::MAX, "i8::MAX re-fetch");
@@ -102,11 +102,11 @@ async fn narrow_ints_boundary_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(fetched.unsigned_long, u64::MAX, "u64::MAX re-fetch");
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn narrow_ints_min_values_round_trip(mut ctx: djogi::DjogiContext) {
-    let row = C2190NarrowInts::create(
+    let row = NarrowInts::create(
         &mut ctx,
-        C2190NarrowInts {
+        NarrowInts {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -130,7 +130,7 @@ async fn narrow_ints_min_values_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── Live catalog assertions ───────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn narrow_ints_catalog_has_check_constraints(mut ctx: djogi::DjogiContext) {
     // Verify that `sync_models` emits the type-derived CHECK constraints.
     // The constraint name follows the `{table}_{column}_check` convention
@@ -138,7 +138,7 @@ async fn narrow_ints_catalog_has_check_constraints(mut ctx: djogi::DjogiContext)
     let checks: Vec<String> = ctx
         .raw_rows(
             "SELECT conname::text FROM pg_constraint \
-             WHERE conrelid = 'c2_190_narrow_ints'::regclass \
+             WHERE conrelid = 'narrow_ints'::regclass \
              AND contype = 'c' ORDER BY conname",
             &[],
         )
@@ -149,11 +149,11 @@ async fn narrow_ints_catalog_has_check_constraints(mut ctx: djogi::DjogiContext)
         .collect();
 
     let expected_checks = [
-        "c2_190_narrow_ints_signed_byte_check",
-        "c2_190_narrow_ints_unsigned_byte_check",
-        "c2_190_narrow_ints_unsigned_int_check",
-        "c2_190_narrow_ints_unsigned_long_check",
-        "c2_190_narrow_ints_unsigned_short_check",
+        "narrow_ints_signed_byte_check",
+        "narrow_ints_unsigned_byte_check",
+        "narrow_ints_unsigned_int_check",
+        "narrow_ints_unsigned_long_check",
+        "narrow_ints_unsigned_short_check",
     ];
 
     for expected in &expected_checks {
@@ -166,13 +166,13 @@ async fn narrow_ints_catalog_has_check_constraints(mut ctx: djogi::DjogiContext)
 
 // ── OOB rejection tests (raw bypass) ─────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn i8_check_rejects_value_below_min(mut ctx: djogi::DjogiContext) {
     // -129 is one below i8::MIN (-128). With `i8 → SMALLINT`, the CHECK
     // `signed_byte >= -128 AND signed_byte <= 127` must reject this write.
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (-129, 0, 0, 0, 0, 'oob')",
             &[],
@@ -182,18 +182,18 @@ async fn i8_check_rejects_value_below_min(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_signed_byte_check"),
+        msg.contains("narrow_ints_signed_byte_check"),
         "i8 OOB must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u8_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
     // 256 is one above u8::MAX (255). With `u8 → SMALLINT`, the CHECK
     // `unsigned_byte >= 0 AND unsigned_byte <= 255` must reject this write.
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 0, 256, 0, 0, 'oob')",
             &[],
@@ -203,17 +203,17 @@ async fn u8_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_byte_check"),
+        msg.contains("narrow_ints_unsigned_byte_check"),
         "u8 OOB must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u16_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
     // 65536 is one above u16::MAX (65535). With `u16 → INTEGER`.
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 0, 0, 65536, 0, 'oob')",
             &[],
@@ -223,17 +223,17 @@ async fn u16_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_short_check"),
+        msg.contains("narrow_ints_unsigned_short_check"),
         "u16 OOB must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u32_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
     // 4294967296 is one above u32::MAX (4294967295). With `u32 → BIGINT`.
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 4294967296, 0, 0, 0, 'oob')",
             &[],
@@ -243,19 +243,19 @@ async fn u32_check_rejects_value_above_max(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_int_check"),
+        msg.contains("narrow_ints_unsigned_int_check"),
         "u32 OOB must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u64_check_rejects_negative_value(mut ctx: djogi::DjogiContext) {
     // u64::MIN is 0; -1 is below the lower bound of the NUMERIC column.
     // The CHECK `unsigned_long >= 0 AND ... AND unsigned_long = trunc(unsigned_long)`
     // must reject this write (the `>= 0` clause fires first).
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 0, 0, 0, -1, 'oob')",
             &[],
@@ -265,12 +265,12 @@ async fn u64_check_rejects_negative_value(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_long_check"),
+        msg.contains("narrow_ints_unsigned_long_check"),
         "u64 negative value must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u64_check_rejects_fractional_value(mut ctx: djogi::DjogiContext) {
     // djogi#190 Finding 1 — u64 uses bare NUMERIC (not NUMERIC(20,0)).
     // NUMERIC(20,0) would silently round 1.5 → 2 before the CHECK fires,
@@ -283,7 +283,7 @@ async fn u64_check_rejects_fractional_value(mut ctx: djogi::DjogiContext) {
     // value to test the DB-level integrality CHECK.
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 0, 0, 0, 1.5, 'fractional')",
             &[],
@@ -293,19 +293,19 @@ async fn u64_check_rejects_fractional_value(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_long_check"),
+        msg.contains("narrow_ints_unsigned_long_check"),
         "u64 fractional value must cite the CHECK constraint: {msg}"
     );
 }
 
-#[djogi::djogi_test(sync_models = [C2190NarrowInts])]
+#[djogi::djogi_test(sync_models = [NarrowInts])]
 async fn u64_check_rejects_u64_max_plus_one(mut ctx: djogi::DjogiContext) {
     // u64::MAX + 1 = 18_446_744_073_709_551_616 — above the upper bound.
     // Raw SQL is needed to insert a value that overflows u64 (unreachable via
     // the Rust typed surface since u64::MAX is the largest representable value).
     let err = ctx
         .raw_execute(
-            "INSERT INTO c2_190_narrow_ints \
+            "INSERT INTO narrow_ints \
              (signed_byte, unsigned_int, unsigned_byte, unsigned_short, unsigned_long, label) \
              VALUES (0, 0, 0, 0, 18446744073709551616, 'oob-max')",
             &[],
@@ -315,7 +315,7 @@ async fn u64_check_rejects_u64_max_plus_one(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("c2_190_narrow_ints_unsigned_long_check"),
+        msg.contains("narrow_ints_unsigned_long_check"),
         "u64 above-max value must cite the CHECK constraint: {msg}"
     );
 }

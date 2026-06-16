@@ -49,7 +49,7 @@
 //
 // # Fixture model
 //
-// `C2129RlsRow` carries a BIGINT `tenant_id` (so the macro routes
+// `RlsRow` carries a BIGINT `tenant_id` (so the macro routes
 // the policy cast to `::bigint`) and an opaque `label` for assertion
 // readability. `pk = Serial` keeps the PK independent of HeeRanjID
 // generator naming churn — the row id is a plain `i32` from a sequence,
@@ -65,9 +65,9 @@ use djogi::testing::{
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 
-#[model(table = "c2_129_rls_rows", pk = Serial, tenant_key = "tenant_id")]
+#[model(table = "rls_rows", pk = Serial, tenant_key = "tenant_id")]
 #[derive(Debug, Clone)]
-pub struct C2129RlsRow {
+pub struct RlsRow {
     pub tenant_id: i64,
     pub label: String,
 }
@@ -85,15 +85,15 @@ pub struct C2129RlsRow {
 // is still being implemented; emitting the policy directly here keeps the
 // test self-contained.
 async fn install_rls_policy(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl("ALTER TABLE c2_129_rls_rows ENABLE ROW LEVEL SECURITY")
+    ctx.raw_ddl("ALTER TABLE rls_rows ENABLE ROW LEVEL SECURITY")
         .await
         .expect("ENABLE RLS must succeed against a freshly-created table");
-    ctx.raw_ddl("ALTER TABLE c2_129_rls_rows FORCE ROW LEVEL SECURITY")
+    ctx.raw_ddl("ALTER TABLE rls_rows FORCE ROW LEVEL SECURITY")
         .await
         .expect("FORCE RLS must succeed against a freshly-created table");
     ctx.raw_ddl(
-        "CREATE POLICY c2_129_rls_rows_tenant_isolation \
-         ON c2_129_rls_rows \
+        "CREATE POLICY rls_rows_tenant_isolation \
+         ON rls_rows \
          USING (tenant_id = current_setting('app.tenant_id', true)::bigint)",
     )
     .await
@@ -106,9 +106,9 @@ async fn install_rls_policy(ctx: &mut djogi::DjogiContext) {
 async fn seed_two_tenants(ctx: &mut djogi::DjogiContext) -> SeededRows {
     let mut tenant_1000_ids = Vec::with_capacity(3);
     for i in 1i64..=3 {
-        let row = C2129RlsRow::create(
+        let row = RlsRow::create(
             ctx,
-            C2129RlsRow {
+            RlsRow {
                 tenant_id: 1000,
                 label: format!("tenant1000-row{i}"),
                 ..Default::default()
@@ -121,9 +121,9 @@ async fn seed_two_tenants(ctx: &mut djogi::DjogiContext) -> SeededRows {
 
     let mut tenant_2000_ids = Vec::with_capacity(2);
     for i in 1i64..=2 {
-        let row = C2129RlsRow::create(
+        let row = RlsRow::create(
             ctx,
-            C2129RlsRow {
+            RlsRow {
                 tenant_id: 2000,
                 label: format!("tenant2000-row{i}"),
                 ..Default::default()
@@ -163,7 +163,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
         let outcome = AssertUnwindSafe(async {
             djogi::testing::sync_models(
                 &mut admin_ctx,
-                &[<C2129RlsRow as Model>::descriptor()],
+                &[<RlsRow as Model>::descriptor()],
             )
             .await
             .expect("sync_models must materialise the fixture table");
@@ -202,7 +202,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                         // auto_set_tenant fires inside fetch_all and applies
                         // `app.tenant_id = '1000'` for the duration of the
                         // transaction.
-                        let rows = C2129RlsRow::objects()
+                        let rows = RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -239,7 +239,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                             )
                             .with_tenant("2000"),
                         );
-                        let rows = C2129RlsRow::objects()
+                        let rows = RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -281,7 +281,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
                             )
                             .with_tenant("9999"),
                         );
-                        let rows = C2129RlsRow::objects()
+                        let rows = RlsRow::objects()
                             .fetch_all(tx)
                             .await?;
                         Ok::<_, djogi::DjogiError>(
@@ -307,8 +307,8 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
             // and runs the SELECT under the tenant-1000 GUC. With the
             // non-superuser role, RLS filters the rows server-side.
             let punnu = non_super_ctx
-                .punnu::<C2129RlsRow>()
-                .expect("Punnu must be registered for C2129RlsRow");
+                .punnu::<RlsRow>()
+                .expect("Punnu must be registered for RlsRow");
             let pool_for_refresh = non_super_ctx
                 .share_pool()
                 .expect("non-superuser ctx must be pool-backed");
@@ -317,7 +317,7 @@ fn non_superuser_rls_filters_typed_fetch_and_refresh() {
             )
             .with_tenant("1000");
 
-            let handle = C2129RlsRow::objects()
+            let handle = RlsRow::objects()
                 .refresh_into(&punnu, pool_for_refresh, refresh_auth)
                 .expect("unfiltered queryset must satisfy the portable refresh gate");
 

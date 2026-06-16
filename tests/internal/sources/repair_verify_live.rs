@@ -2454,7 +2454,7 @@ async fn phase_zero_rollback_comment_only_down_refuses_without_mutation(
         "-- HeeRanjID base schema + functions (idempotent).\n"
     )
     .to_string();
-    phase_zero_up.push_str("\nCREATE TABLE \"t5_phase0_rollback_guard\" (\"id\" BIGINT);\n");
+    phase_zero_up.push_str("\nCREATE TABLE \"rollback_guard\" (\"id\" BIGINT);\n");
     let plan = transactional_plan(vec![op(
         "Phase 0 rollback guard table",
         &phase_zero_up,
@@ -2501,7 +2501,7 @@ async fn phase_zero_rollback_comment_only_down_refuses_without_mutation(
     let table_exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
-             WHERE relname = 't5_phase0_rollback_guard' AND relkind = 'r')",
+             WHERE relname = 'rollback_guard' AND relkind = 'r')",
             &[],
         )
         .await

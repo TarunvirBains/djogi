@@ -1,13 +1,13 @@
 use djogi::prelude::*;
 
-#[model(table = "c446_all_authors")]
+#[model(table = "subquery_all_authors")]
 #[derive(Debug, Clone)]
 pub struct Author {
     #[field(expose(public))]
     pub score: i64,
 }
 
-#[model(table = "c446_all_posts")]
+#[model(table = "subquery_all_posts")]
 #[derive(Debug, Clone)]
 pub struct Post {
     #[field(expose(public))]

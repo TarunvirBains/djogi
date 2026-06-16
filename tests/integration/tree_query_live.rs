@@ -22,7 +22,7 @@
 //
 // The model fixtures intentionally use distinct table names per test
 // file group (`tree_*`) so a future combined run with
-// `zero_materialize_closure_live` does not collide on table
+// `materialize_closure_live` does not collide on table
 // definitions inside the inventory.
 
 use djogi::prelude::*;

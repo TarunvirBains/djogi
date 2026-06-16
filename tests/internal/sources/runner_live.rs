@@ -1685,9 +1685,9 @@ async fn rollback_bind_failure_releases_advisory_lock(mut ctx: djogi::DjogiConte
     let _guard = acquire_test_workspace_guard();
 
     let plan = transactional_plan_for_app("runner_331_rollback_bind", vec![op(
-        "AddTable t4_331_rollback_bind",
-        "CREATE TABLE \"t4_331_rollback_bind\" (\"id\" BIGINT PRIMARY KEY)",
-        "DROP TABLE \"t4_331_rollback_bind\"",
+        "AddTable rollback_bind",
+        "CREATE TABLE \"rollback_bind\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"rollback_bind\"",
     )]);
     let runner_ctx = make_runner_ctx(
         &plan,

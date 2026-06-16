@@ -1,10 +1,10 @@
-// djogi#216 Piece A — Live integration tests for
+// Live integration tests for
 // `#[field(domain = "<name>")]` against a real Postgres 18.
 //
 // # What this file pins
 //
 // 1. **Descriptor projection.** A model field carrying
-//    `#[field(domain = "c4_216_positive_amount")]` lowers to
+//    `#[field(domain = "positive_amount")]` lowers to
 //    `FieldSqlType::Domain { name, base: &FieldSqlType::Numeric }` in
 //    the descriptor; the rendered `Display` output is the bare domain
 //    name. (Doesn't need a live DB but lives here so the scope
@@ -88,29 +88,28 @@
 use djogi::DjogiContext;
 use djogi::prelude::*;
 
-// ── Test models — `Order216` references a positive-amount domain ──────────
+// ── Test models — `OrderLive` references a positive-amount domain ──────────
 
 /// Adopter-managed domain referenced by the test model. Declared via
-/// `raw_ddl` in the test setup because djogi#216 Piece A only
-/// references domains; the `CREATE DOMAIN` emission lives in Piece B
-/// (deferred).
-const DOMAIN_NAME: &str = "c4_216_positive_amount";
+/// `raw_ddl` in the test setup because the domain must exist before the
+/// model is synced.
+const DOMAIN_NAME: &str = "positive_amount";
 
-const TABLE_NAME: &str = "c4_216_orders";
+const TABLE_NAME: &str = "orders_live";
 
 #[model(
-    table = "c4_216_orders",
+    table = "orders_live",
     pk = HeerId,
     no_default
 )]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Order216Live {
+pub struct OrderLive {
     /// Domain-typed column. The macro lowers this to
-    /// `FieldSqlType::Domain { name: "c4_216_positive_amount",
+    /// `FieldSqlType::Domain { name: "positive_amount",
     /// base: &FieldSqlType::Numeric }`. The migration composer emits
     /// the bare domain name in the column-type slot, so adopter
     /// domain constraints fire on every INSERT / UPDATE.
-    #[field(domain = "c4_216_positive_amount")]
+    #[field(domain = "positive_amount")]
     pub amount: rust_decimal::Decimal,
     pub label: String,
 }
@@ -147,12 +146,12 @@ async fn domain_descriptor_displays_bare_name(mut ctx: DjogiContext) {
     // the descriptor layer.
     let _ = &mut ctx; // unused; the test does not touch the live DB.
 
-    let desc = Order216Live::descriptor();
+    let desc = OrderLive::descriptor();
     let amount_field = desc
         .fields
         .iter()
         .find(|f| f.name == "amount")
-        .expect("amount column must exist on Order216Live descriptor");
+        .expect("amount column must exist on OrderLive descriptor");
 
     // The variant must be `Domain { name, base }`.
     match &amount_field.sql_type {
@@ -187,12 +186,11 @@ async fn domain_descriptor_displays_bare_name(mut ctx: DjogiContext) {
 
 #[djogi::djogi_test]
 async fn sync_models_emits_domain_reference_in_table_ddl(mut ctx: DjogiContext) {
-    // Install the domain via raw_ddl (Piece A does NOT emit
-    // CREATE DOMAIN — that's Piece B / deferred). Then run
+    // Install the domain via raw_ddl. Then run
     // sync_models manually to lower the descriptor's domain
     // reference into the CREATE TABLE DDL.
     install_positive_amount_domain(&mut ctx).await;
-    djogi::testing::sync_models(&mut ctx, &[Order216Live::descriptor()])
+    djogi::testing::sync_models(&mut ctx, &[OrderLive::descriptor()])
         .await
         .expect("sync_models must accept a domain-typed column");
 
@@ -257,7 +255,7 @@ async fn domain_check_rejects_invalid_value_at_insert(mut ctx: DjogiContext) {
     // CHECK enforcement (Piece A scope) rather than the typed
     // wire-codec limitation (out of Piece A scope).
     install_positive_amount_domain(&mut ctx).await;
-    djogi::testing::sync_models(&mut ctx, &[Order216Live::descriptor()])
+    djogi::testing::sync_models(&mut ctx, &[OrderLive::descriptor()])
         .await
         .expect("sync_models must accept a domain-typed column");
 

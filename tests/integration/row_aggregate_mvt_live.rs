@@ -4,7 +4,7 @@
 use djogi::geo::GeoPoint;
 use djogi::prelude::*;
 
-#[model(table = "c4f_tile_features", pk = HeerId, no_default)]
+#[model(table = "tile_features", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct TileFeature {
     pub name: String,
