@@ -68,15 +68,16 @@ use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
-use crate::query::set_op::SetOpKind;
 use crate::query::queryset::QuerySet;
+use crate::query::set_op::SetOpKind;
 use crate::query::visage_queryset::VisageQuerySet;
 use crate::visage::DjogiVisage;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 
-pub(crate) trait CrossArm<R: FromPgRow>: Send + Sync {
+#[doc(hidden)]
+pub trait CrossArm<R: FromPgRow>: Send + Sync {
     fn emit(&self, acc: &mut SqlAccumulator, side: &'static str) -> Result<(), DjogiError>;
     fn intended_tenant(&self, ctx: &DjogiContext) -> (&'static str, Option<String>);
     fn fire_tenant<'a>(
@@ -174,9 +175,13 @@ where
 mod sealed {
     pub trait Sealed {}
     impl<M> Sealed for super::QuerySet<M> where
-        M: super::Model + super::FromPgRow + Send + Unpin + 'static { }
+        M: super::Model + super::FromPgRow + Send + Unpin + 'static
+    {
+    }
     impl<V> Sealed for super::VisageQuerySet<V> where
-        V: super::DjogiVisage + super::FromPgRow + Send + Unpin + 'static { }
+        V: super::DjogiVisage + super::FromPgRow + Send + Unpin + 'static
+    {
+    }
 }
 
 /// Sealed conversion trait for cross-model set-op arms.
@@ -198,7 +203,10 @@ where
     R: FromPgRow + 'static,
 {
     fn into_cross_arm(self) -> Box<dyn CrossArm<R>> {
-        Box::new(QuerySetArm::<M, R> { qs: self, _row: PhantomData })
+        Box::new(QuerySetArm::<M, R> {
+            qs: self,
+            _row: PhantomData,
+        })
     }
 }
 
@@ -208,7 +216,10 @@ where
     R: FromPgRow + 'static,
 {
     fn into_cross_arm(self) -> Box<dyn CrossArm<R>> {
-        Box::new(VisageArm::<V, R> { qs: self, _row: PhantomData })
+        Box::new(VisageArm::<V, R> {
+            qs: self,
+            _row: PhantomData,
+        })
     }
 }
 
@@ -274,8 +285,20 @@ impl<R: FromPgRow> std::fmt::Debug for CrossModelSetOpQuerySet<R> {
 /// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn union_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
-where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
-    CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Union, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
+where
+    R: FromPgRow,
+    A: IntoCrossArm<R>,
+    B: IntoCrossArm<R>,
+{
+    CrossModelSetOpQuerySet {
+        left: left.into_cross_arm(),
+        op: SetOpKind::Union,
+        right: right.into_cross_arm(),
+        ordering: Vec::new(),
+        limit: None,
+        offset: None,
+        _row: PhantomData,
+    }
 }
 
 /// Combine two querysets via Postgres `UNION ALL` (duplicate-preserving).
@@ -293,8 +316,20 @@ where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
 /// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn union_all_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
-where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
-    CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::UnionAll, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
+where
+    R: FromPgRow,
+    A: IntoCrossArm<R>,
+    B: IntoCrossArm<R>,
+{
+    CrossModelSetOpQuerySet {
+        left: left.into_cross_arm(),
+        op: SetOpKind::UnionAll,
+        right: right.into_cross_arm(),
+        ordering: Vec::new(),
+        limit: None,
+        offset: None,
+        _row: PhantomData,
+    }
 }
 
 /// Combine two querysets via Postgres `INTERSECT` (de-duplicated).
@@ -314,8 +349,20 @@ where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
 /// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn intersect_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
-where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
-    CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Intersect, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
+where
+    R: FromPgRow,
+    A: IntoCrossArm<R>,
+    B: IntoCrossArm<R>,
+{
+    CrossModelSetOpQuerySet {
+        left: left.into_cross_arm(),
+        op: SetOpKind::Intersect,
+        right: right.into_cross_arm(),
+        ordering: Vec::new(),
+        limit: None,
+        offset: None,
+        _row: PhantomData,
+    }
 }
 
 /// Combine two querysets via Postgres `EXCEPT` (de-duplicated).
@@ -336,8 +383,20 @@ where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
 /// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn except_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
-where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
-    CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Except, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
+where
+    R: FromPgRow,
+    A: IntoCrossArm<R>,
+    B: IntoCrossArm<R>,
+{
+    CrossModelSetOpQuerySet {
+        left: left.into_cross_arm(),
+        op: SetOpKind::Except,
+        right: right.into_cross_arm(),
+        ordering: Vec::new(),
+        limit: None,
+        offset: None,
+        _row: PhantomData,
+    }
 }
 
 /// Sort direction for outer `ORDER BY` on a [`CrossModelSetOpQuerySet`].
@@ -345,16 +404,25 @@ where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
 /// column is sorted ascending or descending in the combined result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum OuterOrder { Asc, Desc }
+pub enum OuterOrder {
+    Asc,
+    Desc,
+}
 
 impl OuterOrder {
     fn keyword(self) -> &'static str {
-        match self { OuterOrder::Asc => "ASC", OuterOrder::Desc => "DESC" }
+        match self {
+            OuterOrder::Asc => "ASC",
+            OuterOrder::Desc => "DESC",
+        }
     }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OuterColumnOrder { column: String, direction: OuterOrder }
+pub(crate) struct OuterColumnOrder {
+    column: String,
+    direction: OuterOrder,
+}
 
 impl OuterColumnOrder {
     fn emit(&self, acc: &mut SqlAccumulator) {
@@ -364,14 +432,25 @@ impl OuterColumnOrder {
     }
     fn validate(&self) -> Result<(), DjogiError> {
         if self.column.starts_with("__djogi_") {
-            return Err(DjogiError::SetOpOuterOrderingInvalid { table: "cross-model set op", reason: "outer ORDER BY column names the framework-reserved `__djogi_` namespace" });
+            return Err(DjogiError::SetOpOuterOrderingInvalid {
+                table: "cross-model set op",
+                reason: "outer ORDER BY column names the framework-reserved `__djogi_` namespace",
+            });
         }
         let bytes = self.column.as_bytes();
-        let ok = !bytes.is_empty() && bytes.len() <= 63
+        let ok = !bytes.is_empty()
+            && bytes.len() <= 63
             && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
-            && bytes[1..].iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_');
-        if ok { Ok(()) } else {
-            Err(DjogiError::SetOpOuterOrderingInvalid { table: "cross-model set op", reason: "outer ORDER BY column must be an ASCII identifier" })
+            && bytes[1..]
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if ok {
+            Ok(())
+        } else {
+            Err(DjogiError::SetOpOuterOrderingInvalid {
+                table: "cross-model set op",
+                reason: "outer ORDER BY column must be an ASCII identifier",
+            })
         }
     }
 }
@@ -380,7 +459,9 @@ impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
     /// Read-only access to the operator. Useful for tests asserting SQL
     /// structure and for downstream tooling that inspects which set op was
     /// chosen without re-emitting SQL.
-    pub fn op(&self) -> SetOpKind { self.op }
+    pub fn op(&self) -> SetOpKind {
+        self.op
+    }
 
     /// Add an outer `ORDER BY` clause applied to the combined result.
     /// The `column` must be a valid ASCII identifier (letters, digits,
@@ -390,7 +471,10 @@ impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
     /// Multiple calls chain additional columns into the ORDER BY list.
     #[must_use = "cross-model set ops are lazy"]
     pub fn order_by(mut self, column: impl Into<String>, direction: OuterOrder) -> Self {
-        self.ordering.push(OuterColumnOrder { column: column.into(), direction });
+        self.ordering.push(OuterColumnOrder {
+            column: column.into(),
+            direction,
+        });
         self
     }
 
@@ -417,7 +501,9 @@ fn build_cross_set_op_select_inner<R: FromPgRow>(
     acc: &mut SqlAccumulator,
     sop: &CrossModelSetOpQuerySet<R>,
 ) -> Result<(), DjogiError> {
-    for o in &sop.ordering { o.validate()?; }
+    for o in &sop.ordering {
+        o.validate()?;
+    }
     sop.left.emit(acc, "left")?;
     acc.push_sql(" ");
     acc.push_sql(sop.op.keyword());
@@ -426,7 +512,9 @@ fn build_cross_set_op_select_inner<R: FromPgRow>(
     if !sop.ordering.is_empty() {
         acc.push_sql(" ORDER BY ");
         for (i, o) in sop.ordering.iter().enumerate() {
-            if i > 0 { acc.push_sql(", "); }
+            if i > 0 {
+                acc.push_sql(", ");
+            }
             o.emit(acc);
         }
     }
@@ -452,7 +540,9 @@ pub(crate) fn build_cross_set_op_select<R: FromPgRow>(
 pub(crate) fn build_cross_set_op_count<R: FromPgRow>(
     sop: &CrossModelSetOpQuerySet<R>,
 ) -> Result<SqlAccumulator, DjogiError> {
-    for o in &sop.ordering { o.validate()?; }
+    for o in &sop.ordering {
+        o.validate()?;
+    }
     let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (");
     sop.left.emit(&mut acc, "left")?;
     acc.push_sql(" ");
@@ -477,15 +567,15 @@ fn reconcile_arm_tenants(
     left: (&'static str, Option<String>),
     right: (&'static str, Option<String>),
 ) -> Result<(), DjogiError> {
-    if let (Some(lt), Some(rt)) = (&left.1, &right.1) {
-        if lt != rt {
-            return Err(DjogiError::CrossModelSetOpTenantConflict {
-                left_model: left.0,
-                right_model: right.0,
-                left_tenant: lt.clone(),
-                right_tenant: rt.clone(),
-            });
-        }
+    if let (Some(lt), Some(rt)) = (&left.1, &right.1)
+        && lt != rt
+    {
+        return Err(DjogiError::CrossModelSetOpTenantConflict {
+            left_model: left.0,
+            right_model: right.0,
+            left_tenant: lt.clone(),
+            right_tenant: rt.clone(),
+        });
     }
     Ok(())
 }
@@ -621,19 +711,28 @@ mod tests {
 
     #[crate::model(table = "x462_left_widgets", pk = crate::HeerId)]
     #[derive(Debug, Clone)]
-    pub struct LeftWidget { name: String }
+    pub struct LeftWidget {
+        name: String,
+    }
 
     #[crate::model(table = "x462_right_gadgets", pk = crate::HeerId)]
     #[derive(Debug, Clone)]
-    pub struct RightGadget { name: String }
+    pub struct RightGadget {
+        name: String,
+    }
 
     #[crate::model(table = "x462_combined_rows", pk = crate::HeerId)]
     #[derive(Debug, Clone)]
-    pub struct CombinedRow { name: String }
+    pub struct CombinedRow {
+        name: String,
+    }
 
     #[crate::model(table = "x462_tenant_widgets", pk = crate::HeerId, tenant_key = "org_id")]
     #[derive(Debug, Clone)]
-    pub struct TenantWidget { org_id: String, name: String }
+    pub struct TenantWidget {
+        org_id: String,
+        name: String,
+    }
 
     #[test]
     fn cross_union_emits_parenthesised_arms_with_keyword_and_renumbered_binds() {
@@ -662,8 +761,14 @@ mod tests {
         let sql = acc.sql();
         assert!(sql.starts_with("SELECT COUNT(*) FROM ("), "{sql}");
         assert!(sql.trim_end().ends_with(") AS sub"), "{sql}");
-        assert!(!sql.contains("LIMIT"), "count must strip outer LIMIT: {sql}");
-        assert!(!sql.contains("OFFSET"), "count must strip outer OFFSET: {sql}");
+        assert!(
+            !sql.contains("LIMIT"),
+            "count must strip outer LIMIT: {sql}"
+        );
+        assert!(
+            !sql.contains("OFFSET"),
+            "count must strip outer OFFSET: {sql}"
+        );
     }
 
     #[test]
@@ -680,7 +785,10 @@ mod tests {
         let sql = acc.sql();
         let order_idx = sql.find("ORDER BY").expect("order by present");
         let union_idx = sql.find("UNION").expect("union present");
-        assert!(order_idx > union_idx, "ORDER BY must follow the operator: {sql}");
+        assert!(
+            order_idx > union_idx,
+            "ORDER BY must follow the operator: {sql}"
+        );
         assert!(sql.contains("ORDER BY name ASC, created_at DESC"), "{sql}");
         assert!(sql.contains("LIMIT"), "{sql}");
         assert!(sql.contains("OFFSET"), "{sql}");
@@ -721,19 +829,29 @@ mod tests {
             ("LeftWidget", Some("org_a".to_string())),
             ("RightGadget", Some("org_b".to_string())),
         );
-        assert!(
-            matches!(res.unwrap_err(), DjogiError::CrossModelSetOpTenantConflict { .. }),
-        );
+        assert!(matches!(
+            res.unwrap_err(),
+            DjogiError::CrossModelSetOpTenantConflict { .. }
+        ),);
     }
 
     #[test]
     fn tenant_no_conflict_when_one_arm_untenanted() {
-        assert!(reconcile_arm_tenants(("LeftWidget", Some("org_a".to_string())), ("RightGadget", None)).is_ok());
+        assert!(
+            reconcile_arm_tenants(
+                ("LeftWidget", Some("org_a".to_string())),
+                ("RightGadget", None)
+            )
+            .is_ok()
+        );
         assert!(reconcile_arm_tenants(("LeftWidget", None), ("RightGadget", None)).is_ok());
-        assert!(reconcile_arm_tenants(
-            ("LeftWidget", Some("org_a".to_string())),
-            ("RightGadget", Some("org_a".to_string()))
-        ).is_ok());
+        assert!(
+            reconcile_arm_tenants(
+                ("LeftWidget", Some("org_a".to_string())),
+                ("RightGadget", Some("org_a".to_string()))
+            )
+            .is_ok()
+        );
     }
 
     #[tokio::test]
