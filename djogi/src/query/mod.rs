@@ -96,6 +96,8 @@ pub mod row_aggregate_terminal;
 // onto [`QuerySet`] and [`SetOpQuerySet`] themselves so most adopters
 // never name the module path.
 pub mod set_op;
+// Issue #462 — typed cross-model set operations between different Model types.
+pub mod cross_set_op;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
 // Djogi#180 — PG18 OLD/NEW RETURNING result type.
@@ -212,6 +214,18 @@ pub use row_aggregate_terminal::{AsGeobufTerminal, AsMvtTerminal, EmptyAnnotatio
 // return / parameter types when threading a chained set-op through
 // helper functions.
 pub use set_op::{IntoSetOpArm, SetOpKind, SetOpQuerySet};
+// Issue #462 — cross-model set operations. The free constructors are the
+// adopter entry points (`djogi::query::union_as::<R>(a, b)` or via
+// prelude); `CrossModelSetOpQuerySet` is named in adopter return /
+// parameter types. `IntoCrossArm` is the public bound on the constructors
+// (re-exported for parity with `IntoSetOpArm`; adopters never name it).
+// `OuterOrder` is the public sort-direction passed to `order_by`.
+// `OuterColumnOrder` is NOT re-exported — it is `pub(crate)` and has no
+// public constructor; adopters build outer-order terms via `order_by(col, OuterOrder)`.
+pub use cross_set_op::{
+    CrossModelSetOpQuerySet, IntoCrossArm, OuterOrder, except_as, intersect_as, union_all_as,
+    union_as,
+};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
 // Re-exported here so adopters reach it as `djogi::query::BasicPredicate`
 // without depending on sassi directly. The 15 Rust-evaluable
@@ -311,5 +325,25 @@ mod tests {
         let _: crate::query::SqlEmitContext = crate::query::SqlEmitContext::joined("posts");
         // Compile-only: variant exists.
         let _ = crate::query::PortablePredicateError::UnsupportedModel { model: "Test" };
+    }
+
+    /// Re-export contract for the cross-model set-op surface (#462). The
+    /// four free constructors, the queryset type, the public `OuterOrder`
+    /// enum, and the public `IntoCrossArm` conversion trait must be
+    /// reachable both at `crate::query::*` and `crate::prelude::*`.
+    #[test]
+    fn cross_model_set_op_surface_reachable() {
+        #[allow(unused_imports)]
+        use crate::query::{
+            CrossModelSetOpQuerySet, IntoCrossArm, OuterOrder, except_as, intersect_as,
+            union_all_as, union_as,
+        };
+        // Prelude path (the adopter-facing route).
+        #[allow(unused_imports)]
+        use crate::prelude::{
+            CrossModelSetOpQuerySet as _PreludeCross, IntoCrossArm as _PreludeIntoArm,
+            OuterOrder as _PreludeOrder, except_as as _pe, intersect_as as _pi,
+            union_all_as as _pua, union_as as _pu,
+        };
     }
 }

@@ -143,7 +143,7 @@ pub enum SetOpKind {
 
 impl SetOpKind {
     /// Render the SQL keyword exactly as Postgres expects.
-    fn keyword(self) -> &'static str {
+    pub(crate) fn keyword(self) -> &'static str {
         match self {
             SetOpKind::Union => "UNION",
             SetOpKind::UnionAll => "UNION ALL",
@@ -374,7 +374,7 @@ fn validate_outer_ordering<T: Model>(ordering: &[OrderExpr]) -> Result<(), Djogi
 /// arm has prefetch / select_related / lock / cache bindings.
 /// Centralised here so both arms in [`build_set_op_select`] and the
 /// nested case in [`emit_arm`] report identical diagnostics.
-fn validate_arm<T: Model>(qs: &QuerySet<T>, side: &'static str) -> Result<(), DjogiError> {
+pub(crate) fn validate_arm<T: Model>(qs: &QuerySet<T>, side: &'static str) -> Result<(), DjogiError> {
     if !qs.prefetch_paths.is_empty() {
         return Err(DjogiError::SetOpArmInvalid {
             table: T::table_name(),

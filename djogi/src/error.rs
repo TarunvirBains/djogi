@@ -771,6 +771,25 @@ pub enum DjogiError {
         reason: &'static str,
     },
 
+    /// Cross-model set op detected that the two arms resolved to different
+    /// applied tenants. This is emitted from pure intent values BEFORE any
+    /// GUC mutation, so the connection is not poisoned on the error path.
+    /// The `left_model` / `right_model` type names identify which arm-models
+    /// conflicted; `left_tenant` and `right_tenant` are the concrete tenant
+    /// IDs each arm resolved to (both always `Some` — if either were `None`,
+    /// reconciliation would succeed trivially).
+    #[error(
+        "cross-model set-op tenant conflict: left `{left_model}` → {left_tenant}, \
+         right `{right_model}` → {right_tenant}"
+    )]
+    #[non_exhaustive]
+    CrossModelSetOpTenantConflict {
+        left_model: &'static str,
+        left_tenant: String,
+        right_model: &'static str,
+        right_tenant: String,
+    },
+
     /// `djogi::transaction::atomic_with(level, &mut tx_ctx, ...)` was
     /// invoked on a transaction-backed [`crate::DjogiContext`] — i.e.
     /// inside an already-open `atomic` scope.

@@ -381,7 +381,7 @@ pub use pg::pool::DjogiPool;
 // when PostGIS support is not requested.
 pub use djogi_macros::{
     DjogiEnum, JsonbSchema, Model, apps, deliberately_bypass_convention_with_raw_sql, link_anchor,
-    many_to_many, primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
+    many_to_many, model, primary_key, reverse_one_to_many, reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
@@ -466,17 +466,18 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
     ClosureModel, ConditionExt, ConflictAction, ConflictColumns, ConflictCondition, ConflictExpr,
-    ConflictTarget, ConflictUpdate, CteQuerySet, DjogiPortableEq, ExcludedRef, ExplicitPgOrderable,
-    FieldRef, FilterClause, InnerLateral, InsertSelectColumn, InsertSelectSource, InsertSelectStmt,
-    IntoAggregateTuple, IntoConflictColumn, IntoConflictCondition, IntoConflictExpr,
-    IntoConflictUpdates, IntoCteBody, IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns,
-    IntoPortableFieldValue, IntoSetOpArm, JoinedAnnotatedQuerySet, JoinedAnnotatedRow,
-    JoinedQuerySet, LateralQuerySet, LeftLateral, Lookup, MaterializeClosureOptions,
-    MaterializeClosureReport, MergeCounts, MergeStmt, ModelCursorStream, ModelFilter,
-    OnConflictClause, OrderExpr, PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt,
-    PortableQuerySet, Q, QuerySet, RawCursorStream, RecursiveArm, RecursiveDirection,
-    RecursiveQuerySet, SetOpKind, SetOpQuerySet, UpdateAssignment, UpdateStmt, VisageExists,
-    VisageQuerySet,
+    ConflictTarget, ConflictUpdate, CteQuerySet, CrossModelSetOpQuerySet, DjogiPortableEq,
+    ExcludedRef, ExplicitPgOrderable, FieldRef, FilterClause, InnerLateral, IntoCrossArm,
+    InsertSelectColumn, InsertSelectSource, InsertSelectStmt, IntoAggregateTuple,
+    IntoConflictColumn, IntoConflictCondition, IntoConflictExpr, IntoConflictUpdates, IntoCteBody,
+    IntoFieldFilterValue, IntoFilterValue, IntoInsertColumns, IntoPortableFieldValue, IntoSetOpArm,
+    JoinedAnnotatedQuerySet, JoinedAnnotatedRow, JoinedQuerySet, LateralQuerySet, LeftLateral,
+    Lookup, MaterializeClosureOptions, MaterializeClosureReport, MergeCounts, MergeStmt,
+    ModelCursorStream, ModelFilter, OnConflictClause, OrderExpr, OuterOrder,
+    PairClosureKinshipSum, PairOrderExpr, PairSide, PairWindowExt, PortableQuerySet, Q, QuerySet,
+    RawCursorStream, RecursiveArm, RecursiveDirection, RecursiveQuerySet, SetOpKind, SetOpQuerySet,
+    UpdateAssignment, UpdateStmt, VisageExists, VisageQuerySet, except_as, intersect_as,
+    union_all_as, union_as,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -679,6 +680,14 @@ pub mod prelude {
         ReturningPair,
         SetOpKind,
         SetOpQuerySet,
+        // Issue #462 — cross-model set operations.
+        CrossModelSetOpQuerySet,
+        IntoCrossArm,
+        OuterOrder,
+        except_as,
+        intersect_as,
+        union_all_as,
+        union_as,
         ValuesFieldRef,
         ValuesFields,
         ValuesJoinedQuerySet,
