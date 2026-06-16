@@ -26,7 +26,7 @@ use crate::pg::accumulator::SqlAccumulator;
 use crate::query::order::Direction;
 
 /// A window-function partition or order-by element — either a bare column
-/// reference or an expression emitted under an explicit alias.
+/// reference or an expression evaluated under a specific table alias.
 ///
 /// Used internally by [`WindowSpec`] to store both plain-column window
 /// elements (via [`WindowBuilder::partition_by`] / [`WindowBuilder::order_by`])
@@ -37,11 +37,9 @@ use crate::query::order::Direction;
 /// methods added in GH #302).
 ///
 /// The `Expr` variant carries a boxed [`crate::expr::node::ExprNode`] plus
-/// the alias under which the expression is emitted in the SELECT list. At
-/// emit time, the alias is pushed into the window clause (`PARTITION BY
-/// <alias>` / `ORDER BY <alias> ASC`), and the window-function-owning
-/// annotate terminal ensures the expression itself is emitted in the SELECT
-/// list with `AS <alias>` before the window function references it.
+/// the table alias (e.g. `"l"` or `"r"`) under which the expression's fields
+/// are qualified. At emit time, the entire expression is emitted directly inside
+/// the window clause (e.g. `PARTITION BY l.col * 10`).
 #[derive(Clone, Debug)]
 pub(crate) enum WindowTerm {
     /// A bare column reference — emitted as-is.
@@ -833,17 +831,21 @@ mod tests {
     #[test]
     fn order_by_pair_expr_desc_emits_qualified_arithmetic() {
         use crate::expr::node::ExprNode;
+        use crate::query::condition::FilterValue;
         let spec = WindowSpec {
             order_by: vec![(
                 crate::expr::window::WindowTerm::Expr {
-                    node: Box::new(ExprNode::Field { column: "score" }),
-                    alias: "r",
+                    node: Box::new(ExprNode::Mul(
+                        Box::new(ExprNode::Field { column: "score" }),
+                        Box::new(ExprNode::Literal(FilterValue::I32(10))),
+                    )),
+                    alias: "l",
                 },
                 Direction::Desc,
             )],
             ..Default::default()
         };
-        assert_eq!(emit(&spec), " OVER (ORDER BY r.score DESC)");
+        assert_eq!(emit(&spec), " OVER (ORDER BY l.score * $1 DESC)");
     }
 
     #[test]
