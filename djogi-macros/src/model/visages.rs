@@ -38,7 +38,7 @@ use crate::model::visage_ctx::{
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::ItemStruct;
+use syn::{Ident, ItemStruct};
 
 /// Every scope emits one generated visage struct, in this fixed order.
 pub(crate) const SCOPES: &[(&str, &str)] = &[
@@ -68,6 +68,10 @@ pub fn expand(
     // model's full visage-scope universe so the adopter sees both the
     // built-ins and the custom set in one error.
     if let Err(e) = validate_field_scope_membership(struct_item, model_attrs, field_attrs) {
+        return e.to_compile_error();
+    }
+
+    if let Err(e) = validate_visage_names(struct_item, model_attrs) {
         return e.to_compile_error();
     }
 
@@ -272,6 +276,172 @@ fn unknown_scope_error(
              `#[model(visage_scopes(name = Suffix))]` on the model.",
         ),
     )
+}
+
+fn validate_visage_names(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+) -> syn::Result<()> {
+    let source = &struct_item.ident;
+    let custom_scope_keys: Vec<&str> = model_attrs
+        .visage_scopes
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+
+    let mut canonical_by_scope: Vec<(String, String)> = Vec::new();
+    for (scope, suffix) in SCOPES {
+        canonical_by_scope.push((scope.to_string(), format!("{source}{suffix}")));
+    }
+    for (scope, suffix) in &model_attrs.visage_scopes {
+        canonical_by_scope.push((scope.clone(), format!("{source}{suffix}")));
+    }
+
+    let mut emitted_names: Vec<(String, String)> = Vec::new();
+    for (scope, suffix) in SCOPES {
+        let name = resolved_name(source, scope, suffix, &model_attrs.visage_names);
+        emitted_names.push((scope.to_string(), name));
+    }
+    for (scope, suffix) in &model_attrs.visage_scopes {
+        let name = resolved_name(source, scope, suffix, &model_attrs.visage_names);
+        emitted_names.push((scope.clone(), name));
+    }
+
+    let model_keyed_suffixes = &[
+        "Fields",
+        "SqlFields",
+        "Filter",
+        "Related",
+        "OuterRef",
+        "Path",
+        "Computed",
+    ];
+    let mut model_keyed_reserved: Vec<(Ident, &str)> = Vec::new();
+    for suffix in model_keyed_suffixes {
+        model_keyed_reserved.push((format_ident!("{source}{suffix}"), suffix));
+    }
+
+    for (scope_key, custom_ident) in &model_attrs.visage_names {
+        let is_builtin = ExposeSpec::is_builtin_scope(scope_key);
+        let is_custom = custom_scope_keys.contains(&scope_key.as_str());
+        if !is_builtin && !is_custom {
+            let custom_part = if custom_scope_keys.is_empty() {
+                "no custom scopes declared on this model".to_string()
+            } else {
+                format!("custom scopes on this model: {}", custom_scope_keys.join(", "))
+            };
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` names scope `{scope_key}`, which is not a \
+                     scope on this model. Built-in scopes: public, self_view, admin, \
+                     export. {custom_part}. Declare custom scopes via \
+                     `#[model(visage_scopes(name = Suffix))]`.",
+                ),
+            ));
+        }
+
+        if custom_ident == source {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` collides with the \
+                     model type `{source}`. Pick a name distinct from the model.",
+                ),
+            ));
+        }
+
+        if let Some((reserved, suffix)) =
+            model_keyed_reserved.iter().find(|(r, _)| custom_ident == r)
+        {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` collides with the \
+                     `{reserved}` type the derive emits for model `{source}` (the \
+                     `{suffix}` sibling). Pick a name that does not end in a reserved \
+                     derive suffix (`Fields`, `SqlFields`, `Filter`, `Related`, \
+                     `OuterRef`, `Path`, `Computed`) over the model name.",
+                ),
+            ));
+        }
+
+        let custom_name = custom_ident.to_string();
+        if let Some((other_scope, _)) = canonical_by_scope
+            .iter()
+            .find(|(s, canon)| s != scope_key && *canon == custom_name)
+        {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` is the canonical \
+                     name of scope `{other_scope}` on model `{source}`. The macro still \
+                     emits `{custom_ident}` as the canonical alias for `{other_scope}`, \
+                     so reusing it for scope `{scope_key}` would produce a duplicate \
+                     definition. Use a name distinct from every scope's canonical \
+                     `{{Model}}{{Scope}}` name.",
+                ),
+            ));
+        }
+
+        for (other_scope_key, other_emitted) in &emitted_names {
+            if other_scope_key == scope_key {
+                continue;
+            }
+            let other_fields = format_ident!("{other_emitted}Fields").to_string();
+            let other_filter = format_ident!("{other_emitted}Filter").to_string();
+            if custom_name == other_fields || custom_name == other_filter {
+                return Err(syn::Error::new(
+                    custom_ident.span(),
+                    format!(
+                        "`visage_names(...)` custom name `{custom_ident}` is the name of a \
+                         sibling type (`{other_fields}` or `{other_filter}`) emitted for \
+                         scope `{other_scope_key}` of model `{source}`. Pick a name that \
+                         does not match any `{{Visage}}Fields` or `{{Visage}}Filter` type \
+                         emitted for another scope.",
+                    ),
+                ));
+            }
+        }
+    }
+
+    for i in 0..emitted_names.len() {
+        for j in (i + 1)..emitted_names.len() {
+            if emitted_names[i].1 == emitted_names[j].1 {
+                let colliding = &emitted_names[i].1;
+                let span_ident = model_attrs
+                    .visage_names
+                    .iter()
+                    .find(|(k, _)| k == &emitted_names[i].0 || k == &emitted_names[j].0)
+                    .map(|(_, ident)| ident.span())
+                    .unwrap_or_else(|| source.span());
+                return Err(syn::Error::new(
+                    span_ident,
+                    format!(
+                        "two visages on `{source}` would be named `{colliding}` \
+                         (scopes `{}` and `{}`). Each scope's visage must have a \
+                         unique type name — adjust the `visage_names(...)` entry.",
+                        emitted_names[i].0, emitted_names[j].0,
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolved_name(
+    source: &syn::Ident,
+    scope: &str,
+    suffix: &str,
+    visage_names: &[(String, syn::Ident)],
+) -> String {
+    visage_names
+        .iter()
+        .find(|(k, _)| k == scope)
+        .map(|(_, ident)| ident.to_string())
+        .unwrap_or_else(|| format!("{source}{suffix}"))
 }
 
 /// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
