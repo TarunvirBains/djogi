@@ -304,6 +304,9 @@ because `UserPublic` resolves through the alias to `UserSummary`. A rename
 never forces edits at embedding sites.
 
 The canonical alias is always emitted in this version; there is no opt-out.
+For models with `#[model(pk = None)]`, the `{CanonName}Fields` alias is
+omitted because those models emit no `{Visage}Fields` struct; only the struct
+alias and `{CanonName}Filter` alias are emitted.
 Removing the canonical name (keeping only the custom name) is a possible
 future addition if a concrete need arises.
 

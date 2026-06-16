@@ -1,6 +1,9 @@
-//! Renaming a visage does not perturb model registration or the visage's
-//! own query entry point. The renamed visage keeps its queryset entry and
-//! descriptor; the model descriptor is keyed on the model name, unaffected.
+//! Renaming a visage does not perturb the visage's query entry points.
+//! The renamed visage and its canonical alias both expose working queryset
+//! filter entry points (`{Visage}::filter`). Descriptor stability (`type_name`
+//! is always the model struct ident, never the visage ident) is structurally
+//! guaranteed by `djogi-macros/src/model/descriptor.rs` and not re-verified
+//! here.
 use djogi::prelude::*;
 
 #[model(table = "visage_rename_descriptor_stable", visage_names(public = PublicUserCard))]

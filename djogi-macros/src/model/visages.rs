@@ -403,6 +403,53 @@ fn validate_visage_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
                 ));
             }
         }
+
+        // Also guard against collisions with the canonical-alias siblings
+        // emitted for OTHER renamed scopes. When scope T is renamed, the macro
+        // emits `pub type {canonT}Fields = {CT}Fields;` (skipped for `pk =
+        // None`) and `pub type {canonT}Filter = {CT}Filter;` as canonical
+        // aliases keyed on the DEFAULT `{Model}{Scope}` name (see
+        // `emit_projection_for_scope`). The sibling check above only covers
+        // the CUSTOM-named siblings (`{CT}Fields` / `{CT}Filter`), so a custom
+        // name equal to a canonical-alias sibling of another renamed scope —
+        // e.g. scope `public` renamed to `UserSummary` emits `UserPublicFields`,
+        // and a different scope named `UserPublicFields` — would otherwise fall
+        // through to a bare E0428 with no span-precise guidance.
+        for (other_scope_key, _other_ident) in &model_attrs.visage_names {
+            if other_scope_key == scope_key {
+                continue;
+            }
+            // The canonical alias is only emitted when the other scope is
+            // actually renamed; `model_attrs.visage_names` membership is that
+            // condition. Look up the other scope's DEFAULT `{Model}{Scope}`
+            // name to form the canonical-alias sibling spellings.
+            let Some((_, canon_of_other)) = canonical_by_scope
+                .iter()
+                .find(|(s, _)| s == other_scope_key)
+            else {
+                continue;
+            };
+            let other_canon_fields = format_ident!("{canon_of_other}Fields").to_string();
+            let other_canon_filter = format_ident!("{canon_of_other}Filter").to_string();
+            // The `{canonT}Fields` alias is suppressed for `pk = None` models
+            // (those emit no `{Visage}Fields` struct), so only flag a Fields
+            // collision when the alias is actually emitted.
+            let emits_fields_alias = !matches!(model_attrs.pk, PkStrategy::None);
+            if (emits_fields_alias && custom_name == other_canon_fields)
+                || custom_name == other_canon_filter
+            {
+                return Err(syn::Error::new(
+                    custom_ident.span(),
+                    format!(
+                        "`visage_names(...)` custom name `{custom_ident}` collides with a \
+                         canonical-alias sibling (`{other_canon_fields}` or \
+                         `{other_canon_filter}`) the macro emits for the renamed scope \
+                         `{other_scope_key}` of model `{source}`. Pick a name that does not \
+                         match any canonical-alias sibling type.",
+                    ),
+                ));
+            }
+        }
     }
 
     for i in 0..emitted_names.len() {

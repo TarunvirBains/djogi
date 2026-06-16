@@ -1,0 +1,7 @@
+error: `visage_names(...)` custom name `UserPublicFields` collides with a canonical-alias sibling (`UserPublicFields` or `UserPublicFilter`) the macro emits for the renamed scope `public` of model `User`. Pick a name that does not match any canonical-alias sibling type.
+  --> $DIR/visage_rename_canonical_alias_sibling.rs:12:48
+   |
+12 |     visage_names(public = UserSummary, admin = UserPublicFields)
+   |                                                ^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
