@@ -217,7 +217,7 @@ fn cross_union_all_visage_arms_with_outer_order_compose() {
 
 #[test]
 fn cross_column_count_mismatch_rejected_at_build_time() {
-    // Author has 2 columns (id, name), Activity expects 3 (id, actor, recent).
+    // Author has 4 columns (id, created_at, updated_at, name), Activity expects 5 (id, created_at, updated_at, actor, recent).
     let left = Author::objects();
     let right = Login::objects();
     let err = djogi::query::union_as::<Activity, _, _>(left, right)
@@ -231,7 +231,7 @@ fn cross_column_count_mismatch_rejected_at_build_time() {
 
 #[test]
 fn cross_column_count_mismatch_rejected_on_right_arm() {
-    // Login has 3 columns (id, actor, recent), Author has 2 (id, name).
+    // Login has 5 columns (id, created_at, updated_at, actor, recent), Author has 4 (id, created_at, updated_at, name).
     let left = Login::objects();
     let right = Author::objects();
     let err = djogi::query::union_as::<Activity, _, _>(left, right)
@@ -254,5 +254,20 @@ fn cross_column_count_mismatch_rejected_on_count() {
     assert!(
         matches!(err, DjogiError::CrossModelSetOpColumnMismatch { side, .. } if side == "left"),
         "count path must also reject column mismatch: {err:?}"
+    );
+}
+
+#[test]
+fn cross_column_mismatch_visage_vs_model_rejected_on_right() {
+    // MsgEventPublic visage: 5 cols (id, created_at, updated_at, actor, occurred)
+    // Author model:          4 cols (id, created_at, updated_at, name)
+    let left = MsgEventPublic::filter(|f| f.occurred().gte(10i32));
+    let right = Author::objects();
+    let err = djogi::query::union_as::<MsgEventPublic, _, _>(left, right)
+        .render_cross_set_op_sql_for_testing()
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::CrossModelSetOpColumnMismatch { side, .. } if side == "right"),
+        "right arm (Author 4 cols) vs target (MsgEventPublic 5 cols) must be rejected: {err:?}"
     );
 }

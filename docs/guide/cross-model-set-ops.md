@@ -52,7 +52,9 @@ Rust needs `R` because the two arms may have different `Model` types, so the
 result type cannot be inferred from either arm alone. The decode target is
 independent of both `LeftModel` and `RightModel`; it only needs to match the
 column shapes produced by the arm SELECT projections at runtime. Column
-mismatches surface as Postgres decode errors when the terminal executes.
+**count** mismatches are caught at SQL-build time and return
+[`DjogiError::CrossModelSetOpColumnMismatch`](crate::error::DjogiError::CrossModelSetOpColumnMismatch). Column **type** mismatches
+(same count, incompatible OIDs) still surface as Postgres decode errors.
 
 ---
 

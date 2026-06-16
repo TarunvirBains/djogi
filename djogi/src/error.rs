@@ -778,6 +778,8 @@ pub enum DjogiError {
     /// conflicted; `left_tenant` and `right_tenant` are the concrete tenant
     /// IDs each arm resolved to (both always `Some` — if either were `None`,
     /// reconciliation would succeed trivially).
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — tenant mismatch
+    /// between arms is a structural conflict; retrying cannot resolve it.
     #[error(
         "cross-model set-op tenant conflict: left `{left_model}` → {left_tenant}, \
          right `{right_model}` → {right_tenant}"
@@ -798,9 +800,12 @@ pub enum DjogiError {
     /// Classified as **terminal** by [`DjogiError::is_transient`] — a
     /// structural column mismatch cannot be resolved by retrying.
     #[error(
-        "cross-model set-op column shape mismatch: {side} arm produces {} columns, \
-         decode target expects {} columns",
-        arm_columns.len(), expected_columns.len()
+        "cross-model set-op column shape mismatch: {side} arm produces {arm_count} columns [{arm_list}], \
+         decode target expects {exp_count} columns [{exp_list}]",
+        arm_count = arm_columns.len(),
+        arm_list = arm_columns.join(", "),
+        exp_count = expected_columns.len(),
+        exp_list = expected_columns.join(", ")
     )]
     #[non_exhaustive]
     CrossModelSetOpColumnMismatch {
@@ -1738,15 +1743,22 @@ mod tests {
             .is_terminal(),
             "CrossModelSetOpTenantConflict must be terminal — tenant mismatch cannot be resolved by retrying"
         );
-        assert!(
-            DjogiError::CrossModelSetOpColumnMismatch {
+        {
+            let err = DjogiError::CrossModelSetOpColumnMismatch {
                 side: "left",
                 arm_columns: vec!["id", "name"],
                 expected_columns: vec!["id", "actor", "recent"],
-            }
-            .is_terminal(),
-            "CrossModelSetOpColumnMismatch must be terminal — column count mismatch cannot be resolved by retrying"
-        );
+            };
+            assert!(
+                err.is_terminal(),
+                "CrossModelSetOpColumnMismatch must be terminal — column count mismatch cannot be resolved by retrying"
+            );
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("id, name") && msg.contains("id, actor, recent"),
+                "error message must include arm and expected column lists: {msg}"
+            );
+        }
         assert!(
             DjogiError::unsupported_postgres_version(17, 4, 18).is_terminal(),
             "UnsupportedPostgresVersion must be terminal — version mismatch cannot be resolved by retrying"

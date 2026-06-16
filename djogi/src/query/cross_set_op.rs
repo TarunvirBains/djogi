@@ -85,7 +85,7 @@ pub trait CrossArm<R: FromPgRow>: Send + Sync {
         ctx: &'a mut DjogiContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>;
     /// Column names this arm emits, in SELECT ordinal position.
-    /// Used at SQL-build time for count validation against decode target `R`.
+    /// Used at SQL-build time for shape compatibility validation against decode target `R`.
     fn arm_columns(&self) -> &'static [&'static str];
 }
 
@@ -247,8 +247,10 @@ where
 /// The `R: FromPgRow` type parameter is the decode target for all result
 /// rows. Both arms must produce columns positionally compatible with `R`, but
 /// the arms' own `Model` types can differ. There is no compile-time guarantee
-/// that the arm columns match `R`; mismatches surface as Postgres decode
-/// errors at terminal execution time.
+/// that the arm columns match `R`; column count mismatches are validated at
+/// SQL-build time and return `DjogiError::CrossModelSetOpColumnMismatch`.
+/// Column type mismatches (same count, incompatible OIDs) still surface as
+/// Postgres decode errors.
 pub struct CrossModelSetOpQuerySet<R: FromPgRow> {
     pub(crate) left: Box<dyn CrossArm<R>>,
     pub(crate) op: SetOpKind,
@@ -642,7 +644,8 @@ where
     /// - [`DjogiError::SetOpArmInvalid`] if either arm carries prefetch/lock/cache bindings.
     /// - [`DjogiError::SetOpOuterOrderingInvalid`] if outer ORDER BY column is invalid.
     /// - [`DjogiError::CrossModelSetOpTenantConflict`] if arms resolve to different tenants.
-    /// - Postgres error if arm columns don't align with `R`.
+    /// - [`DjogiError::CrossModelSetOpColumnMismatch`] if an arm's column count differs from `R`.
+    /// - Postgres decode error if arm columns have the same count but incompatible types.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
