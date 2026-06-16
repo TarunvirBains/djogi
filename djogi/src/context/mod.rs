@@ -62,8 +62,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_postgres::Row;
 
-mod pinned_ctx;
 pub(crate) mod macro_support;
+mod pinned_ctx;
 
 #[allow(unused_imports)] // Used by migration runner after GH #331 integration
 pub(crate) use pinned_ctx::OwnedPinnedCtx;

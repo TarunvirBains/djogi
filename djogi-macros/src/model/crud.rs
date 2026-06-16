@@ -901,17 +901,18 @@ pub fn expand(
     // Tenant-keyed + hooks paths need a rollback point immediately
     // before auto tenant application so pre-hook failures can restore
     // the original tenant/auth scope.
-    let snapshot_auth_state_before_auto_set =
-        if model_attrs.hooks && model_attrs.tenant_key.is_some() {
-            quote! {
-                let __djogi_auth_snapshot =
-                    <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__snapshot_auth_state_for_macros(
-                        ctx,
-                    );
-            }
-        } else {
-            TokenStream::new()
-        };
+    let snapshot_auth_state_before_auto_set = if model_attrs.hooks
+        && model_attrs.tenant_key.is_some()
+    {
+        quote! {
+            let __djogi_auth_snapshot =
+                <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__snapshot_auth_state_for_macros(
+                    ctx,
+                );
+        }
+    } else {
+        TokenStream::new()
+    };
 
     // -------------------------------------------------------------------------
     // Per-method async bodies.

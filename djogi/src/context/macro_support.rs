@@ -72,10 +72,7 @@ pub trait MacroSupportExtBase: sealed::Sealed {
     fn __tenant_scope_suppressed_for_macros(&self) -> bool;
 
     /// Ensure `app.tenant_id` is set on this context. For macro-emitted code only.
-    async fn __ensure_tenant_set_for_macros(
-        &mut self,
-        tenant_id: &str,
-    ) -> Result<(), DjogiError>;
+    async fn __ensure_tenant_set_for_macros(&mut self, tenant_id: &str) -> Result<(), DjogiError>;
 
     /// Snapshot auth-related mutable state. For macro-emitted code only.
     fn __snapshot_auth_state_for_macros(&self) -> AuthStateSnapshot;
@@ -133,10 +130,7 @@ impl MacroSupportExt for DjogiContext {
         self.tenant_scope_suppressed
     }
 
-    async fn __ensure_tenant_set_for_macros(
-        &mut self,
-        tenant_id: &str,
-    ) -> Result<(), DjogiError> {
+    async fn __ensure_tenant_set_for_macros(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
         self.ensure_tenant_set(tenant_id).await
     }
 

@@ -305,10 +305,7 @@ pub async fn side_effects_suppressed(ctx: &mut DjogiContext) -> Result<bool, Hoo
         "SELECT current_setting('{name}', true)",
         name = SIDE_EFFECT_SUPPRESSION_TXN_LOCAL,
     );
-    let row_opt = ctx
-        .query_opt(&sql, &[])
-        .await
-        .map_err(HookError::from)?;
+    let row_opt = ctx.query_opt(&sql, &[]).await.map_err(HookError::from)?;
     let row = match row_opt {
         Some(row) => row,
         None => return Ok(false),
