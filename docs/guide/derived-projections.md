@@ -262,3 +262,14 @@ code is type-checked. SQL name and type mistakes that require database
 knowledge surface when the derived visage queryset is executed.
 Parity drift between the two paths surfaces from the generated
 `assert_derived_parity` helper.
+
+## Per-audience JSONB schemas
+
+A common use of derived fields is projecting a narrower `Jsonb<T>` shape
+for a specific audience — for example exposing only display-safe keys of a
+`Jsonb<ProfileMetaAdmin>` storage column to the `public` scope. The
+storage column carries the full schema; a `#[derived(ty =
+Jsonb<NarrowSchema>, sql = "jsonb_build_object(...)", ...)]` projects the
+narrow shape. See the worked example and the
+[E_DJG_VDF_017](./jsonb.md#per-audience-jsonb-schema) safety guard in the
+JSONB guide.

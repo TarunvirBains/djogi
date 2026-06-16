@@ -399,6 +399,10 @@ See [Derived Projections](./derived-projections.md) for the adopter
 surface, parity rule, nullable-value handling, fallibility detection,
 and current Tier 1 limits.
 
+### Typed JSON Fields
+
+> Beyond "include the whole field or exclude it", a third option exists: project a *narrower* `Jsonb<T>` shape for a specific audience via a `#[derived(...)]` entry. See [Per-audience JSONB schema](./jsonb.md#per-audience-jsonb-schema).
+
 ## Protected fields and redaction
 
 Visages are the primary enforcement point for data governance. When a field is projected into a visage, Djogi applies the `redaction` policy or the `per_scope` codec declared in `#[field(protected(...))]`.
@@ -439,6 +443,5 @@ The following remain non-goals for the visage layer:
   parser rejects this grammar with an actionable compile error.
 - **Field renaming inside `expose(...)`** — rename at the serde level
   if you need a different JSON shape.
-- **JSONB subfield visages** — per-subfield masking of `Jsonb<T>`
-  fields is not supported.
+- **JSONB subfield aggregate visages** — container element narrowing (Vec, IndexMap) is not supported (deferred to later aggregate features).
 - **Admin UI / export UI** consuming visage metadata.
