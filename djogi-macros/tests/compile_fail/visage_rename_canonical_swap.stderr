@@ -1,0 +1,7 @@
+error: `visage_names(...)` custom name `UserAdmin` is the canonical name of scope `admin` on model `User`. The macro still emits `UserAdmin` as the canonical alias for `admin`, so reusing it for scope `public` would produce a duplicate definition. Use a name distinct from every scope's canonical `{Model}{Scope}` name.
+ --> $DIR/visage_rename_canonical_swap.rs:8:27
+  |
+8 |     visage_names(public = UserAdmin, admin = UserPublic)
+  |                           ^^^^^^^^^
+
+error: aborting due to 1 previous error

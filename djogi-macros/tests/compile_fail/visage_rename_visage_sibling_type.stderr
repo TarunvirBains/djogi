@@ -1,0 +1,7 @@
+error: `visage_names(...)` custom name `UserAdminFields` is the name of a sibling type (`UserAdminFields` or `UserAdminFilter`) emitted for scope `admin` of model `User`. Pick a name that does not match any `{Visage}Fields` or `{Visage}Filter` type emitted for another scope.
+ --> $DIR/visage_rename_visage_sibling_type.rs:7:82
+  |
+7 | ...rs", visage_names(public = UserAdminFields))]
+  |                               ^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
