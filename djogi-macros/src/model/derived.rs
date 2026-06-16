@@ -1002,9 +1002,12 @@ fn skip_dollar_body(bytes: &[u8], body_start: usize, tag_bytes: &[u8]) -> usize 
 pub fn cross_check(
     derived: &[DerivedAttr],
     column_exposures: &[(String, Vec<&'static str>)],
+    storage_field_types: &[(String, syn::Type)],
     relation_form_exposures: &[(String, Vec<&'static str>)],
     pk_is_none: bool,
 ) -> syn::Result<()> {
+    let _ = storage_field_types;
+
     // E_DJG_VDF_015 — `pk = None` host model.
     if pk_is_none && !derived.is_empty() {
         return Err(syn::Error::new(
@@ -1638,7 +1641,7 @@ mod tests {
             struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
-        let err = cross_check(&parsed, &[], &[], true).expect_err("pk = None must reject");
+        let err = cross_check(&parsed, &[], &[], &[], true).expect_err("pk = None must reject");
         assert!(err.to_string().contains("E_DJG_VDF_015"));
     }
 
@@ -1656,7 +1659,7 @@ mod tests {
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["public"])];
-        let err = cross_check(&parsed, &columns, &[], false).expect_err("collision must reject");
+        let err = cross_check(&parsed, &columns, &[], &[], false).expect_err("collision must reject");
         assert!(err.to_string().contains("E_DJG_VDF_002"));
     }
 
@@ -1675,7 +1678,7 @@ mod tests {
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("department".to_string(), vec!["public"])];
         let relation_forms = vec![("department".to_string(), vec!["public"])];
-        let err = cross_check(&parsed, &columns, &relation_forms, false)
+        let err = cross_check(&parsed, &columns, &[], &relation_forms, false)
             .expect_err("relation-form overlap must reject before column collision");
         assert!(err.to_string().contains("E_DJG_VDF_010"));
     }
@@ -1696,7 +1699,7 @@ mod tests {
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
         let columns = vec![("display_name".to_string(), vec!["admin"])];
-        cross_check(&parsed, &columns, &[], false).expect("no collision");
+        cross_check(&parsed, &columns, &[], &[], false).expect("no collision");
     }
 
     #[test]
@@ -1707,7 +1710,7 @@ mod tests {
             struct M { f: i32 }
         });
         let parsed = parse_derived_attrs(&s).expect("ok");
-        let err = cross_check(&parsed, &[], &[], false).expect_err("collision must reject");
+        let err = cross_check(&parsed, &[], &[], &[], false).expect_err("collision must reject");
         assert!(err.to_string().contains("E_DJG_VDF_003"));
     }
 
