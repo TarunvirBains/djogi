@@ -482,6 +482,11 @@ path = "../tests/integration/visage_subquery_correlated.rs"
 harness = true
 
 [[test]]
+name = "visage_subquery_all"
+path = "../tests/integration/visage_subquery_all.rs"
+harness = true
+
+[[test]]
 name = "proxy_visage_default_filter"
 path = "../tests/internal/proxy_visage_default_filter.rs"
 harness = true
