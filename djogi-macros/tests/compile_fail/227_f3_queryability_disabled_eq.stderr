@@ -1,8 +1,8 @@
-error[E0599]: the method `eq` exists for struct `PresentationFieldRef<User, ..., ...>`, but its trait bounds were not satisfied
+error[E0599]: the method `eq` exists for struct `PresentationFieldRef<User, MaskString, std::string::String>`, but its trait bounds were not satisfied
    --> $DIR/227_f3_queryability_disabled_eq.rs:28:50
     |
- 28 | ...licFields::default().ssn().eq("123-45-6789".to_string());
-    |                               ^^ method cannot be called on `PresentationFieldRef<User, ..., ...>` due to unsatisfied trait bounds
+ 28 |     let _bad = UserPublicFields::default().ssn().eq("123-45-6789".to_string());
+    |                                                  ^^ method cannot be called due to unsatisfied trait bounds
     |
    ::: djogi/src/presentation/builtins.rs:292:1
     |
@@ -18,8 +18,6 @@ error[E0599]: the method `eq` exists for struct `PresentationFieldRef<User, ...,
             `MaskString: PresentationQueryCodec<std::string::String>`
             `PresentationFieldRef<User, MaskString, std::string::String>: Iterator`
             which is required by `&mut PresentationFieldRef<User, MaskString, std::string::String>: Iterator`
-    = note: the full name for the type has been written to '$LONGTYPE_FILE'
-    = note: consider using `--verbose` to print the full type name to the console
 
 error: aborting due to 1 previous error
 

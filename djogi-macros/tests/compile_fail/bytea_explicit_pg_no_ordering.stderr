@@ -1,8 +1,8 @@
 error[E0599]: the method `gt` exists for struct `ExplicitPgPredicateField<Blob, Vec<u8>>`, but its trait bounds were not satisfied
    --> $DIR/bytea_explicit_pg_no_ordering.rs:17:76
     |
- 17 | ...().explicit_pg_predicate().gt(vec![1, 2]));
-    |                               ^^ method cannot be called on `ExplicitPgPredicateField<Blob, Vec<u8>>` due to unsatisfied trait bounds
+ 17 |     let _ = Blob::objects().filter(|f| f.payload().explicit_pg_predicate().gt(vec![1, 2]));
+    |                                                                            ^^ method cannot be called on `ExplicitPgPredicateField<Blob, Vec<u8>>` due to unsatisfied trait bounds
     |
    ::: djogi/src/query/field.rs:794:1
     |
