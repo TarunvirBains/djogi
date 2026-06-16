@@ -1710,6 +1710,16 @@ mod tests {
             "MergeNoBranches must be terminal"
         );
         assert!(
+            DjogiError::CrossModelSetOpTenantConflict {
+                left_model: "M",
+                left_tenant: "t1".into(),
+                right_model: "N",
+                right_tenant: "t2".into(),
+            }
+            .is_terminal(),
+            "CrossModelSetOpTenantConflict must be terminal — tenant mismatch cannot be resolved by retrying"
+        );
+        assert!(
             DjogiError::unsupported_postgres_version(17, 4, 18).is_terminal(),
             "UnsupportedPostgresVersion must be terminal — version mismatch cannot be resolved by retrying"
         );

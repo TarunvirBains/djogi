@@ -480,19 +480,26 @@ impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
 
     /// Set an outer `LIMIT` applied to the combined result.
     /// `None` means no limit; setting this replaces any previous limit.
+    /// Panics if `n > i64::MAX` — Postgres bind type for `LIMIT` is `BIGINT`,
+    /// so values above `i64::MAX` cannot round-trip. The check uses
+    /// `try_from` (not `debug_assert!`) so release builds also panic
+    /// rather than silently truncate.
     #[must_use = "cross-model set ops are lazy"]
     pub fn limit(mut self, n: u64) -> Self {
-        debug_assert!(n <= i64::MAX as u64);
-        self.limit = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("CrossModelSetOpQuerySet::limit(n = {n}) overflows i64"));
+        self.limit = Some(n);
         self
     }
 
     /// Set an outer `OFFSET` applied to the combined result.
     /// `None` means no offset; setting this replaces any previous offset.
+    /// Panics if `n > i64::MAX` — see [`Self::limit`] for the rationale.
     #[must_use = "cross-model set ops are lazy"]
     pub fn offset(mut self, n: u64) -> Self {
-        debug_assert!(n <= i64::MAX as u64);
-        self.offset = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("CrossModelSetOpQuerySet::offset(n = {n}) overflows i64"));
+        self.offset = Some(n);
         self
     }
 }
