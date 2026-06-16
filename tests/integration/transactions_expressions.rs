@@ -285,7 +285,7 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
                 .with_tenant("1000"),
         );
         let auth_before = ctx.auth().cloned().expect("parent auth snapshot");
-        let tenant_scope_before = ctx.__tenant_scope_suppressed_for_macros();
+        let tenant_scope_before = ctx.tenant_scope_suppressed();
         ctx.set_tenant("stage1-parent")
             .await
             .expect("prime parent transaction trackers");
@@ -364,7 +364,7 @@ async fn atomic_pool_context_cancellation_detaches_dirty_connection() {
             "pool-context cancellation must not mutate parent auth ext"
         );
         assert_eq!(
-            ctx.__tenant_scope_suppressed_for_macros(),
+            ctx.tenant_scope_suppressed(),
             tenant_scope_before,
             "pool-context cancellation must not mutate parent tenant-scope suppression"
         );
@@ -511,7 +511,7 @@ async fn nested_atomic_cancellation_poisons_outer_transaction(mut ctx: djogi::Dj
                 );
                 outer.set_tenant("outer-tenant").await?;
                 let auth_before = outer.auth().cloned().expect("outer auth snapshot");
-                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+                let tenant_scope_before = outer.tenant_scope_suppressed();
                 let tenant_set_before = outer.tenant_set;
                 let applied_tenant_before = outer.applied_tenant_id().map(str::to_owned);
 
@@ -576,7 +576,7 @@ async fn nested_atomic_cancellation_poisons_outer_transaction(mut ctx: djogi::Dj
                 assert_eq!(auth_after.scopes, auth_before.scopes);
                 assert_eq!(auth_after.ext, auth_before.ext);
                 assert_eq!(
-                    outer.__tenant_scope_suppressed_for_macros(),
+                    outer.tenant_scope_suppressed(),
                     tenant_scope_before
                 );
                 assert_eq!(outer.tenant_set, tenant_set_before);
@@ -726,7 +726,7 @@ async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_wo
                         .with_tenant("1000"),
                 );
                 let auth_before = outer.auth().cloned().expect("outer auth snapshot");
-                let tenant_scope_before = outer.__tenant_scope_suppressed_for_macros();
+                let tenant_scope_before = outer.tenant_scope_suppressed();
 
                 outer
                     .set_tenant("1000")
@@ -832,7 +832,7 @@ async fn nested_atomic_cancellation_poisoned_outer_transaction_rolls_back_all_wo
                     "nested cancellation must restore outer auth ext"
                 );
                 assert_eq!(
-                    outer.__tenant_scope_suppressed_for_macros(),
+                    outer.tenant_scope_suppressed(),
                     tenant_scope_before,
                     "nested cancellation must restore outer tenant-scope suppression"
                 );

@@ -134,7 +134,7 @@ async fn clone_for_concurrent_reads_preserves_auth(mut ctx: djogi::DjogiContext)
         "clone_for_concurrent_reads must copy auth into the new context",
     );
     assert!(
-        cloned.__tenant_scope_suppressed_for_macros(),
+        cloned.tenant_scope_suppressed(),
         "clone_for_concurrent_reads must preserve tenant-scope suppression",
     );
 }

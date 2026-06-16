@@ -1215,6 +1215,12 @@ impl DjogiContext {
         self.applied_tenant_id.as_deref()
     }
 
+    /// Return whether the cross-tenant warning is suppressed on this
+    /// context. Set via [`Self::set_no_tenant_scope`].
+    pub fn tenant_scope_suppressed(&self) -> bool {
+        self.tenant_scope_suppressed
+    }
+
     /// Switch the Postgres session role for the remainder of the current
     /// transaction by issuing `SET LOCAL ROLE "<role>"`.
     /// This is the security-overlay primitive the row-level-security
