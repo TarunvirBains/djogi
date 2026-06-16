@@ -259,6 +259,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_single_node_dev_allowed_in_dev() {
         let env = EnvGuard::new();
@@ -282,6 +283,7 @@ mod tests {
         assert_eq!(result, Err(CliIdentityResolveError::ConflictingFlags));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_missing_identity() {
         let env = EnvGuard::new();
@@ -290,6 +292,7 @@ mod tests {
         assert_eq!(result, Err(CliIdentityResolveError::MissingNodeIdentity));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_env_var_fallback() {
         let env = EnvGuard::new();
@@ -298,6 +301,7 @@ mod tests {
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(42)));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_explicit_wins_over_env() {
         let env = EnvGuard::new();
@@ -306,6 +310,7 @@ mod tests {
         assert_eq!(result, Ok(CliResolvedIdentity::Selected(7)));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_env_var_out_of_range() {
         let env = EnvGuard::new();
@@ -317,6 +322,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_env_var_unparseable() {
         let env = EnvGuard::new();
@@ -341,6 +347,7 @@ mod tests {
         assert!(!validate_node_id_range(512));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_single_node_dev_refused_in_djogi_env_production() {
         let env = EnvGuard::new();
@@ -352,6 +359,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_single_node_dev_allowed_in_djogi_env_development() {
         let env = EnvGuard::new();
@@ -360,6 +368,7 @@ mod tests {
         assert_eq!(result, Ok(CliResolvedIdentity::SingleNodeDev));
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_single_node_dev_refused_in_mixed_case_djogi_env_production() {
         let env = EnvGuard::new();
@@ -371,6 +380,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn env_guard_restores_prior_values() {
         let env = EnvGuard::new();
