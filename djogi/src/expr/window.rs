@@ -267,18 +267,29 @@ impl WindowBuilder {
 }
 
 impl WindowSpec {
-    /// Whether every column reference stored in this window spec is
-    /// pair-side-qualified (`l.<col>` or `r.<col>`).
+    /// Whether every term stored in this window spec is unambiguous under a
+    /// self-join — i.e. every emitted column reference is pair-side-qualified
+    /// (`l.<col>` or `r.<col>`).
     /// # What
-    /// Inspects [`Self::partition_by`] and the column part of every
-    /// [`Self::order_by`] entry. Returns `true` iff every stored
-    /// reference starts with `"l."` or `"r."` — the exact prefixes that
-    /// [`PairWindowExt::partition_by_pair`](crate::query::joined::PairWindowExt::partition_by_pair),
-    /// [`PairWindowExt::order_by_pair_asc`](crate::query::joined::PairWindowExt::order_by_pair_asc),
-    /// and
-    /// [`PairWindowExt::order_by_pair_desc`](crate::query::joined::PairWindowExt::order_by_pair_desc)
-    /// produce. A vacuous window (no partition, no order) returns `true`
-    /// `OVER ()` references no columns and is unambiguous.
+    /// Inspects [`Self::partition_by`] and the term part of every
+    /// [`Self::order_by`] entry, and returns `true` iff every term is
+    /// unambiguous:
+    /// - [`WindowTerm::Column`] entries must start with `"l."` or `"r."` — the
+    ///   exact prefixes that
+    ///   [`PairWindowExt::partition_by_pair`](crate::query::joined::PairWindowExt::partition_by_pair),
+    ///   [`PairWindowExt::order_by_pair_asc`](crate::query::joined::PairWindowExt::order_by_pair_asc),
+    ///   and
+    ///   [`PairWindowExt::order_by_pair_desc`](crate::query::joined::PairWindowExt::order_by_pair_desc)
+    ///   produce.
+    /// - [`WindowTerm::Expr`] entries carry an explicit pair alias, but only
+    ///   those `ExprNode` variants whose emit arms route every column through
+    ///   `ctx.push_column` actually emit that alias. The allow-list predicate
+    ///   [`is_allowed_window_expr_node`] vets the node; a denied variant
+    ///   (bare-column scalar function, raw fragment, aggregate, subquery,
+    ///   spatial, etc.) makes the spec not pair-qualified.
+    ///
+    /// A vacuous window (no partition, no order) returns `true` — `OVER ()`
+    /// references no columns and is unambiguous.
     /// # Why
     /// The joined-annotation safety gate in
     /// [`JoinedAnnotatedQuerySet::fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all)
@@ -288,7 +299,7 @@ impl WindowSpec {
     /// `id` column. Pair-qualified references (`PARTITION BY l.id`)
     /// are unambiguous by construction.
     /// # How
-    /// Plain column idents are validated by
+    /// For [`WindowTerm::Column`]: plain column idents are validated by
     /// [`crate::ident::assert_plain_ident`] to contain only ASCII
     /// alphanumerics and underscore, so a non-pair-aware `partition_by`
     /// call can never store a string containing `.`. Only the
@@ -297,15 +308,26 @@ impl WindowSpec {
     /// `LEFT_ALIAS` (`"l"`) / `RIGHT_ALIAS` (`"r"`) prefixes. So a
     /// `starts_with("l.")` / `starts_with("r.")` check is a faithful
     /// proxy for "this column was registered through `PairWindowExt`".
+    ///
+    /// For [`WindowTerm::Expr`]: the alias is supplied explicitly by the
+    /// pair-aware builder, but the alias only reaches the SQL for variants
+    /// that emit columns through `ctx.push_column`, so the per-node allow-list
+    /// [`is_allowed_window_expr_node`] is the faithful witness there.
+    ///
     /// This method is the per-instance safety witness for window slots
     /// whose `is_joined_safe` impl forwards here.
     pub(crate) fn is_pair_qualified(&self) -> bool {
         let is_term_pair_qualified = |term: &WindowTerm| match term {
             WindowTerm::Column(s) => s.starts_with("l.") || s.starts_with("r."),
-            // Expr entries are pair-qualified by construction — only
-            // reachable through pair-aware methods that supply an
-            // explicit alias.
-            WindowTerm::Expr { .. } => true,
+            // An Expr entry carries an explicit pair alias, but only those
+            // `ExprNode` variants whose emit arms route every column
+            // reference through `ctx.push_column` actually emit the alias
+            // (`l.<col>` / `r.<col>`). Variants that push a bare column,
+            // a verbatim raw fragment, or emit without a `SqlEmitContext`
+            // would produce ambiguous SQL in a self-join, so they are
+            // rejected by the allow-list gate. See
+            // [`is_allowed_window_expr_node`].
+            WindowTerm::Expr { node, .. } => is_allowed_window_expr_node(node),
         };
         self.partition_by.iter().all(is_term_pair_qualified)
             && self
@@ -336,9 +358,10 @@ impl WindowSpec {
                         crate::query::portable::SqlEmitContext::joined(alias),
                     )
                     .expect(
-                        "ExprNode in window partition/order slot must not contain \
-                             JSON predicates or grouping aggregates — only arithmetic, \
-                             field references, and scalar functions are valid here",
+                        "WindowTerm::Expr nodes are validated by \
+                             is_allowed_window_expr_node at the pair-qualified gate \
+                             before emit — reaching this arm with an Err indicates \
+                             the gate and emitter are out of sync",
                     ),
                 }
             }
@@ -362,9 +385,10 @@ impl WindowSpec {
                         crate::query::portable::SqlEmitContext::joined(alias),
                     )
                     .expect(
-                        "ExprNode in window partition/order slot must not contain \
-                             JSON predicates or grouping aggregates — only arithmetic, \
-                             field references, and scalar functions are valid here",
+                        "WindowTerm::Expr nodes are validated by \
+                             is_allowed_window_expr_node at the pair-qualified gate \
+                             before emit — reaching this arm with an Err indicates \
+                             the gate and emitter are out of sync",
                     ),
                 }
                 acc.push_sql(match d {
@@ -414,6 +438,109 @@ fn emit_bound(acc: &mut SqlAccumulator, bound: FrameBound) {
             acc.push_sql(" FOLLOWING");
         }
         FrameBound::UnboundedFollowing => acc.push_sql("UNBOUNDED FOLLOWING"),
+    }
+}
+
+// SAFETY-CRITICAL: This allow-list predicate is the per-node half of the
+// self-join window safety gate. A `WindowTerm::Expr` is emitted under a pair
+// alias (`l` / `r`) via `SqlEmitContext::joined(alias)`. Only `ExprNode`
+// variants whose emit arms route EVERY column reference through
+// `ctx.push_column` produce alias-qualified SQL (`l.<col>` / `r.<col>`) inside
+// a self-join. Any variant whose emit arm pushes a bare column name (e.g.
+// `array_length(<col>, 1)`, `ts_rank(<col>, ...)`), emits a verbatim raw
+// fragment (`RawSql`), or emits without taking a `SqlEmitContext` at all
+// (`Spatial`, `RowAggregate`) yields ambiguous SQL that Postgres rejects with
+// `42702 column reference is ambiguous` — or, worse, silently resolves to the
+// wrong pair side. Those variants are DENIED here.
+//
+// The match MUST remain exhaustive — do NOT add a `_ => false` wildcard. The
+// `ExprNode` enum is `#[non_exhaustive]`, so an exhaustive same-crate match is
+// what turns a future variant addition into a COMPILE ERROR that forces a
+// deliberate allow/deny decision, instead of silently defaulting a new variant
+// to DENIED (a `_ => false` wildcard) and shipping a column the gate never
+// vetted. Structural variants (arithmetic, boolean, coalesce, comparison,
+// case) recurse into EVERY child so a denied node smuggled inside an allowed
+// wrapper — e.g. `Add(Field, Subquery)` — still returns `false`.
+//
+// This mirrors the `expr_node_contains_excluded` walker in
+// `crate::query::insert_select`, which enforces the analogous exhaustive,
+// no-wildcard, child-recursing discipline for the EXCLUDED-reference gate.
+pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) -> bool {
+    use crate::expr::node::ExprNode;
+    match node {
+        // ── ALLOWED leaves: emit arms reference no ambiguous bare column ──
+        // `Field` routes through `ctx.push_column`, so it qualifies as
+        // `<alias>.<col>` under a joined context.
+        ExprNode::Field { .. } => true,
+        // `Literal` / `CurrentYear` / `IntervalLiteral` emit no column
+        // reference at all — they are context-free constants.
+        ExprNode::Literal(_) | ExprNode::CurrentYear | ExprNode::IntervalLiteral { .. } => true,
+
+        // ── ALLOWED structural: recurse into EVERY child ──
+        // Binary arithmetic / boolean nodes thread `ctx` into both operands
+        // (`emit_arith` / the boolean arms), so each side is qualified only
+        // if its own subtree is allowed.
+        ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => {
+            is_allowed_window_expr_node(lhs) && is_allowed_window_expr_node(rhs)
+        }
+        // Unary wrappers recurse into the single inner node.
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            is_allowed_window_expr_node(inner)
+        }
+        // `Coalesce` recurses into every operand.
+        ExprNode::Coalesce(operands) => operands.iter().all(is_allowed_window_expr_node),
+        // `Cmp` recurses into both operands.
+        ExprNode::Cmp { lhs, rhs, .. } => {
+            is_allowed_window_expr_node(lhs) && is_allowed_window_expr_node(rhs)
+        }
+        // `Case` recurses into every arm condition, every arm value, AND the
+        // mandatory `otherwise` default — a denied node in any slot poisons
+        // the whole CASE.
+        ExprNode::Case { arms, otherwise } => {
+            arms.iter().all(|(cond, val)| {
+                is_allowed_window_expr_node(cond) && is_allowed_window_expr_node(val)
+            }) && is_allowed_window_expr_node(otherwise)
+        }
+
+        // ── DENIED leaves: emit arms push a bare column or verbatim text ──
+        // `RawSql` pushes the fragment verbatim inside parens with no
+        // qualification, and is adopter-constructible via
+        // `Expr::__raw_sql_fragment`.
+        ExprNode::RawSql(_) => false,
+        // `ArrayLength` emits `array_length(<col>, 1)` with a bare column.
+        ExprNode::ArrayLength { .. } => false,
+        // Full-text-search arms emit the column bare through `emit_ts`.
+        ExprNode::TsMatch { .. } | ExprNode::TsRank { .. } | ExprNode::TsRankCd { .. } => false,
+        // Aggregate / grouping nodes are not row-scalar; they are illegal in
+        // a PARTITION BY / ORDER BY key regardless of qualification.
+        ExprNode::Aggregate { .. } | ExprNode::GroupingVariadic { .. } => false,
+        // Subquery nodes open a separate scope; their emission cannot be
+        // pair-qualified from the outer window context.
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
+        ExprNode::InSubquery { .. } | ExprNode::QuantifiedSubquery { .. } => false,
+        // Outer / lateral / EXCLUDED references belong to other emit contexts
+        // (correlated subqueries, INSERT ... ON CONFLICT) and never produce a
+        // pair-alias-qualified column in a window slot.
+        ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::OuterRefAlias { .. }
+        | ExprNode::Excluded { .. } => false,
+
+        // ── Trigram (gated): ALLOWED — emit arms route through `ctx.push_column` ──
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => true,
+
+        // ── Spatial (gated): DENIED — `SpatialExpr::emit` / row aggregates
+        // take no `SqlEmitContext`, so columns emit unqualified ──
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(_) => false,
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { .. } => false,
     }
 }
 
@@ -880,6 +1007,38 @@ mod tests {
         assert!(
             !spec.is_pair_qualified(),
             "bare Column entry poisons the spec"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_denied_array_length() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::ArrayLength { column: "tags" }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "ArrayLength emits bare column, must not be pair-qualified"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_denied_raw_sql() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::RawSql("custom_expr(col)")),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "RawSql emits verbatim fragment, must not be pair-qualified"
         );
     }
 }

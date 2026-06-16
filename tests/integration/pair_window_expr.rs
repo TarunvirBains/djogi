@@ -27,7 +27,14 @@ pub struct Item {
     pub name: String,
     pub score: i32,
     pub group_id: i32,
+    pub tags: Vec<String>,
 }
+
+/// Result rows for a self-pair annotation: each row is the `(left, right)`
+/// `Item` pair plus the `i64` window-function value. Aliased so the rejection
+/// tests can name `Result<PairRankRows, _>` without tripping
+/// `clippy::type_complexity`.
+type PairRankRows = Vec<((Item, Item), i64)>;
 
 /// Verify that `order_by_pair_expr_desc` ranks self-pairs by a scaled score.
 ///
@@ -237,4 +244,121 @@ async fn partition_by_pair_expr_resets_rank_per_group(mut ctx: djogi::DjogiConte
             "g2_b has highest score in group 2; expected rank=1, got rank={rank}"
         );
     }
+}
+
+// ── Disallowed-expression rejection at fetch time ────────────────────────────
+//
+// `array_length(col, 1)` emits a BARE column reference
+// (`array_length(tags, 1)`), which is ambiguous in a self-join where both `l`
+// and `r` expose a `tags` column. The pair-window allow-list gate must reject
+// such an expression — but only at fetch time, via `DjogiError::Validation`.
+// The builder methods themselves never panic and never return an error; they
+// always record the term and let the joined-annotation safety gate catch it.
+//
+// Each test builds `lf.tags().len()` (an `ExprNode::ArrayLength` node, which is
+// DENIED by `is_allowed_window_expr_node`), feeds it to one of the three
+// `*_pair_expr` builders, and asserts the terminal `.fetch_all()` returns
+// `Err(DjogiError::Validation(_))`.
+
+/// `partition_by_pair_expr` with an `array_length` expression is rejected with
+/// `DjogiError::Validation` at fetch time (the bare column is ambiguous in a
+/// self-join).
+#[djogi::djogi_test(sync_models = [Item])]
+async fn partition_by_pair_expr_rejects_array_length_at_fetch_time(mut ctx: djogi::DjogiContext) {
+    Item::create(
+        &mut ctx,
+        Item {
+            name: "alpha".to_string(),
+            score: 10,
+            group_id: 1,
+            tags: vec!["a".to_string(), "b".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let result: Result<PairRankRows, djogi::DjogiError> = Item::objects()
+        .self_pairs()
+        .annotate(|lf, _rf| {
+            RowNumber::new()
+                .partition_by_pair_expr(PairSide::Left, lf.tags().len())
+                .alias("rn")
+        })
+        .fetch_all(&mut ctx)
+        .await;
+
+    assert!(
+        matches!(result, Err(djogi::DjogiError::Validation(_))),
+        "partition_by_pair_expr with array_length must be rejected at fetch time \
+         with DjogiError::Validation, got: {result:?}"
+    );
+}
+
+/// `order_by_pair_expr_asc` with an `array_length` expression is rejected with
+/// `DjogiError::Validation` at fetch time.
+#[djogi::djogi_test(sync_models = [Item])]
+async fn order_by_pair_expr_asc_rejects_array_length_at_fetch_time(mut ctx: djogi::DjogiContext) {
+    Item::create(
+        &mut ctx,
+        Item {
+            name: "alpha".to_string(),
+            score: 10,
+            group_id: 1,
+            tags: vec!["a".to_string(), "b".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let result: Result<PairRankRows, djogi::DjogiError> = Item::objects()
+        .self_pairs()
+        .annotate(|lf, _rf| {
+            RowNumber::new()
+                .order_by_pair_expr_asc(PairSide::Left, lf.tags().len())
+                .alias("rn")
+        })
+        .fetch_all(&mut ctx)
+        .await;
+
+    assert!(
+        matches!(result, Err(djogi::DjogiError::Validation(_))),
+        "order_by_pair_expr_asc with array_length must be rejected at fetch time \
+         with DjogiError::Validation, got: {result:?}"
+    );
+}
+
+/// `order_by_pair_expr_desc` with an `array_length` expression is rejected with
+/// `DjogiError::Validation` at fetch time.
+#[djogi::djogi_test(sync_models = [Item])]
+async fn order_by_pair_expr_desc_rejects_array_length_at_fetch_time(mut ctx: djogi::DjogiContext) {
+    Item::create(
+        &mut ctx,
+        Item {
+            name: "alpha".to_string(),
+            score: 10,
+            group_id: 1,
+            tags: vec!["a".to_string(), "b".to_string()],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let result: Result<PairRankRows, djogi::DjogiError> = Item::objects()
+        .self_pairs()
+        .annotate(|lf, _rf| {
+            RowNumber::new()
+                .order_by_pair_expr_desc(PairSide::Left, lf.tags().len())
+                .alias("rn")
+        })
+        .fetch_all(&mut ctx)
+        .await;
+
+    assert!(
+        matches!(result, Err(djogi::DjogiError::Validation(_))),
+        "order_by_pair_expr_desc with array_length must be rejected at fetch time \
+         with DjogiError::Validation, got: {result:?}"
+    );
 }

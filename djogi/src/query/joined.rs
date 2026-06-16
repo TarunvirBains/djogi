@@ -1507,61 +1507,50 @@ pub trait PairWindowExt: Sized {
         M: Model,
         S: crate::query::field::IntoSqlField<M, V>;
 
-    /// Add a `PARTITION BY <expr-alias>` entry to the underlying window
-    /// spec, where the expression is evaluated under the side's alias
-    /// context (`l` or `r`). The expression is emitted in the SELECT list
-    /// with `AS <alias>`, and the window clause references that alias.
+    /// Add a `PARTITION BY <expr>` entry to the underlying window spec, where
+    /// the expression's columns are qualified under the side's alias (`l` or
+    /// `r`) and emitted inline in the window clause (e.g.
+    /// `PARTITION BY l.score * 10`).
     ///
-    /// V1 restriction: expressions must reference fields from the declared
-    /// side only. Cross-pair arithmetic (e.g., `l.score / r.score`) requires
-    /// `ExprNode::PairField` (not implemented in v0.1.0). A `debug_assert!`
-    /// at construction guards against `Aggregate` / `Subquery` nodes.
+    /// # Allowed and disallowed expressions
+    /// The expression must emit only pair-alias-qualified column references so
+    /// the resulting SQL is unambiguous in a self-join. Allowed classes:
+    /// arithmetic (`Add` / `Sub` / `Mul` / `Div`), `Field`, `Literal`,
+    /// `Coalesce`, and `Case`. Disallowed classes: aggregates, subqueries,
+    /// spatial expressions, bare-column server functions
+    /// (`array_length(col, 1)`, `ts_rank` / `ts_rank_cd`), and raw SQL
+    /// fragments — their emit arms push an unqualified column (or verbatim
+    /// text) that would be ambiguous across the two pair sides.
+    ///
+    /// # Rejection happens at fetch time
+    /// This builder never panics and never returns an error — it always
+    /// records the term. A disallowed expression is rejected when the
+    /// annotation is materialized, at
+    /// [`fetch_all`](crate::query::JoinedAnnotatedQuerySet::fetch_all), which
+    /// returns [`DjogiError::Validation`](crate::DjogiError::Validation). The
+    /// gate is the per-node allow-list witnessed by `is_pair_qualified()` on
+    /// the underlying window spec.
+    ///
+    /// # Single-side restriction
+    /// Expressions must reference fields from the declared side only.
+    /// Cross-pair arithmetic (e.g. `l.score / r.score` in one expression) is
+    /// not supported.
     #[must_use = "window functions are lazy annotations - dropping one omits the column"]
     fn partition_by_pair_expr<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
 
-    /// Add an `ORDER BY <expr-alias> ASC` entry to the underlying window
-    /// spec. Same semantics and restrictions as
+    /// Add an `ORDER BY <expr> ASC` entry to the underlying window spec. Same
+    /// semantics, allowed/disallowed expression classes, and fetch-time
+    /// [`DjogiError::Validation`](crate::DjogiError::Validation) rejection as
     /// [`partition_by_pair_expr`](Self::partition_by_pair_expr).
     #[must_use = "window functions are lazy annotations - dropping one omits the column"]
     fn order_by_pair_expr_asc<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
 
-    /// Add an `ORDER BY <expr-alias> DESC` entry to the underlying window
-    /// spec. Same semantics and restrictions as
+    /// Add an `ORDER BY <expr> DESC` entry to the underlying window spec. Same
+    /// semantics, allowed/disallowed expression classes, and fetch-time
+    /// [`DjogiError::Validation`](crate::DjogiError::Validation) rejection as
     /// [`partition_by_pair_expr`](Self::partition_by_pair_expr).
     #[must_use = "window functions are lazy annotations - dropping one omits the column"]
     fn order_by_pair_expr_desc<V>(self, side: PairSide, expr: crate::expr::Expr<V>) -> Self;
-}
-
-/// Debug-mode guard against aggregate and subquery `ExprNode` variants in
-/// window partition/order slots.
-///
-/// Window clauses reference columns or expressions that produce scalar
-/// values per row. Aggregate nodes (`COUNT(*)`, `SUM(col)`) are illegal
-/// in `PARTITION BY` / `ORDER BY` because aggregates operate across row
-/// groups, not individual rows. Subquery nodes are similarly rejected —
-/// window partitions and ordering keys must be simple expressions over
-/// the row's own fields.
-///
-/// This helper fires a `debug_assert!` when the node is an illegal
-/// variant. The check runs in debug / test builds; release builds skip
-/// it for performance (the Postgres server would reject the illegal SQL
-/// at execute time anyway, but catching it here surfaces a clearer
-/// panic message in tests).
-fn assert_window_expr_node(node: &crate::expr::node::ExprNode) {
-    debug_assert!(
-        !matches!(
-            node,
-            crate::expr::node::ExprNode::Aggregate { .. }
-                | crate::expr::node::ExprNode::Subquery(_)
-        ),
-        "aggregate and subquery ExprNodes are not valid in window \
-         partition/order slots — use arithmetic and field references only"
-    );
-    #[cfg(feature = "spatial")]
-    debug_assert!(
-        !matches!(node, crate::expr::node::ExprNode::RowAggregate { .. }),
-        "RowAggregate ExprNodes are not valid in window partition/order slots"
-    );
 }
 
 /// Intern a `"<alias>.<column>"` composite into a `&'static str`,
@@ -1643,7 +1632,10 @@ macro_rules! impl_pair_window_ext {
                 side: PairSide,
                 expr: crate::expr::Expr<V>,
             ) -> Self {
-                assert_window_expr_node(&expr.node);
+                // No construction-time guard: disallowed `ExprNode` variants
+                // are rejected at fetch time by the `is_pair_qualified()`
+                // allow-list witness (see the trait method doc), so the
+                // builder is a simple push-and-return.
                 self.window
                     .partition_by
                     .push(crate::expr::window::WindowTerm::Expr {
@@ -1658,7 +1650,10 @@ macro_rules! impl_pair_window_ext {
                 side: PairSide,
                 expr: crate::expr::Expr<V>,
             ) -> Self {
-                assert_window_expr_node(&expr.node);
+                // No construction-time guard: disallowed `ExprNode` variants
+                // are rejected at fetch time by the `is_pair_qualified()`
+                // allow-list witness (see the trait method doc), so the
+                // builder is a simple push-and-return.
                 self.window.order_by.push((
                     crate::expr::window::WindowTerm::Expr {
                         node: Box::new(expr.node),
@@ -1674,7 +1669,10 @@ macro_rules! impl_pair_window_ext {
                 side: PairSide,
                 expr: crate::expr::Expr<V>,
             ) -> Self {
-                assert_window_expr_node(&expr.node);
+                // No construction-time guard: disallowed `ExprNode` variants
+                // are rejected at fetch time by the `is_pair_qualified()`
+                // allow-list witness (see the trait method doc), so the
+                // builder is a simple push-and-return.
                 self.window.order_by.push((
                     crate::expr::window::WindowTerm::Expr {
                         node: Box::new(expr.node),
