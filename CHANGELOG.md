@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- fix(#468): the geography index classifiers in the `#[derive(Model)]` macro
+  (`is_geography_field_type`, `is_geopoint_type`, `is_geography_type`) now strip
+  transparent `Tracked<_>` wrappers (alongside the existing `Option<_>`
+  stripping) via `unwrap_schema_type` before matching the geometry type name.
+  Previously, dirty-tracked geometry columns typed `Tracked<GeoPoint>`,
+  `Option<Tracked<GeoPoint>>`, or `Tracked<Option<GeoPoint>>` were classified as
+  non-geography and received a default BTree index instead of the correct GiST
+  index, silently breaking spatial operators on those columns. This mirrors the
+  same `Tracked<_>`-strip fix applied to the JSONB classifiers in #312. A new
+  compile-pass spatial fixture verifies `#[field(index)]` on a `Tracked<GeoPoint>`
+  field expands cleanly, and a new spatial integration assertion verifies the
+  emitted descriptor classifies such a field as a GiST index rather than BTree.
+
 - fix(#312): the E_DJG_VDF_017 guard that rejects `Jsonb<T>` storage columns
   in visage `#[derived]` fields now strips transparent `Tracked<_>` wrappers
   (alongside the existing `Option<_>` stripping) before testing for `Jsonb<T>`.

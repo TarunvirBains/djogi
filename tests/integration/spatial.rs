@@ -59,6 +59,18 @@ pub struct NonSpatialItem {
     pub label: String,
 }
 
+/// Dirty-tracked spatial model: a `Tracked<GeoPoint>` field annotated
+/// `#[field(index)]`. Regression guard for djogi#468.
+#[cfg(feature = "spatial")]
+#[allow(dead_code)]
+#[model(table = "tracked_places", pk = HeerId, no_default)]
+#[derive(Debug, Clone)]
+pub struct TrackedPlace {
+    pub name: String,
+    #[field(index)]
+    pub location: Tracked<djogi::GeoPoint>,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -171,6 +183,46 @@ fn non_spatial_model_has_empty_indexes() {
         desc.indexes.is_empty(),
         "non-spatial model must not have any IndexSpec entries; found: {:?}",
         desc.indexes
+    );
+}
+
+/// djogi#468 — A `Tracked<GeoPoint>` field with `#[field(index)]` must
+/// classify as a **GiST** index, not the default BTree.
+#[cfg(feature = "spatial")]
+#[test]
+fn tracked_geopoint_field_classifies_as_gist_not_btree() {
+    let desc = TrackedPlace::descriptor();
+
+    // Path 1 — the field descriptor's per-field index_type.
+    let field = desc
+        .fields
+        .iter()
+        .find(|f| f.name == "location")
+        .expect("location field must be present in TrackedPlace descriptor");
+    assert_eq!(
+        field.index_type,
+        Some(IndexType::Gist),
+        "Tracked<GeoPoint> field with #[field(index)] must classify as GiST, not \
+         BTree; got {:?}. If this is Some(BTree) the geography classifiers are not \
+         stripping the Tracked<_> wrapper (djogi#468).",
+        field.index_type
+    );
+
+    // Path 2 — the implicit spatial GiST IndexSpec on the model descriptor.
+    let gix = desc
+        .indexes
+        .iter()
+        .find(|idx| index_column_names(idx) == ["location"])
+        .expect(
+            "GiST IndexSpec for `location` must be present in \
+             TrackedPlace::descriptor().indexes; a missing entry means \
+             is_geography_field_type did not strip the Tracked<_> wrapper (djogi#468)",
+        );
+    assert_eq!(
+        gix.index_type,
+        IndexType::Gist,
+        "spatial index on a Tracked<GeoPoint> field must use GiST; got {:?}",
+        gix.index_type
     );
 }
 
