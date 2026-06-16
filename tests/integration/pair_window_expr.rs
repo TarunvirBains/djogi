@@ -1,4 +1,4 @@
-// Phase 8.5 Cluster 4A — live Postgres checks for `PairWindowExt::*_pair_expr`
+// Live Postgres checks for `PairWindowExt::*_pair_expr`
 // methods (GH #302).
 //
 // Verifies that:
@@ -21,7 +21,7 @@ use djogi::prelude::*;
 
 // Table name is unique to this fixture — avoids collisions with other tests
 // that share the Postgres instance.
-#[model(table = "phase8_5_pair_window_items")]
+#[model(table = "pair_window_expr_items")]
 #[derive(Debug, Clone)]
 pub struct Item {
     pub name: String,
