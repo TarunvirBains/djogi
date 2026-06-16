@@ -38,7 +38,7 @@ use crate::model::visage_ctx::{
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::ItemStruct;
+use syn::{Ident, ItemStruct};
 
 /// Every scope emits one generated visage struct, in this fixed order.
 pub(crate) const SCOPES: &[(&str, &str)] = &[
@@ -71,6 +71,10 @@ pub fn expand(
         return e.to_compile_error();
     }
 
+    if let Err(e) = validate_visage_names(struct_item, model_attrs) {
+        return e.to_compile_error();
+    }
+
     // Concrete iteration set — built-in scopes first (preserving the
     // canonical Public / SelfView / Admin / Export order downstream code
     // depends on), then custom scopes in declaration order. The visage
@@ -88,7 +92,13 @@ pub fn expand(
         .map(|(scope, suffix)| {
             let ctx = VisageEmitContext {
                 source: source_name,
-                visage_ident: format_ident!("{source_name}{suffix}"),
+                visage_ident: crate::model::visage_ctx::resolve_visage_ident(
+                    source_name,
+                    scope.as_str(),
+                    suffix.as_str(),
+                    &model_attrs.visage_names,
+                ),
+                canonical_ident: format_ident!("{source_name}{suffix}"),
                 scope: scope.as_str(),
                 struct_item,
                 field_attrs,
@@ -266,6 +276,219 @@ fn unknown_scope_error(
              `#[model(visage_scopes(name = Suffix))]` on the model.",
         ),
     )
+}
+
+fn validate_visage_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
+    let source = &struct_item.ident;
+    let custom_scope_keys: Vec<&str> = model_attrs
+        .visage_scopes
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+
+    let mut canonical_by_scope: Vec<(String, String)> = Vec::new();
+    for (scope, suffix) in SCOPES {
+        canonical_by_scope.push((scope.to_string(), format!("{source}{suffix}")));
+    }
+    for (scope, suffix) in &model_attrs.visage_scopes {
+        canonical_by_scope.push((scope.clone(), format!("{source}{suffix}")));
+    }
+
+    let mut emitted_names: Vec<(String, String)> = Vec::new();
+    for (scope, suffix) in SCOPES {
+        let name = resolved_name(source, scope, suffix, &model_attrs.visage_names);
+        emitted_names.push((scope.to_string(), name));
+    }
+    for (scope, suffix) in &model_attrs.visage_scopes {
+        let name = resolved_name(source, scope, suffix, &model_attrs.visage_names);
+        emitted_names.push((scope.clone(), name));
+    }
+
+    let model_keyed_suffixes = &[
+        "Fields",
+        "SqlFields",
+        "Filter",
+        "Related",
+        "OuterRef",
+        "Path",
+        "Computed",
+    ];
+    let mut model_keyed_reserved: Vec<(Ident, &str)> = Vec::new();
+    for suffix in model_keyed_suffixes {
+        model_keyed_reserved.push((format_ident!("{source}{suffix}"), suffix));
+    }
+
+    for (scope_key, custom_ident) in &model_attrs.visage_names {
+        let is_builtin = ExposeSpec::is_builtin_scope(scope_key);
+        let is_custom = custom_scope_keys.contains(&scope_key.as_str());
+        if !is_builtin && !is_custom {
+            let custom_part = if custom_scope_keys.is_empty() {
+                "no custom scopes declared on this model".to_string()
+            } else {
+                format!(
+                    "custom scopes on this model: {}",
+                    custom_scope_keys.join(", ")
+                )
+            };
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` names scope `{scope_key}`, which is not a \
+                     scope on this model. Built-in scopes: public, self_view, admin, \
+                     export. {custom_part}. Declare custom scopes via \
+                     `#[model(visage_scopes(name = Suffix))]`.",
+                ),
+            ));
+        }
+
+        if custom_ident == source {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` collides with the \
+                     model type `{source}`. Pick a name distinct from the model.",
+                ),
+            ));
+        }
+
+        if let Some((reserved, suffix)) =
+            model_keyed_reserved.iter().find(|(r, _)| custom_ident == r)
+        {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` collides with the \
+                     `{reserved}` type the derive emits for model `{source}` (the \
+                     `{suffix}` sibling). Pick a name that does not end in a reserved \
+                     derive suffix (`Fields`, `SqlFields`, `Filter`, `Related`, \
+                     `OuterRef`, `Path`, `Computed`) over the model name.",
+                ),
+            ));
+        }
+
+        let custom_name = custom_ident.to_string();
+        if let Some((other_scope, _)) = canonical_by_scope
+            .iter()
+            .find(|(s, canon)| s != scope_key && *canon == custom_name)
+        {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_ident}` is the canonical \
+                     name of scope `{other_scope}` on model `{source}`. The macro still \
+                     emits `{custom_ident}` as the canonical alias for `{other_scope}`, \
+                     so reusing it for scope `{scope_key}` would produce a duplicate \
+                     definition. Use a name distinct from every scope's canonical \
+                     `{{Model}}{{Scope}}` name.",
+                ),
+            ));
+        }
+
+        for (other_scope_key, other_emitted) in &emitted_names {
+            if other_scope_key == scope_key {
+                continue;
+            }
+            let other_fields = format_ident!("{other_emitted}Fields").to_string();
+            let other_filter = format_ident!("{other_emitted}Filter").to_string();
+            if custom_name == other_fields || custom_name == other_filter {
+                return Err(syn::Error::new(
+                    custom_ident.span(),
+                    format!(
+                        "`visage_names(...)` custom name `{custom_ident}` is the name of a \
+                         sibling type (`{other_fields}` or `{other_filter}`) emitted for \
+                         scope `{other_scope_key}` of model `{source}`. Pick a name that \
+                         does not match any `{{Visage}}Fields` or `{{Visage}}Filter` type \
+                         emitted for another scope.",
+                    ),
+                ));
+            }
+        }
+
+        // Also guard against collisions with the canonical-alias siblings
+        // emitted for OTHER renamed scopes. When scope T is renamed, the macro
+        // emits `pub type {canonT}Fields = {CT}Fields;` (skipped for `pk =
+        // None`) and `pub type {canonT}Filter = {CT}Filter;` as canonical
+        // aliases keyed on the DEFAULT `{Model}{Scope}` name (see
+        // `emit_projection_for_scope`). The sibling check above only covers
+        // the CUSTOM-named siblings (`{CT}Fields` / `{CT}Filter`), so a custom
+        // name equal to a canonical-alias sibling of another renamed scope —
+        // e.g. scope `public` renamed to `UserSummary` emits `UserPublicFields`,
+        // and a different scope named `UserPublicFields` — would otherwise fall
+        // through to a bare E0428 with no span-precise guidance.
+        for (other_scope_key, _other_ident) in &model_attrs.visage_names {
+            if other_scope_key == scope_key {
+                continue;
+            }
+            // The canonical alias is only emitted when the other scope is
+            // actually renamed; `model_attrs.visage_names` membership is that
+            // condition. Look up the other scope's DEFAULT `{Model}{Scope}`
+            // name to form the canonical-alias sibling spellings.
+            let Some((_, canon_of_other)) = canonical_by_scope
+                .iter()
+                .find(|(s, _)| s == other_scope_key)
+            else {
+                continue;
+            };
+            let other_canon_fields = format_ident!("{canon_of_other}Fields").to_string();
+            let other_canon_filter = format_ident!("{canon_of_other}Filter").to_string();
+            // The `{canonT}Fields` alias is suppressed for `pk = None` models
+            // (those emit no `{Visage}Fields` struct), so only flag a Fields
+            // collision when the alias is actually emitted.
+            let emits_fields_alias = !matches!(model_attrs.pk, PkStrategy::None);
+            if (emits_fields_alias && custom_name == other_canon_fields)
+                || custom_name == other_canon_filter
+            {
+                return Err(syn::Error::new(
+                    custom_ident.span(),
+                    format!(
+                        "`visage_names(...)` custom name `{custom_ident}` collides with a \
+                         canonical-alias sibling (`{other_canon_fields}` or \
+                         `{other_canon_filter}`) the macro emits for the renamed scope \
+                         `{other_scope_key}` of model `{source}`. Pick a name that does not \
+                         match any canonical-alias sibling type.",
+                    ),
+                ));
+            }
+        }
+    }
+
+    for i in 0..emitted_names.len() {
+        for j in (i + 1)..emitted_names.len() {
+            if emitted_names[i].1 == emitted_names[j].1 {
+                let colliding = &emitted_names[i].1;
+                let span_ident = model_attrs
+                    .visage_names
+                    .iter()
+                    .find(|(k, _)| k == &emitted_names[i].0 || k == &emitted_names[j].0)
+                    .map(|(_, ident)| ident.span())
+                    .unwrap_or_else(|| source.span());
+                return Err(syn::Error::new(
+                    span_ident,
+                    format!(
+                        "two visages on `{source}` would be named `{colliding}` \
+                         (scopes `{}` and `{}`). Each scope's visage must have a \
+                         unique type name — adjust the `visage_names(...)` entry.",
+                        emitted_names[i].0, emitted_names[j].0,
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolved_name(
+    source: &syn::Ident,
+    scope: &str,
+    suffix: &str,
+    visage_names: &[(String, syn::Ident)],
+) -> String {
+    visage_names
+        .iter()
+        .find(|(k, _)| k == scope)
+        .map(|(_, ident)| ident.to_string())
+        .unwrap_or_else(|| format!("{source}{suffix}"))
 }
 
 /// Emit `::std::any::type_name::<CodecTy>()` for a codec type path.
@@ -724,6 +947,65 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         )
     };
 
+    // When the adopter renamed this scope's visage, emit canonical-name
+    // type aliases so existing relation embeddings, query entry points,
+    // and downstream references that still name `{Model}{Scope}` keep
+    // resolving. The aliases are zero-cost `type` items — transparent to
+    // the relation-embedding emitter's textual peer-path resolution, which
+    // runs at the *embedding* call site where the author wrote the
+    // canonical name.
+    let canonical_aliases = if ctx.canonical_ident != *proj_name {
+        let canon = &ctx.canonical_ident;
+        let canon_fields = format_ident!("{canon}Fields");
+        let canon_filter = format_ident!("{canon}Filter");
+        let proj_fields = format_ident!("{proj_name}Fields");
+        let proj_filter = format_ident!("{proj_name}Filter");
+        let alias_doc = format!(
+            " Canonical-name alias for the [`{proj_name}`] visage. \
+             `{canon}` is the default `{{Model}}{{Scope}}` name; this \
+             model renamed the scope via `#[model(visage_names(...))]`. \
+             The alias keeps relation embeddings (`expose(scope -> {canon})`) \
+             and other references to the canonical name resolving without edits."
+        );
+        let fields_alias_doc = format!(
+            " Canonical-name alias for [`{proj_fields}`]. Preserves the \
+             `RootModel` generic so traversal through the canonical name \
+             types identically to the custom name."
+        );
+        let filter_alias_doc = format!(
+            " Canonical-name alias for [`{proj_filter}`]. Resolves the \
+             positional `{{Model}}{{Scope}}Filter` name to the custom name's \
+             filter type for the same scope, so filter builders written \
+             against `{canon}Filter` see the same type as `{proj_filter}`."
+        );
+        // The `Fields` alias is only emitted for models that actually own a
+        // `{Visage}Fields` struct. `pk = None` models emit only the
+        // `{Visage}Filter` ZST (visage_fields.rs:88-94), so aliasing
+        // `{canon}Fields` for them would point at a non-existent type. The
+        // alias also carries the same `<RootModel = Source>` generic the
+        // real `{Visage}Fields` struct declares, or traversal typing through
+        // the canonical name breaks.
+        let fields_alias = if matches!(ctx.model_attrs.pk, PkStrategy::None) {
+            TokenStream::new()
+        } else {
+            quote! {
+                #[doc = #fields_alias_doc]
+                pub type #canon_fields<RootModel = #source> = #proj_fields<RootModel>;
+            }
+        };
+        quote! {
+            #[doc = #alias_doc]
+            pub type #canon = #proj_name;
+
+            #fields_alias
+
+            #[doc = #filter_alias_doc]
+            pub type #canon_filter = #proj_filter;
+        }
+    } else {
+        TokenStream::new()
+    };
+
     quote! {
         #derive_path
         pub struct #proj_name {
@@ -743,6 +1025,8 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #parity_impl
 
         #visage_descriptor
+
+        #canonical_aliases
 
         // GH #227 — `inventory::submit!` per
         // `(model, field, scope, codec)` usage. Emitted AFTER the

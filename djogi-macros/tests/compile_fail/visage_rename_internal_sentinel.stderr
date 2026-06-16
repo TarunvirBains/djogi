@@ -1,0 +1,13 @@
+error: `visage_names(...)` cannot name the `internal` sentinel — `none` / `internal` generate no visage struct, so there is nothing to rename. Name a real scope (public, self_view, admin, export, or a custom `visage_scopes(...)` scope).
+ --> $DIR/visage_rename_internal_sentinel.rs:8:71
+  |
+8 | #[model(table = "visage_rename_internal_sentinel_users", visage_names(internal = Foo))]
+  |                                                                       ^^^^^^^^
+
+error: `visage_names(...)` cannot name the `none` sentinel — `none` / `internal` generate no visage struct, so there is nothing to rename. Name a real scope (public, self_view, admin, export, or a custom `visage_scopes(...)` scope).
+  --> $DIR/visage_rename_internal_sentinel.rs:15:67
+   |
+15 | #[model(table = "visage_rename_none_sentinel_users", visage_names(none = Bar))]
+   |                                                                   ^^^^
+
+error: aborting due to 2 previous errors

@@ -388,6 +388,25 @@ pub struct ModelAttrs {
     ///   pair.
     pub visage_scopes: Vec<(String, String)>,
 
+    /// Custom visage type names from `#[model(visage_names(scope = CustomIdent, ...))]`.
+    ///
+    /// Each entry is `(scope_key, custom_ident)` — e.g. `("public",
+    /// UserSummary)` makes the generated public visage struct `UserSummary`
+    /// instead of the canonical `{Model}Public`. The macro additionally
+    /// emits `pub type {Model}Public = UserSummary;` (plus matching `Fields`
+    /// / `Filter` aliases) so existing relation embeddings, query entry
+    /// points, and downstream references that name the canonical type
+    /// continue to resolve without edits.
+    ///
+    /// `scope_key` is any built-in scope (`public` / `self_view` / `admin`
+    /// / `export`) or a custom scope declared in `visage_scopes(...)` on the
+    /// same model. The custom ident must start with an uppercase ASCII
+    /// letter (matching the struct-name convention) and is validated
+    /// byte-level — no regex, per the framework-internal identifier rules.
+    ///
+    /// Empty when no `visage_names(...)` block is present.
+    pub visage_names: Vec<(String, syn::Ident)>,
+
     /// `#[model(strict_ids)]` — .
     /// When `true`, the macro propagates the opt-in strict structural
     /// CHECK to every column on this model whose declared shape *could*
@@ -719,6 +738,8 @@ impl ModelAttrs {
         // Vec onto its built-in `SCOPES` table.
         let mut visage_scopes: Vec<(String, String)> = Vec::new();
         let mut seen_visage_scopes = false;
+        let mut visage_names: Vec<(String, syn::Ident)> = Vec::new();
+        let mut seen_visage_names = false;
         let mut proxy_for: Option<syn::Ident> = Option::None;
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
@@ -1115,7 +1136,7 @@ impl ModelAttrs {
                                  `storage_params`, `tablespace`, \
                                  `no_default`, `through`, `events`, `hooks`, `auditable`, \
                                  `soft_deletable`, `strict_ids`, `proxy_for`, `default_order`, \
-                                 `default_filter`, or `visage_scopes`",
+                                 `default_filter`, `visage_scopes`, or `visage_names`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -1148,6 +1169,16 @@ impl ModelAttrs {
                     }
                     seen_visage_scopes = true;
                     visage_scopes = parse_visage_scopes_list(list)?;
+                }
+                Meta::List(list) if list.path.is_ident("visage_names") => {
+                    if seen_visage_names {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `visage_names` key in #[model(...)]",
+                        ));
+                    }
+                    seen_visage_names = true;
+                    visage_names = parse_visage_names_list(list)?;
                 }
                 // `indexes(index(...), unique(...), ...)`
                 // Full model-level grammar lives in `crate::model::indexes`;
@@ -1447,6 +1478,7 @@ impl ModelAttrs {
             strict_ids,
             // GH #227 — custom visage scopes.
             visage_scopes,
+            visage_names,
         })
     }
 }
@@ -3348,6 +3380,124 @@ fn parse_visage_scopes_list(list: &syn::MetaList) -> syn::Result<Vec<(String, St
     Ok(out)
 }
 
+/// Parse `#[model(visage_names(scope = CustomIdent, ...))]`.
+///
+/// Returns the parsed `(scope_key, custom_ident)` pairs in source order.
+/// Validation (all enforced here so the diagnostic anchors at the offending
+/// token):
+/// 1. Each entry is `scope_ident = CustomIdent` (a name-value with a
+///    single-segment path key and a single-segment path-expr value).
+/// 2. The scope key is not a suppression sentinel (`none` / `internal`):
+///    those scopes generate no struct, so naming them is meaningless.
+/// 3. The scope key satisfies the plain-identifier grammar (ASCII letter
+///    or underscore first byte, alphanumerics / underscores after, at most
+///    63 bytes). Membership against the model's actual scope universe
+///    (built-ins plus `visage_scopes`) is checked later in the emitter,
+///    where the full `ModelAttrs` is available — mirroring how
+///    `expose(...)` scope membership is validated at emit time.
+/// 4. The custom ident starts with an uppercase ASCII letter (matching the
+///    `{Model}Public` casing convention) and otherwise follows the
+///    identifier grammar.
+/// 5. Scope keys are unique within the same `visage_names(...)` block.
+fn parse_visage_names_list(list: &syn::MetaList) -> syn::Result<Vec<(String, syn::Ident)>> {
+    let entries: Punctuated<Meta, Token![,]> =
+        list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+    let mut out: Vec<(String, syn::Ident)> = Vec::new();
+    for meta in &entries {
+        let Meta::NameValue(MetaNameValue {
+            path,
+            value: Expr::Path(expr_path),
+            ..
+        }) = meta
+        else {
+            return Err(syn::Error::new(
+                meta.span(),
+                "every `visage_names(...)` entry must be `scope_ident = CustomIdent`",
+            ));
+        };
+
+        let Some(scope_ident) = path.get_ident() else {
+            return Err(syn::Error::new(
+                path.span(),
+                "`visage_names(...)` scope key must be a single-segment ident",
+            ));
+        };
+        let scope_name = scope_ident.to_string();
+
+        // Rule (2): suppression sentinels generate no visage struct.
+        if matches!(scope_name.as_str(), "none" | "internal") {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!(
+                    "`visage_names(...)` cannot name the `{scope_name}` sentinel — \
+                     `none` / `internal` generate no visage struct, so there is \
+                     nothing to rename. Name a real scope (public, self_view, \
+                     admin, export, or a custom `visage_scopes(...)` scope).",
+                ),
+            ));
+        }
+
+        // Rule (3): byte-level identifier grammar for the scope key.
+        let bytes = scope_name.as_bytes();
+        let scope_ok = !bytes.is_empty()
+            && bytes.len() <= 63
+            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+            && bytes
+                .iter()
+                .skip(1)
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !scope_ok {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!(
+                    "`visage_names(...)` scope key `{scope_name}` must be a plain \
+                     ASCII identifier — letter or underscore first byte, \
+                     alphanumerics / underscores after, at most 63 bytes",
+                ),
+            ));
+        }
+
+        // Rule (5): duplicate scope keys are rejected at the second use.
+        if out.iter().any(|(k, _)| k == &scope_name) {
+            return Err(syn::Error::new(
+                scope_ident.span(),
+                format!("`visage_names(...)` scope key `{scope_name}` declared twice"),
+            ));
+        }
+
+        // Custom ident — single-segment, uppercase-leading.
+        let Some(custom_ident) = expr_path.path.get_ident() else {
+            return Err(syn::Error::new(
+                expr_path.path.span(),
+                "`visage_names(...)` custom name must be a single-segment ident",
+            ));
+        };
+        let custom_name = custom_ident.to_string();
+        let cbytes = custom_name.as_bytes();
+        let custom_ok = !cbytes.is_empty()
+            && cbytes[0].is_ascii_uppercase()
+            && cbytes
+                .iter()
+                .skip(1)
+                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+        if !custom_ok {
+            return Err(syn::Error::new(
+                custom_ident.span(),
+                format!(
+                    "`visage_names(...)` custom name `{custom_name}` must start with \
+                     an uppercase ASCII letter (matching the `Public` / `SelfView` \
+                     casing convention)",
+                ),
+            ));
+        }
+
+        out.push((scope_name, custom_ident.clone()));
+    }
+
+    Ok(out)
+}
+
 /// `true` when `ty` is a bare HeerId / RanjId family scalar (any of the
 /// six type names from `HeerId` / `HeerIdDesc` / `HeerIdRecencyBiased` /
 /// `RanjId` / `RanjIdDesc` / `RanjIdRecencyBiased`, in bare / `djogi::*`
@@ -4195,7 +4345,7 @@ pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
 
 #[cfg(test)]
 mod tests {
-    use super::{rust_type_to_sql, unwrap_schema_type};
+    use super::{parse_visage_names_list, rust_type_to_sql, unwrap_schema_type};
     use syn::parse_quote;
 
     /// `Jsonb<T>` for any `T: JsonbSchema` must lower to
@@ -4825,5 +4975,35 @@ mod tests {
         let (inner, nullable) = unwrap_schema_type(&ty);
         assert!(nullable, "Option<Vec<u8>> must mark the column nullable");
         assert_eq!(rust_type_to_sql(&inner), Some("BYTEA"));
+    }
+
+    #[test]
+    fn parses_scope_to_custom_ident_pairs() {
+        let list: syn::MetaList =
+            parse_quote!(visage_names(public = UserSummary, admin = AdminUserView));
+        let parsed = parse_visage_names_list(&list).expect("valid visage_names parses");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].0, "public");
+        assert_eq!(parsed[0].1.to_string(), "UserSummary");
+        assert_eq!(parsed[1].0, "admin");
+        assert_eq!(parsed[1].1.to_string(), "AdminUserView");
+    }
+
+    #[test]
+    fn rejects_lowercase_custom_name() {
+        let list: syn::MetaList = parse_quote!(visage_names(public = userSummary));
+        assert!(parse_visage_names_list(&list).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_scope_key() {
+        let list: syn::MetaList = parse_quote!(visage_names(public = A, public = B));
+        assert!(parse_visage_names_list(&list).is_err());
+    }
+
+    #[test]
+    fn rejects_internal_sentinel_key() {
+        let list: syn::MetaList = parse_quote!(visage_names(internal = Foo));
+        assert!(parse_visage_names_list(&list).is_err());
     }
 }

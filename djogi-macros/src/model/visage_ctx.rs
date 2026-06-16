@@ -22,6 +22,11 @@ pub(crate) struct VisageEmitContext<'a> {
     /// Visage type ident — `{Source}{Suffix}` (e.g. `UserPublic`). Owned
     /// because it is freshly formatted per scope iteration.
     pub visage_ident: Ident,
+    /// The canonical positional `{source}{suffix}` ident for this scope,
+    /// regardless of any custom name. When `visage_ident != canonical_ident`
+    /// the emitter emits `type {canonical_ident} = {visage_ident};` aliases
+    /// so the canonical name stays resolvable for existing embeddings.
+    pub canonical_ident: Ident,
     /// Lowercase scope key (`"public"`, `"self_view"`, `"admin"`,
     /// `"export"`). Used for `expose(scope)` lookups.
     pub scope: &'a str,
@@ -192,4 +197,24 @@ pub(crate) fn is_full_peer_for(
         return false;
     };
     last.ident == info.target_name
+}
+
+/// Resolve the struct ident a scope's visage should be emitted under.
+///
+/// Returns the adopter's custom ident when `#[model(visage_names(scope =
+/// Custom))]` named this scope, otherwise the canonical positional
+/// `{source}{suffix}` ident. The caller (`visages::expand`) emits a
+/// canonical `type {source}{suffix} = Custom;` alias separately when the
+/// two differ, so the canonical name stays resolvable.
+pub(crate) fn resolve_visage_ident(
+    source: &Ident,
+    scope: &str,
+    suffix: &str,
+    visage_names: &[(String, Ident)],
+) -> Ident {
+    if let Some((_, custom)) = visage_names.iter().find(|(k, _)| k == scope) {
+        custom.clone()
+    } else {
+        format_ident!("{source}{suffix}")
+    }
 }

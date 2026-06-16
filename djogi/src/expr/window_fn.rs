@@ -273,7 +273,7 @@ macro_rules! define_window_rank_fn {
                 M: Model,
                 S: crate::query::field::IntoSqlField<M, V>,
             {
-                self.window.partition_by.push(field.into_sql_field().column());
+                self.window.partition_by.push(crate::expr::window::WindowTerm::Column(field.into_sql_field().column()));
                 self
             }
 
@@ -519,7 +519,9 @@ macro_rules! impl_zero_arg_f64_window {
             {
                 self.window
                     .partition_by
-                    .push(field.into_sql_field().column());
+                    .push(crate::expr::window::WindowTerm::Column(
+                        field.into_sql_field().column(),
+                    ));
                 self
             }
 
@@ -662,7 +664,9 @@ impl NtileWindow {
     {
         self.window
             .partition_by
-            .push(field.into_sql_field().column());
+            .push(crate::expr::window::WindowTerm::Column(
+                field.into_sql_field().column(),
+            ));
         self
     }
 
@@ -757,7 +761,9 @@ macro_rules! define_column_arg_window_fn {
             {
                 self.window
                     .partition_by
-                    .push(field.into_sql_field().column());
+                    .push(crate::expr::window::WindowTerm::Column(
+                        field.into_sql_field().column(),
+                    ));
                 self
             }
 
@@ -891,7 +897,9 @@ macro_rules! impl_lead_lag {
             {
                 self.window
                     .partition_by
-                    .push(field.into_sql_field().column());
+                    .push(crate::expr::window::WindowTerm::Column(
+                        field.into_sql_field().column(),
+                    ));
                 self
             }
 
@@ -992,7 +1000,9 @@ impl<V> NthValueWindow<V> {
     {
         self.window
             .partition_by
-            .push(field.into_sql_field().column());
+            .push(crate::expr::window::WindowTerm::Column(
+                field.into_sql_field().column(),
+            ));
         self
     }
 
@@ -1035,7 +1045,9 @@ fn push_order_expr(window: &mut WindowSpec, order: OrderExpr) {
         OrderExpr::Column {
             column, direction, ..
         } => {
-            window.order_by.push((column, direction));
+            window
+                .order_by
+                .push((crate::expr::window::WindowTerm::Column(column), direction));
         }
         #[cfg(feature = "spatial")]
         OrderExpr::SpatialDistance { .. } => {

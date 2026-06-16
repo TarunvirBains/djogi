@@ -167,48 +167,55 @@ source model's relation field. Renaming the target's visage
 (e.g., `User::public` → `User::summary`) forces touching every
 source model that embeds it."
 
-**Code reality.** Verified at [`docs/spec/visages.md:281-291`][visages-deferred-surface]
-(Deferred Surface section). Visage names are derived mechanically
+**Update (djogi#311 shipped):** The `visage_names(...)` feature shipped
+in PR #464. The analysis below was accurate at the time of writing; the
+shipped feature addresses the embedding-site churn via the canonical-alias
+mechanism (`pub type {Model}{Scope} = CustomName;`). See
+`docs/spec/visages.md §Custom Visage Names`.
+
+**Code reality (at time of writing).** Verified at [`docs/spec/visages.md`][visages-deferred-surface]
+(then the Deferred Surface section). Visage names were derived mechanically
 from `{Model}{Scope}` where `Scope ∈ {Public, SelfView, Admin,
-Export}`. The four scopes are fixed; the names are not
+Export}`. The four scopes were fixed; the names were not
 user-renameable. Generated types `UserPublic` / `UserSelfView` /
-`UserAdmin` / `UserExport` are the only names emitted, and the
-macro asserts this set at [`djogi-macros/src/model/visages.rs:50-56`][visages-scopes-const].
+`UserAdmin` / `UserExport` were the only names emitted, and the
+macro asserted this set at [`djogi-macros/src/model/visages.rs`][visages-scopes-const].
 
 The "rename `User::public` → `User::summary`" scenario assumed by
-the umbrella is **not possible today** — visage renaming is one of
-the items explicitly deferred at
-[`docs/spec/visages.md:281-291`][visages-deferred-surface]:
-"visage renaming rules beyond the default canonical names" is in
-the "Deferred Surface" list. Until that feature lands, the
-declaration churn the umbrella worries about cannot occur.
+the umbrella was **not possible at the time of writing** — visage
+renaming was one of the items explicitly deferred (listed under
+[`docs/spec/visages.md`][visages-deferred-surface] "Deferred Surface"
+as "visage renaming rules beyond the default canonical names").
+djogi#311 has since taken that feature up, so the declaration churn
+the umbrella worried about no longer occurs.
 
-**Decision — `accepted-design (conditional)`.** The current
-declaration site is sound as long as visage names remain
-mechanically derived. When the deferred "custom visage names"
-feature is taken up, the design must re-examine whether a
-target-side `#[model(embeddable_as = [...])]` alias (or similar
-indirection) is preferable to forcing the source-side declaration
-to track every rename. That design decision is anchored to the
-custom-visage-names feature spec.
+**Decision — `accepted-design (conditional)` at the time of writing;
+the conditional has since resolved (djogi#311 shipped).** The
+declaration site was sound as long as visage names remained
+mechanically derived. djogi#311 has since taken up the "custom visage
+names" feature, and its design resolved the embedding-churn question
+with the canonical-alias mechanism: a renamed scope additionally emits
+`pub type {Model}{Scope} = CustomName;` (the target-side indirection
+this section anticipated), so source-side embedders that reference the
+default `{Model}{Scope}` name keep resolving without edits and no
+source-side declaration tracks the rename.
 
-**Rationale.** Filing a standalone issue today would track a churn
-risk for a feature that does not exist. The umbrella's framing
-implicitly assumed visage rename was a present-day concern; against
-current code it is not. The proper artefact is a `TODO` inside the
-deferred-feature spec, not a standalone tracking issue.
+**Rationale.** At the time of writing, filing a standalone issue would
+have tracked a churn risk for a feature that did not exist. The
+umbrella's framing implicitly assumed visage rename was a present-day
+concern; against the code at the time, it was not. The feature has since
+shipped under djogi#311, and the canonical-alias mechanism closes the
+churn concern directly — no separate `TODO` or tracking issue is
+outstanding.
 
-**Anchor.** `docs/spec/visages.md` "Deferred Surface" → "visage
-renaming rules beyond the default canonical names." When that
-deferred work is taken up, the spec that lands it must address the
-embedding-site declaration-churn question. Adding a one-line
-forward-reference at that anchor (below) makes the dependency
-explicit.
+**Anchor.** `docs/spec/visages.md §Custom Visage Names` (the shipped
+feature). The "Canonical-name alias (no embedding churn)" subsection
+documents the indirection that resolves the embedding-site
+declaration-churn question raised here.
 
-**Proposed issue title.** None at this time. When the deferred
-custom-visage-names work is filed as a standalone issue, it
-must include "address relation-embedding declaration-site churn
-under custom visage names" in its scope.
+**Proposed issue title.** None — the deferred custom-visage-names work
+shipped under djogi#311, and the canonical-alias mechanism addresses the
+relation-embedding declaration-site churn this surface flagged.
 
 ---
 
@@ -488,7 +495,7 @@ extensions.
 |---|---|---|---|---|
 | 1 | `#[field(generated)]` per-scope projection | `phantom` | No — mechanism exists | n/a |
 | 2 | Per-field `expose` vs struct default | `accepted-design` (decisions.md row added) | No — per-field is security-by-default | n/a |
-| 3 | Relation-form embedding declaration site | `accepted-design` (conditional) | No — depends on deferred custom-visage-names feature | `docs/spec/visages.md` Deferred Surface |
+| 3 | Relation-form embedding declaration site | `accepted-design` (shipped in djogi#311) | No — shipped in djogi#311; canonical-alias mechanism addresses embedding-site churn | `docs/spec/visages.md` §Custom Visage Names |
 | 4 | `proxy_for + default_filter / default_order` | `post-shipment design question` | **Yes — deferable, migration required** | Phase 8β (shipped; `docs/guide/proxy.md`) |
 | 5 | `{Model}_logs` per-audience access | `re-categorise-and-route` | **Yes — but in access-control domain, not visage** | Phase 5.5 / Phase 10 / Maahi |
 | 6 | M2M through-model visage suppression | `file-standalone-issue` (low priority) | **Yes — deferable** | Post-v0.1.0 adopter feedback |
@@ -534,8 +541,11 @@ the same Phase 8.5 design-lockdown cluster as djogi#228:
    security-by-default invariant against future drift.
 
 Surfaces 1, 3, 6, and 7 do not earn decisions.md rows: surface 1 is
-phantom (no decision to record), surface 3 is conditional on
-deferred work (the dependency is the artefact), surfaces 6 and 7
+phantom (no decision to record); surface 3 was conditional on
+deferred work at the time of writing and has since shipped under
+djogi#311, where the canonical-alias mechanism is the artefact
+addressing the embedding-churn concern (the decisions.md row 158
+Surface 3 entry records the shipped outcome); surfaces 6 and 7
 are deferable ergonomic / queryset items where the right
 documentation is the proposed-issue title, not a pre-emptive
 lock.

@@ -138,6 +138,67 @@ traversal.
 // ERROR — scope `public` declared twice
 ```
 
+## Renaming a visage
+
+The four generated names (`FooPublic`, `FooSelfView`, `FooAdmin`,
+`FooExport`) and any `visage_scopes(...)` custom-scope names are the
+default. To give a visage a different type name, use `visage_names(...)`:
+
+```rust
+use djogi::prelude::*;
+
+#[model(table = "users", visage_names(public = UserSummary))]
+#[derive(Debug, Clone)]
+pub struct User {
+    #[field(expose(public, admin))]
+    pub display_name: String,
+}
+```
+
+Now the public visage is `UserSummary`:
+
+```rust
+let user: User = /* ... */;
+let summary: UserSummary = UserSummary::from(&user);
+axum::Json(summary)
+```
+
+The default name `UserPublic` is still available as an alias to the same
+type — so anything already written against `UserPublic` keeps working:
+
+```rust
+let same: UserPublic = UserSummary::from(&user); // UserPublic == UserSummary
+```
+
+**Renaming never breaks relation embeddings.** A model that embeds a
+renamed visage by its default name does not need editing:
+
+```rust
+#[model(table = "vehicles")]
+pub struct Vehicle {
+    // Written against `UserPublic`; unaffected when `User` renames its
+    // public visage, because `UserPublic` aliases the new name.
+    #[field(expose(public -> UserPublic))]
+    pub owner: ForeignKey<User>,
+}
+```
+
+You can rename built-in scopes and custom `visage_scopes(...)` scopes
+alike:
+
+```rust
+#[model(
+    table = "users",
+    visage_scopes(support = Support),
+    visage_names(support = SupportTicketView)  // renames the custom scope
+)]
+pub struct User { /* ... */ }
+```
+
+Each scope's visage must have a unique type name, and a custom name may not
+collide with another scope's default name or with the model's own type
+name — see the compile-error table below.
+
 ## Default exposure is `internal`
 
 A field without `#[field(expose(...))]` does NOT appear in any
@@ -426,6 +487,15 @@ gate):
 | `#[field(expose(none, public))]`                          | `\`none\` / \`internal\` cannot be combined with other scopes`        |
 | `#[field(expose(public -> X))]` on a `String`             | `the \`expose(public -> ...)\` form is only valid on relation fields` |
 | Nested-brace traversal (`expose(public -> P { ... })`) outside the documented full-struct shape | actionable error with span-precise location |
+| `visage_names(public = X, admin = X)`                     | `two visages on \`Model\` would be named \`X\` ...`                   |
+| `visage_names(public = ModelAdmin)`                       | `\`ModelAdmin\` is the canonical name of scope \`admin\` ...`         |
+| `visage_names(public = ModelAdmin, admin = ModelPublic)`   | `\`ModelAdmin\` is the canonical name of scope \`admin\` ...`         |
+| `visage_names(public = Model)`                            | `\`Model\` collides with the model type \`Model\` ...`               |
+| `visage_names(public = ModelFilter)`                      | `\`ModelFilter\` collides with the \`ModelFilter\` type the derive emits ...` |
+| `visage_names(public = ModelAdminFields)`                 | `\`ModelAdminFields\` is the name of a sibling type ... emitted for scope \`admin\` ...` |
+| `visage_names(public = model)` (lowercase)                | `custom name \`model\` must start with an uppercase ASCII letter`     |
+| `visage_names(notascope = X)`                             | `names scope \`notascope\`, which is not a scope on this model`       |
+| `visage_names(internal = X)` / `visage_names(none = X)`   | `cannot name the \`internal\` sentinel — ... generate no visage struct`|
 
 All errors carry span-precise locations. Fix the annotation and the
 error goes away.
