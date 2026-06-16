@@ -1,0 +1,9 @@
+error[E0599]: no method named `__query_all_for_macros` found on mutable reference `&mut DjogiContext` in the current scope
+  --> $DIR/macro_support_sealed.rs:14:16
+   |
+14 |     let _ = ctx.__query_all_for_macros("SELECT 1", &[]).await;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `&mut DjogiContext`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.
