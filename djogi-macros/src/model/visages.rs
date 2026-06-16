@@ -88,7 +88,13 @@ pub fn expand(
         .map(|(scope, suffix)| {
             let ctx = VisageEmitContext {
                 source: source_name,
-                visage_ident: format_ident!("{source_name}{suffix}"),
+                visage_ident: crate::model::visage_ctx::resolve_visage_ident(
+                    source_name,
+                    scope.as_str(),
+                    suffix.as_str(),
+                    &model_attrs.visage_names,
+                ),
+                canonical_ident: format_ident!("{source_name}{suffix}"),
                 scope: scope.as_str(),
                 struct_item,
                 field_attrs,
@@ -724,6 +730,65 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         )
     };
 
+    // When the adopter renamed this scope's visage, emit canonical-name
+    // type aliases so existing relation embeddings, query entry points,
+    // and downstream references that still name `{Model}{Scope}` keep
+    // resolving. The aliases are zero-cost `type` items — transparent to
+    // the relation-embedding emitter's textual peer-path resolution, which
+    // runs at the *embedding* call site where the author wrote the
+    // canonical name.
+    let canonical_aliases = if ctx.canonical_ident != *proj_name {
+        let canon = &ctx.canonical_ident;
+        let canon_fields = format_ident!("{canon}Fields");
+        let canon_filter = format_ident!("{canon}Filter");
+        let proj_fields = format_ident!("{proj_name}Fields");
+        let proj_filter = format_ident!("{proj_name}Filter");
+        let alias_doc = format!(
+            " Canonical-name alias for the [`{proj_name}`] visage. \
+             `{canon}` is the default `{{Model}}{{Scope}}` name; this \
+             model renamed the scope via `#[model(visage_names(...))]`. \
+             The alias keeps relation embeddings (`expose(scope -> {canon})`) \
+             and other references to the canonical name resolving without edits."
+        );
+        let fields_alias_doc = format!(
+            " Canonical-name alias for [`{proj_fields}`]. Preserves the \
+             `RootModel` generic so traversal through the canonical name \
+             types identically to the custom name."
+        );
+        let filter_alias_doc = format!(
+            " Canonical-name alias for [`{proj_filter}`]. Resolves the \
+             positional `{{Model}}{{Scope}}Filter` name to the custom name's \
+             filter type for the same scope, so filter builders written \
+             against `{canon}Filter` see the same type as `{proj_filter}`."
+        );
+        // The `Fields` alias is only emitted for models that actually own a
+        // `{Visage}Fields` struct. `pk = None` models emit only the
+        // `{Visage}Filter` ZST (visage_fields.rs:88-94), so aliasing
+        // `{canon}Fields` for them would point at a non-existent type. The
+        // alias also carries the same `<RootModel = Source>` generic the
+        // real `{Visage}Fields` struct declares, or traversal typing through
+        // the canonical name breaks.
+        let fields_alias = if matches!(ctx.model_attrs.pk, PkStrategy::None) {
+            TokenStream::new()
+        } else {
+            quote! {
+                #[doc = #fields_alias_doc]
+                pub type #canon_fields<RootModel = #source> = #proj_fields<RootModel>;
+            }
+        };
+        quote! {
+            #[doc = #alias_doc]
+            pub type #canon = #proj_name;
+
+            #fields_alias
+
+            #[doc = #filter_alias_doc]
+            pub type #canon_filter = #proj_filter;
+        }
+    } else {
+        TokenStream::new()
+    };
+
     quote! {
         #derive_path
         pub struct #proj_name {
@@ -743,6 +808,8 @@ fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
         #parity_impl
 
         #visage_descriptor
+
+        #canonical_aliases
 
         // GH #227 — `inventory::submit!` per
         // `(model, field, scope, codec)` usage. Emitted AFTER the
