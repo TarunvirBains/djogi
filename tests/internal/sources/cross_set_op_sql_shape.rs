@@ -212,3 +212,47 @@ fn cross_union_all_visage_arms_with_outer_order_compose() {
     assert!(sql.contains("$1") && sql.contains("$2"), "renumbered binds: {sql}");
     assert!(sql.contains("ORDER BY occurred DESC"), "{sql}");
 }
+
+// ── Column shape validation (Phase 1) ──
+
+#[test]
+fn cross_column_count_mismatch_rejected_at_build_time() {
+    // Author has 2 columns (id, name), Activity expects 3 (id, actor, recent).
+    let left = Author::objects();
+    let right = Login::objects();
+    let err = djogi::query::union_as::<Activity, _, _>(left, right)
+        .render_cross_set_op_sql_for_testing()
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::CrossModelSetOpColumnMismatch { side, .. } if side == "left"),
+        "left arm column mismatch must be rejected: {err:?}"
+    );
+}
+
+#[test]
+fn cross_column_count_mismatch_rejected_on_right_arm() {
+    // Login has 3 columns (id, actor, recent), Author has 2 (id, name).
+    let left = Login::objects();
+    let right = Author::objects();
+    let err = djogi::query::union_as::<Activity, _, _>(left, right)
+        .render_cross_set_op_sql_for_testing()
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::CrossModelSetOpColumnMismatch { side, .. } if side == "right"),
+        "right arm column mismatch must be rejected: {err:?}"
+    );
+}
+
+#[test]
+fn cross_column_count_mismatch_rejected_on_count() {
+    // Mismatch detected on .count() path, not just .fetch_all().
+    let left = Author::objects();
+    let right = Login::objects();
+    let err = djogi::query::union_as::<Activity, _, _>(left, right)
+        .__count_sql_for_test()
+        .unwrap_err();
+    assert!(
+        matches!(err, DjogiError::CrossModelSetOpColumnMismatch { side, .. } if side == "left"),
+        "count path must also reject column mismatch: {err:?}"
+    );
+}

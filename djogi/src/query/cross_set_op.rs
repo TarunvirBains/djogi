@@ -84,6 +84,9 @@ pub trait CrossArm<R: FromPgRow>: Send + Sync {
         &'a self,
         ctx: &'a mut DjogiContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>;
+    /// Column names this arm emits, in SELECT ordinal position.
+    /// Used at SQL-build time for count validation against decode target `R`.
+    fn arm_columns(&self) -> &'static [&'static str];
 }
 
 struct QuerySetArm<M, R>
@@ -131,6 +134,10 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>> {
         Box::pin(async move { crate::query::terminal::auto_set_tenant::<M>(ctx).await })
     }
+
+    fn arm_columns(&self) -> &'static [&'static str] {
+        <M as FromPgRow>::COLUMNS
+    }
 }
 
 struct VisageArm<V, R>
@@ -169,6 +176,10 @@ where
         ctx: &'a mut DjogiContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>> {
         Box::pin(async move { crate::query::terminal::auto_set_tenant::<V::Model>(ctx).await })
+    }
+
+    fn arm_columns(&self) -> &'static [&'static str] {
+        <V as DjogiVisage>::COLUMNS
     }
 }
 
@@ -508,6 +519,7 @@ fn build_cross_set_op_select_inner<R: FromPgRow>(
     acc: &mut SqlAccumulator,
     sop: &CrossModelSetOpQuerySet<R>,
 ) -> Result<(), DjogiError> {
+    validate_arm_columns(&*sop.left, &*sop.right)?;
     for o in &sop.ordering {
         o.validate()?;
     }
@@ -547,6 +559,7 @@ pub(crate) fn build_cross_set_op_select<R: FromPgRow>(
 pub(crate) fn build_cross_set_op_count<R: FromPgRow>(
     sop: &CrossModelSetOpQuerySet<R>,
 ) -> Result<SqlAccumulator, DjogiError> {
+    validate_arm_columns(&*sop.left, &*sop.right)?;
     for o in &sop.ordering {
         o.validate()?;
     }
@@ -584,6 +597,37 @@ fn reconcile_arm_tenants(
             right_tenant: rt.clone(),
         });
     }
+    Ok(())
+}
+
+/// Validate that each arm's column count matches the decode target `R`.
+/// Postgres compares set-op arms positionally, so a mismatch produces
+/// a silent misdecode in release mode. This check catches it at
+/// SQL-build time before any tenant wiring or SQL emission.
+fn validate_arm_columns<R: FromPgRow>(
+    left: &dyn CrossArm<R>,
+    right: &dyn CrossArm<R>,
+) -> Result<(), DjogiError> {
+    let target = R::COLUMNS;
+
+    let l_cols = left.arm_columns();
+    if l_cols.len() != target.len() {
+        return Err(DjogiError::CrossModelSetOpColumnMismatch {
+            side: "left",
+            arm_columns: l_cols.into(),
+            expected_columns: target.into(),
+        });
+    }
+
+    let r_cols = right.arm_columns();
+    if r_cols.len() != target.len() {
+        return Err(DjogiError::CrossModelSetOpColumnMismatch {
+            side: "right",
+            arm_columns: r_cols.into(),
+            expected_columns: target.into(),
+        });
+    }
+
     Ok(())
 }
 
