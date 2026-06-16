@@ -1,0 +1,7 @@
+error: `#[derived]` `name` `Metadata` contains an uppercase byte; derived aliases must be ASCII lowercase so Postgres's unquoted-identifier case folding does not silently rename them (E_DJG_VDF_012). Use snake_case (e.g. `facility_site`).
+  --> $DIR/jsonb_per_audience_fail_003_uppercase_name.rs:20:14
+   |
+20 |     name   = Metadata,
+   |              ^^^^^^^^
+
+error: aborting due to 1 previous error

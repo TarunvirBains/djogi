@@ -1,0 +1,7 @@
+error: derived `name = metadata` collides with the exposed model column `metadata` in scope `public` (E_DJG_VDF_002)
+  --> $DIR/jsonb_per_audience_fail_001_double_exposure.rs:24:14
+   |
+24 |     name   = metadata,
+   |              ^^^^^^^^
+
+error: aborting due to 1 previous error

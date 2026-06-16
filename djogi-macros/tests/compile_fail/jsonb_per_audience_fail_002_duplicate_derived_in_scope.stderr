@@ -1,0 +1,7 @@
+error: derived `name = metadata` declared twice in scope `public` — each derived entry's name must be unique within every scope it targets (E_DJG_VDF_003)
+  --> $DIR/jsonb_per_audience_fail_002_duplicate_derived_in_scope.rs:27:14
+   |
+27 |     name   = metadata,
+   |              ^^^^^^^^
+
+error: aborting due to 1 previous error
