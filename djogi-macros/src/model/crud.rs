@@ -265,7 +265,9 @@ pub fn expand(
         fn __djogi_should_collect_bulk_update_ids(
             ctx: &::djogi::context::DjogiContext,
         ) -> bool {
-            ctx.__djogi_is_transaction_backed_for_macros()
+            <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__djogi_is_transaction_backed_for_macros(
+                ctx,
+            )
                 && ctx.punnu::<Self>().is_some()
         }
 
@@ -828,11 +830,12 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // Auto-tenant wiring (Task 10 + Task 11).
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
-    // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
-    // (the public shim over `ensure_tenant_set`) before any SQL runs.
+    // `tenant_id`, this snippet calls
+    // `<::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__ensure_tenant_set_for_macros(ctx, ...)`
+    // before any SQL runs.
     // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
     // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
-    // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
+    // `MacroSupportExt::__tenant_scope_suppressed_for_macros(ctx)` is `true`. Callers that
     // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
     // or `ctx.set_no_tenant_scope()` to suppress the warn.
     // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
@@ -864,7 +867,10 @@ pub fn expand(
                     ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
                 match __djogi_tid {
                     ::std::option::Option::Some(__djogi_tid_str) => {
-                        ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__ensure_tenant_set_for_macros(
+                            ctx, &__djogi_tid_str,
+                        )
+                        .await?;
                     }
                     ::std::option::Option::None => {
                         // Auth present but carries no tenant_id. Clear any
@@ -876,7 +882,9 @@ pub fn expand(
                         if ctx.applied_tenant_id().is_some() {
                             ctx.clear_tenant().await?;
                         }
-                        if !ctx.__tenant_scope_suppressed_for_macros() {
+                        if !<::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__tenant_scope_suppressed_for_macros(
+                            ctx,
+                        ) {
                             ::djogi::__private::tracing::warn!(
                                 model = #model_name_str,
                                 "auth attached but tenant_id is None on a tenant-keyed model; \
@@ -894,31 +902,43 @@ pub fn expand(
     // Tenant-keyed + hooks paths need a rollback point immediately
     // before auto tenant application so pre-hook failures can restore
     // the original tenant/auth scope.
-    let snapshot_auth_state_before_auto_set =
-        if model_attrs.hooks && model_attrs.tenant_key.is_some() {
-            quote! {
-                let __djogi_auth_snapshot = ctx.__snapshot_auth_state_for_macros();
-            }
-        } else {
-            TokenStream::new()
-        };
+    let snapshot_auth_state_before_auto_set = if model_attrs.hooks
+        && model_attrs.tenant_key.is_some()
+    {
+        quote! {
+            let __djogi_auth_snapshot =
+                <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__snapshot_auth_state_for_macros(
+                    ctx,
+                );
+        }
+    } else {
+        TokenStream::new()
+    };
 
     // -------------------------------------------------------------------------
     // Per-method async bodies.
     // -------------------------------------------------------------------------
-    // Every body calls the public-but-hidden execution helpers on `ctx`
-    // (`ctx.__query_opt_for_macros`, `ctx.__query_one_for_macros`, etc.) and
-    // decodes rows via `FromPgRow::from_pg_row`. These helpers are
-    // accessible from user crates (macro-generated code runs outside `djogi`)
-    // even though the underlying `pub(crate)` methods are not. See
-    // djogi/src/context.rs for the execution helper rationale.
+    // Every generated body reaches `DjogiContext`'s execution helpers
+    // through the sealed `MacroSupportExt` trait, called with
+    // fully-qualified syntax —
+    // `<::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(ctx, ...)`
+    // — decoding rows via `FromPgRow::from_pg_row`. The trait is sealed:
+    // adopter code cannot implement it, and the methods left the inherent
+    // `DjogiContext` surface, so a direct `ctx.__query_opt_for_macros(...)`
+    // call from an adopter no longer resolves. Fully-qualified syntax names
+    // the trait at the call-site, so no `use` import is emitted. This mirrors
+    // the `::djogi::__bypass::RawAccessExt::raw_execute(ctx, ...)` form.
+    // See `djogi/src/context/macro_support.rs`.
     let get_body = quote! {
         async move {
             #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #id_param_for_get,
             ];
-            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+            match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                ctx, #get_sql, __params,
+            )
+            .await? {
                 ::std::option::Option::Some(__row) => {
                     <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
@@ -998,7 +1018,10 @@ pub fn expand(
                 let __seq_parent_id: i64 = value.#parent_col_ident.key().as_i64();
                 let __seq_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] =
                     &[&__seq_parent_id];
-                let __seq_row = ctx.__query_one_for_macros(#upsert_sql, __seq_params).await?;
+                let __seq_row = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_one_for_macros(
+                    ctx, #upsert_sql, __seq_params,
+                )
+                .await?;
                 let __seq_val: i64 = ::djogi::__private::tokio_postgres::Row::try_get(
                     &__seq_row,
                     "last_seq",
@@ -1037,7 +1060,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1125,7 +1151,10 @@ pub fn expand(
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #(#create_param_entries,)*
             ];
-            let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
+            let __raw_row = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_one_for_macros(
+                ctx, #insert_sql, __params,
+            )
+            .await?;
             let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             // outbox emission (no-op for non-events models).
             // Runs in the same ctx so a transactional caller gets the
@@ -1186,7 +1215,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1261,7 +1293,10 @@ pub fn expand(
                 // Use query_opt: a zero-row UPDATE is not a driver error — Postgres
                 // returns no rows silently when the WHERE predicate matches nothing.
                 // We map None → LockConflict so the caller can branch on it.
-                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await? {
                     ::std::option::Option::Some(__raw_row) => {
                         let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
                         *self = row;
@@ -1375,7 +1410,10 @@ pub fn expand(
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
+                let __raw_row = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_one_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await?;
                 let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
                 *self = row;
                 // After `*self = row`, walk every Tracked field and call mark_clean().
@@ -1456,7 +1494,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1506,7 +1547,10 @@ pub fn expand(
                 #owned_pk_param,
             ];
             // D3 step 2 — DELETE.
-            ctx.__execute_for_macros(#delete_sql, __params).await?;
+            <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__execute_for_macros(
+                ctx, #delete_sql, __params,
+            )
+            .await?;
             // D3 step 3 — outbox carries the pre-delete snapshot
             // (reads `self` before it drops at function scope end).
             // No-op for non-events models.
@@ -1594,7 +1638,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1635,7 +1682,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1709,7 +1759,10 @@ pub fn expand(
             let (__sql, __binds) = __acc.into_parts();
             let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                 __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-            match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+            match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                ctx, &__sql, &__params,
+            )
+            .await? {
                 ::std::option::Option::Some(__raw_row) => {
                     let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
                         &__raw_row, "__djogi_old__",
@@ -1782,7 +1835,10 @@ pub fn expand(
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await? {
                     ::std::option::Option::Some(__raw_row) => {
                         let __old = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
                             &__raw_row, "__djogi_old__",
@@ -1816,9 +1872,8 @@ pub fn expand(
                         ::std::result::Result::Ok(__pair)
                     }
                     ::std::option::Option::None => {
-                        match ctx.__query_opt_for_macros(
-                            #get_sql,
-                            &[#owned_pk_param],
+                        match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                            ctx, #get_sql, &[#owned_pk_param],
                         )
                         .await?
                         {
@@ -1854,7 +1909,10 @@ pub fn expand(
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
-            match ctx.__query_opt_for_macros(#delete_returning_sql, __params).await? {
+            match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                ctx, #delete_returning_sql, __params,
+            )
+            .await? {
                 ::std::option::Option::Some(__raw_row) => {
                     let __deleted = <Self as ::djogi::__private::pg::FromJoinedPgRow>::from_joined_pg_row(
                         &__raw_row, "__djogi_old__",
@@ -1899,7 +1957,10 @@ pub fn expand(
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #refresh_id_param,
             ];
-            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+            match <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                ctx, #get_sql, __params,
+            )
+            .await? {
                 ::std::option::Option::Some(__row) => {
                     <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
@@ -1972,7 +2033,10 @@ pub fn expand(
                         &__id_i64,
                         #(#create_param_entries,)*
                     ];
-                    let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
+                    let __maybe_row = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                        ctx, #insert_with_id_sql, __params,
+                    )
+                    .await?;
                     match __maybe_row {
                         ::std::option::Option::Some(__raw) => {
                             <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)
@@ -2334,7 +2398,10 @@ pub fn expand(
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let __raw_rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await?;
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
                     .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
@@ -2429,7 +2496,10 @@ pub fn expand(
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let __raw_rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await?;
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
                     .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
@@ -2538,7 +2608,10 @@ pub fn expand(
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let __raw_rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                    ctx, &__sql, &__params,
+                )
+                .await?;
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
                     .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
@@ -2698,10 +2771,10 @@ pub fn expand(
                     let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         #(#cof_insert_entries,)*
                     ];
-                    let __maybe_inserted = ctx.__query_opt_for_macros(
-                        #insert_or_nothing_sql,
-                        __insert_params,
-                    ).await?;
+                    let __maybe_inserted = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_opt_for_macros(
+                        ctx, #insert_or_nothing_sql, __insert_params,
+                    )
+                    .await?;
                     match __maybe_inserted {
                         ::std::option::Option::Some(__raw) => {
                             let __row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
@@ -2720,10 +2793,10 @@ pub fn expand(
                             let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                                 #cof_key_entry,
                             ];
-                            let __raw = ctx.__query_one_for_macros(
-                                #select_by_key_sql,
-                                __select_params,
-                            ).await?;
+                            let __raw = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_one_for_macros(
+                                ctx, #select_by_key_sql, __select_params,
+                            )
+                            .await?;
                             let existing = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
                             ::std::result::Result::Ok((existing, false))
                         }
@@ -2923,7 +2996,10 @@ pub fn expand(
                         let (__sql, __binds) = __acc.into_parts();
                         let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                             __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                        let __raw_rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                            ctx, &__sql, &__params,
+                        )
+                        .await?;
                         let created: ::std::vec::Vec<Self> = __raw_rows
                             .iter()
                             .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
@@ -3085,7 +3161,10 @@ pub fn expand(
                         let (__sql, __binds) = __acc.into_parts();
                         let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                             __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                        let __raw_rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                            ctx, &__sql, &__params,
+                        )
+                        .await?;
                         let created: ::std::vec::Vec<Self> = __raw_rows
                             .iter()
                             .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))

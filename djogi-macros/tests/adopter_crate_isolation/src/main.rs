@@ -128,6 +128,23 @@ pub struct CustomPkEnumRow {
     pub state: IsolationState,
 }
 
+// ── TenantedProfile — tenant_key + hooks (exercises auth/tenant emit) ──
+//
+// This model exercises the `model_attrs.hooks && model_attrs.tenant_key.is_some()`
+// branch in `crud.rs`, which emits the auth-snapshot/rollback wiring through
+// `MacroSupportExt::__snapshot_auth_state_for_macros` and
+// `MacroSupportExt::__restore_auth_state_for_macros`. Without a model that has
+// both `tenant_key` AND `hooks`, zero positive fixtures exercise those branches.
+
+#[model(table = "adopter_isolation_tenanted_profiles", tenant_key = "org_id", hooks)]
+#[derive(Debug, Clone)]
+pub struct TenantedProfile {
+    pub org_id: String,
+    pub display_name: String,
+}
+
+impl ModelHooks for TenantedProfile {}
+
 // ── `#[djogi_test]` path routing ────────────────────────────────────────
 
 #[djogi::djogi_test]
@@ -196,6 +213,7 @@ fn main() {
     _accept_cacheable::<DefaultRow>();
     _accept_cacheable::<WatermarkedRow>();
     _accept_cacheable::<CustomPkEnumRow>();
+    _accept_cacheable::<TenantedProfile>();
     _accept_delta_sync_default::<DefaultRow>();
     _accept_delta_sync_explicit::<WatermarkedRow>();
     let _ = _use_boot_hook_type();

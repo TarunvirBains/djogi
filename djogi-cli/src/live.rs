@@ -1533,6 +1533,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn hostname_for_claim_falls_back_to_unknown() {
         let _env_guard = EnvGuard::new();
@@ -1542,6 +1543,7 @@ mod tests {
         assert_eq!(hostname_for_claim(), "ci-runner-7");
     }
 
+    #[serial_test::serial]
     #[test]
     fn env_guard_restores_prior_values() {
         let env_guard = EnvGuard::new();
@@ -1827,6 +1829,7 @@ mod tests {
 
     // ── env gate ─────────────────────────────────────────────────────
 
+    #[serial_test::serial]
     #[test]
     fn force_allowed_when_djogi_env_unset() {
         let _env_guard = EnvGuard::new();

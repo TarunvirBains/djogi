@@ -900,21 +900,19 @@ async fn u2_attune_squash_refuses_when_dev_mode_off(mut ctx: djogi::DjogiContext
     let _ = std::fs::remove_dir_all(&work);
 }
 
-// ── Codex umbrella U-2: --squash refuses when DJOGI_ENV=production ────────
-
-/// Codex umbrella U-2 BLOCK: `attune --squash` must refuse when the
-/// `DJOGI_ENV` environment variable is set to `"production"`
-/// (case-insensitive ASCII compare). The env var is the
-/// deployment-time signal that overrides the `Djogi.toml` profile —
-/// CI / orchestration sets it before invoking `djogi`. This test
-/// pins the env-var gate independently from the profile gate by
-/// passing `profile = "development"` and `dev_mode = true`; the only
-/// gate that should trip is the env-var one.
+/// Verifies that `attune --squash` refuses when the `DJOGI_ENV`
+/// environment variable is set to `"production"` (case-insensitive
+/// ASCII compare). The env var is the deployment-time signal that
+/// overrides the `Djogi.toml` profile — CI / orchestration sets it
+/// before invoking `djogi`. This test pins the env-var gate
+/// independently from the profile gate by passing
+/// `profile = "development"` and `dev_mode = true`; the only gate
+/// that should trip is the env-var one.
 ///
-/// Tests run with `--test-threads=1` per the project's pre-commit
-/// policy so concurrent env mutation is not a concern in this
-/// configuration.
+/// `#[serial_test::serial]` serializes this test against any other
+/// test in this process that mutates `DJOGI_ENV`.
 #[djogi::djogi_test]
+#[serial_test::serial]
 async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::DjogiContext) {
     let work = temp_workspace("u2_squash_djogi_env_prod");
     let lock_path = work.join(".djogi-migrate.lock");
@@ -922,7 +920,8 @@ async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::D
 
     // Save / restore DJOGI_ENV so the test does not leak state.
     let prior = std::env::var("DJOGI_ENV").ok();
-    // SAFETY: serial test execution; no other thread reads DJOGI_ENV.
+    // SAFETY: #[serial_test::serial] ensures no concurrent test in this
+    // process reads or writes DJOGI_ENV while this function runs.
     unsafe { std::env::set_var("DJOGI_ENV", "production") };
 
     let req = AttuneRequest {
@@ -954,8 +953,6 @@ async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::D
     }
     let _ = std::fs::remove_dir_all(&work);
 }
-
-// ── Codex umbrella U-2: gate ordering — localhost evaluated first ─────────
 
 /// When MULTIPLE squash gates would refuse, the localhost gate must
 /// fire FIRST. Operators get a single deterministic refusal reason

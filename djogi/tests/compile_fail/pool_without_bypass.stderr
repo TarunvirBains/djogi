@@ -4,9 +4,9 @@ error[E0624]: method `pool` is private
   3 |         let _ = ctx.pool();
     |                     ^^^^ private method
     |
-   ::: djogi/src/context/mod.rs:286:5
+   ::: djogi/src/context/mod.rs:278:5
     |
-286 |     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
+278 |     pub(crate) fn pool(&self) -> Option<&DjogiPool> {
     |     ----------------------------------------------- private method defined here
 
 error: aborting due to 1 previous error

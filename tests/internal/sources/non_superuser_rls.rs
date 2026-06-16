@@ -410,7 +410,7 @@ fn pool_context_atomic_panic_clears_parent_tenant_trackers() {
             non_super_ctx.set_no_tenant_scope();
 
             let auth_before = non_super_ctx.auth().cloned().expect("auth snapshot");
-            let tenant_scope_before = non_super_ctx.__tenant_scope_suppressed_for_macros();
+            let tenant_scope_before = non_super_ctx.tenant_scope_suppressed();
 
             non_super_ctx
                 .set_tenant("1000")
@@ -470,7 +470,7 @@ fn pool_context_atomic_panic_clears_parent_tenant_trackers() {
                 "panic path must not mutate parent auth ext"
             );
             assert_eq!(
-                non_super_ctx.__tenant_scope_suppressed_for_macros(),
+                non_super_ctx.tenant_scope_suppressed(),
                 tenant_scope_before,
                 "panic path must not mutate parent tenant-scope suppression"
             );

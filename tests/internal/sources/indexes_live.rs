@@ -370,8 +370,8 @@ async fn read_pg_index(
     ctx: &mut djogi::DjogiContext,
     index_name: &str,
 ) -> (bool, bool, bool, bool, bool, String, i16, i16) {
-    let row = ctx
-        .__query_one_for_macros(
+    let rows = ctx
+        .raw_rows(
             "SELECT \
                  i.indisunique, \
                  i.indisprimary, \
@@ -389,6 +389,7 @@ async fn read_pg_index(
         )
         .await
         .unwrap_or_else(|e| panic!("pg_index probe for {index_name} failed: {e:?}"));
+    let row = rows.into_iter().next().expect("single pg_index row");
     (
         row.try_get::<_, bool>("indisunique").unwrap(),
         row.try_get::<_, bool>("indisprimary").unwrap(),
@@ -406,7 +407,7 @@ async fn read_pg_index(
 /// `"(expr)"` so callers can distinguish them from real attributes.
 async fn read_index_columns(ctx: &mut djogi::DjogiContext, index_name: &str) -> Vec<String> {
     let rows = ctx
-        .__query_all_for_macros(
+        .raw_rows(
             "SELECT \
                  (ord - 1)::int AS pos, \
                  CASE WHEN i.indkey[ord - 1] = 0 THEN '(expr)' \
@@ -432,14 +433,18 @@ async fn read_index_columns(ctx: &mut djogi::DjogiContext, index_name: &str) -> 
 /// under the given name. UniqueConstraint indexes create one; UniqueIndex
 /// indexes do not.
 async fn has_unique_constraint(ctx: &mut djogi::DjogiContext, name: &str) -> bool {
-    let row = ctx
-        .__query_one_for_macros(
+    let rows = ctx
+        .raw_rows(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = $1 AND contype = 'u') AS e",
             &[&name],
         )
         .await
         .expect("pg_constraint probe");
-    row.try_get::<_, bool>("e").unwrap()
+    rows.into_iter()
+        .next()
+        .expect("single row")
+        .try_get::<_, bool>("e")
+        .unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +580,9 @@ fn geopoint_still_emits_one_gist_index() {
 // indexes, and asserts pg_catalog matches the descriptor claim.
 // ---------------------------------------------------------------------------
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index + pg_am to verify
+// composite index column order and access method round-trip through live Postgres
 #[djogi::djogi_test]
 async fn composite_index_preserves_column_order_in_pg_index(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<Event>(&mut ctx).await;
@@ -599,6 +607,9 @@ async fn composite_index_preserves_column_order_in_pg_index(mut ctx: djogi::Djog
     );
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index + pg_constraint to
+// verify UniqueConstraint lowers to a constraint row (contype='u') in live Postgres
 #[djogi::djogi_test]
 async fn simple_unique_lands_as_pg_constraint(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<SimpleUnique>(&mut ctx).await;
@@ -615,6 +626,9 @@ async fn simple_unique_lands_as_pg_constraint(mut ctx: djogi::DjogiContext) {
     );
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indpred + pg_constraint
+// to verify partial-unique escalates to an index (no constraint row) with a predicate in live Postgres
 #[djogi::djogi_test]
 async fn partial_unique_is_index_not_constraint(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<PartialUnique>(&mut ctx).await;
@@ -630,6 +644,9 @@ async fn partial_unique_is_index_not_constraint(mut ctx: djogi::DjogiContext) {
     );
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indnullsnotdistinct to
+// verify NULLS NOT DISTINCT round-trips through live Postgres as a UniqueIndex, not a constraint
 #[djogi::djogi_test]
 async fn nulls_not_distinct_round_trips_through_pg_index(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<NndUnique>(&mut ctx).await;
@@ -642,6 +659,9 @@ async fn nulls_not_distinct_round_trips_through_pg_index(mut ctx: djogi::DjogiCo
     assert!(!has_unique_constraint(&mut ctx, name).await);
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indnatts + indnkeyatts
+// to verify INCLUDE columns are distinct from key columns in live Postgres
 #[djogi::djogi_test]
 async fn covering_index_has_include_columns(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<Covering>(&mut ctx).await;
@@ -667,6 +687,9 @@ async fn covering_index_has_include_columns(mut ctx: djogi::DjogiContext) {
     );
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indexprs to verify
+// expression index populates the indexprs field (non-null) in live Postgres
 #[djogi::djogi_test]
 async fn expression_index_shows_indexprs(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<Expression>(&mut ctx).await;
@@ -682,6 +705,9 @@ async fn expression_index_shows_indexprs(mut ctx: djogi::DjogiContext) {
     assert_eq!(cols, vec!["(expr)".to_string()]);
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indoption + pg_opclass
+// to verify per-column DESC order and text_pattern_ops opclass round-trip through live Postgres
 #[djogi::djogi_test]
 async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiContext) {
     setup_schema_for::<PerColumn>(&mut ctx).await;
@@ -696,8 +722,8 @@ async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiCon
     );
 
     // Column-0 option bit 0 == descending.
-    let row = ctx
-        .__query_one_for_macros(
+    let rows = ctx
+        .raw_rows(
             "SELECT (i.indoption[0] & 1)::int AS desc_flag \
              FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid \
              WHERE c.relname = $1",
@@ -705,12 +731,12 @@ async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiCon
         )
         .await
         .expect("indoption probe");
-    let desc_flag: i32 = row.try_get("desc_flag").unwrap();
+    let desc_flag: i32 = rows.into_iter().next().expect("single row").try_get("desc_flag").unwrap();
     assert_eq!(desc_flag, 1, "column 0 must be DESC");
 
     // Column 1 uses text_pattern_ops opclass.
-    let row = ctx
-        .__query_one_for_macros(
+    let rows = ctx
+        .raw_rows(
             "SELECT op.opcname AS name \
              FROM pg_index i \
              JOIN pg_class c ON c.oid = i.indexrelid \
@@ -720,13 +746,16 @@ async fn per_column_record_round_trips_desc_and_opclass(mut ctx: djogi::DjogiCon
         )
         .await
         .expect("opclass probe");
-    let opname: String = row.try_get("name").unwrap();
+    let opname: String = rows.into_iter().next().expect("single row").try_get("name").unwrap();
     assert_eq!(opname, "text_pattern_ops");
 }
 
 /// §6.2 round-trip — the one that this whole file is anchored on.
 /// `unique(fields = [...], concurrently = true)` must land as a
 /// UniqueIndex (no pg_constraint row) with a `_uidx` name stem.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index + pg_constraint to
+// verify concurrent-unique escalation lands as a UniqueIndex with no constraint row in live Postgres
 #[djogi::djogi_test]
 async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
     let ddl = setup_schema_for::<UniqueConcurrent>(&mut ctx).await;
@@ -758,6 +787,9 @@ async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::
 /// §6.4 item 4 round-trip — `unique(fields, include = [...])` escalates
 /// to UniqueIndex (no pg_constraint row) because the covering payload is
 /// a unique-index-only feature.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index indnatts/nkeyatts +
+// pg_constraint to verify unique+include escalation produces no constraint row in live Postgres
 #[djogi::djogi_test]
 async fn unique_with_include_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
     let ddl = setup_schema_for::<UniqueInclude>(&mut ctx).await;
@@ -783,6 +815,9 @@ async fn unique_with_include_lands_as_unique_index_not_constraint(mut ctx: djogi
 /// §6.4 item 3 round-trip — `unique(expr = "...")` escalates to
 /// UniqueIndex because expression-target uniqueness cannot be carried by
 /// an `ADD CONSTRAINT ... UNIQUE` statement.
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#474): no typed pg_catalog API; raw SQL probes pg_index.indexprs + pg_constraint
+// to verify unique-expression escalation produces an index with indexprs, no constraint row in live Postgres
 #[djogi::djogi_test]
 async fn unique_expression_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
     let ddl = setup_schema_for::<UniqueExpr>(&mut ctx).await;

@@ -116,7 +116,7 @@ pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<
             if ctx.applied_tenant_id().is_some() {
                 ctx.clear_tenant().await?;
             }
-            if !ctx.__tenant_scope_suppressed_for_macros() {
+            if !ctx.tenant_scope_suppressed {
                 tracing::warn!(
                     model = std::any::type_name::<T>(),
                     "auth attached but tenant_id is None on a tenant-keyed model; \

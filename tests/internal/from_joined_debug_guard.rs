@@ -10,10 +10,13 @@ pub struct DebugGuardPost {
 }
 
 #[cfg(debug_assertions)]
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#475): no typed helper for constructing rows with controlled column aliases;
+// raw SQL builds a synthetic row without the expected __djogi_old__ prefix to trigger the debug guard
 #[djogi::djogi_test(sync_models = [DebugGuardPost])]
 async fn from_joined_pg_row_debug_guard_rejects_missing_old_alias(mut ctx: djogi::DjogiContext) {
-    let row = ctx
-        .__query_one_for_macros(
+    let rows = ctx
+        .raw_rows(
             "SELECT \
                 1::bigint AS id, \
                 now() AS created_at, \
@@ -26,6 +29,7 @@ async fn from_joined_pg_row_debug_guard_rejects_missing_old_alias(mut ctx: djogi
         )
         .await
         .expect("row should be constructed for debug-guard test");
+    let row = rows.into_iter().next().expect("exactly one row");
 
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         <DebugGuardPost as djogi::FromJoinedPgRow>::from_joined_pg_row(&row, "__djogi_old__")

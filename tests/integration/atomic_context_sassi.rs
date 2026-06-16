@@ -137,7 +137,7 @@ async fn pool_backed_context_atomic_carries_auth_on_success(mut ctx: djogi::Djog
                 "pool-backed context atomic must copy parent auth into tx context"
             );
             assert!(
-                tx.__tenant_scope_suppressed_for_macros(),
+                tx.tenant_scope_suppressed(),
                 "pool-backed context atomic must copy tenant-scope suppression into tx context"
             );
 
@@ -157,7 +157,7 @@ async fn pool_backed_context_atomic_carries_auth_on_success(mut ctx: djogi::Djog
         "successful atomic(&mut pool_ctx, ...) should propagate auth mutations back"
     );
     assert!(
-        ctx.__tenant_scope_suppressed_for_macros(),
+        ctx.tenant_scope_suppressed(),
         "successful atomic(&mut pool_ctx, ...) should preserve tenant-scope suppression"
     );
 }

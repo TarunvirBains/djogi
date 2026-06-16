@@ -84,6 +84,7 @@ djogi-macros.workspace = true
 # helpers.
 [dev-dependencies]
 djogi = { workspace = true, features = ["testing"] }
+serial_test.workspace = true
 
 # T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
 # per-test database via `#[djogi_test]`, and asserts CLI output.

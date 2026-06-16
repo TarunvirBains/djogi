@@ -188,9 +188,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 return ::std::result::Result::Ok(::std::vec::Vec::new());
             }
             let count = ::djogi::primary_key::checked_count(n)?;
-            let rows = ctx
-                .__query_all_for_macros(#sql, &[&count])
-                .await?;
+            let rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                ctx, #sql, &[&count],
+            )
+            .await?;
             let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
                 .into_iter()
                 .map(|row| {
@@ -230,9 +231,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 return ::std::result::Result::Ok(::std::vec::Vec::new());
             }
             let count = ::djogi::primary_key::checked_count(n)?;
-            let rows = ctx
-                .__query_all_for_macros(#synthesised_sql, &[&count])
-                .await?;
+            let rows = <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__query_all_for_macros(
+                ctx, #synthesised_sql, &[&count],
+            )
+            .await?;
             let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
                 .into_iter()
                 .map(|row| {

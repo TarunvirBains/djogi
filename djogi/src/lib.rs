@@ -281,6 +281,12 @@ pub mod __private {
         pub use crate::hooks::ModelHooks;
     }
 
+    /// Sealed macro-support surface for `#[derive(Model)]`-emitted CRUD
+    /// bodies. Routed through `__private` so macro paths spell
+    /// `::djogi::__private::MacroSupportExt` per
+    /// `feedback_macro_path_routing.md`. Sealed; no stability guarantee.
+    pub use crate::context::macro_support::{MacroSupportExt, MacroSupportExtBase};
+
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     /// Routing through `::djogi::__private::tracing` keeps user crates from
     /// needing `tracing` as a direct dependency — the same path-routing

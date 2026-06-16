@@ -2,12 +2,9 @@
 // JUSTIFICATION (PIN): exercises raw_execute itself
 #[djogi::djogi_test]
 async fn raw_execute_reports_affected_rows(mut ctx: djogi::DjogiContext) {
-    ctx.__execute_for_macros(
-        "CREATE TEMP TABLE raw_execute_pin_values (value integer NOT NULL)",
-        &[],
-    )
-    .await
-    .expect("temp table should be created");
+    ctx.raw_ddl("CREATE TEMP TABLE raw_execute_pin_values (value integer NOT NULL)")
+        .await
+        .expect("temp table should be created");
 
     let affected = ctx
         .raw_execute(
@@ -17,10 +14,11 @@ async fn raw_execute_reports_affected_rows(mut ctx: djogi::DjogiContext) {
         .await
         .expect("raw_execute should run parameterized DML");
 
-    let row = ctx
-        .__query_one_for_macros("SELECT value FROM raw_execute_pin_values", &[])
+    let rows = ctx
+        .raw_rows("SELECT value FROM raw_execute_pin_values", &[])
         .await
         .expect("inserted row should be visible");
+    let row = rows.into_iter().next().expect("exactly one row");
     let value: i32 = row.try_get("value").expect("value column decodes");
 
     assert_eq!(affected, 1);

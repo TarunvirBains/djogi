@@ -761,6 +761,7 @@ mod tests {
         f()
     }
 
+    #[serial_test::serial]
     #[test]
     fn database_url_env_guard_restores_prior_value() {
         let env_guard = DatabaseUrlEnvGuard::new();
@@ -789,6 +790,7 @@ mod tests {
 
     /// `db reset` without node identity must refuse before any prompt,
     /// connection, or destructive I/O.
+    #[serial_test::serial]
     #[test]
     fn reset_cmd_refuses_when_identity_is_missing() {
         let work = temp_workspace("reset_remote");
@@ -817,6 +819,7 @@ mod tests {
     /// `db reset --single-node-dev` against a production profile must
     /// refuse during CLI identity resolution before any runtime or SQL
     /// work starts.
+    #[serial_test::serial]
     #[test]
     fn reset_cmd_refuses_single_node_dev_in_production_profile() {
         let work = temp_workspace("reset_prod");
@@ -848,6 +851,7 @@ mod tests {
     /// Non-localhost URL refuses with exit code 2 when
     /// `--allow-non-localhost` is omitted, regardless of `--yes` or
     /// `--dry-run`. Mirrors `db reset`'s localhost gate.
+    #[serial_test::serial]
     #[test]
     fn cleanup_test_dbs_refuses_non_localhost_without_override() {
         let work = temp_workspace("cleanup_remote");
@@ -876,6 +880,7 @@ mod tests {
 
     /// Production profile refuses (exit 2) even with localhost +
     /// `--yes`. Identical predicate to `db reset`'s production gate.
+    #[serial_test::serial]
     #[test]
     fn cleanup_test_dbs_refuses_on_production_profile() {
         let work = temp_workspace("cleanup_prod");
@@ -899,6 +904,7 @@ mod tests {
 
     /// Localhost + non-production + neither `--yes` nor `--dry-run`
     /// must refuse with exit code 2 (missing confirmation).
+    #[serial_test::serial]
     #[test]
     fn cleanup_test_dbs_refuses_without_yes_or_dry_run() {
         let work = temp_workspace("cleanup_no_yes");
@@ -927,6 +933,7 @@ mod tests {
     /// candidate) is refused at the CLI before any connection
     /// attempt. Returns exit code 1 — argument validation, not gate
     /// refusal.
+    #[serial_test::serial]
     #[test]
     fn cleanup_test_dbs_rejects_invalid_maintenance_database() {
         let work = temp_workspace("cleanup_bad_maint");
