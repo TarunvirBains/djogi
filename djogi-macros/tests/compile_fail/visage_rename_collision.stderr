@@ -1,0 +1,7 @@
+error: two visages on `User` would be named `SharedName` (scopes `public` and `admin`). Each scope's visage must have a unique type name — adjust the `visage_names(...)` entry.
+ --> $DIR/visage_rename_collision.rs:7:27
+  |
+7 |     visage_names(public = SharedName, admin = SharedName)
+  |                           ^^^^^^^^^^
+
+error: aborting due to 1 previous error

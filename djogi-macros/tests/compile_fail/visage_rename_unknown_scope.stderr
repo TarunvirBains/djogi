@@ -1,0 +1,7 @@
+error: `visage_names(...)` names scope `notascope`, which is not a scope on this model. Built-in scopes: public, self_view, admin, export. no custom scopes declared on this model. Declare custom scopes via `#[model(visage_scopes(name = Suffix))]`.
+ --> $DIR/visage_rename_unknown_scope.rs:5:73
+  |
+5 | #[model(table = "visage_rename_unknown_scope", visage_names(notascope = Foo))]
+  |                                                                         ^^^
+
+error: aborting due to 1 previous error

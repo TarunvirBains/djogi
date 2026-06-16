@@ -1,0 +1,7 @@
+error: `visage_names(...)` custom name `userSummary` must start with an uppercase ASCII letter (matching the `Public` / `SelfView` casing convention)
+ --> $DIR/visage_rename_lowercase_name.rs:4:77
+  |
+4 | #[model(table = "visage_rename_lowercase_name_users", visage_names(public = userSummary))]
+  |                                                                             ^^^^^^^^^^^
+
+error: aborting due to 1 previous error
