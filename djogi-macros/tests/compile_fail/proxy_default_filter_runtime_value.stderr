@@ -208,7 +208,7 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 note: required by a bound in `djogi::query::field::djogi_field_macro_support::__make_djogi_field`
     --> djogi/src/query/field.rs:3946:12
      |
-3944 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(&M) -> &V) -> DjogiField<M, V>
+3944 |     pub fn __make_djogi_field<M, V>(column: &'static str, extract: fn(...
      |            ------------------ required by a bound in this function
 3945 |     where
 3946 |         M: Model,
@@ -257,7 +257,7 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 note: required by a bound in `djogi::query::filter::clauses_into_q`
    --> djogi/src/query/filter.rs:361:8
     |
-359 | pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> Q<M>
+359 | pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> ...
     |        -------------- required by a bound in this function
 360 | where
 361 |     M: Model,
@@ -481,8 +481,8 @@ help: the trait `djogi::model::Model` is implemented for `Vehicle`
 note: required by a bound in `djogi::expr::subquery::__macro_support::__make_outer_ref`
    --> djogi/src/expr/subquery.rs:488:32
     |
-488 |     pub fn __make_outer_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
-    |                                ^^^^^ required by this bound in `__make_outer_ref`
+488 | ...r_ref<M: Model, V>(column: &'static str) -> OuterRef<M, V> {
+    |             ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied

@@ -9,13 +9,14 @@ error[E0277]: the trait bound `Vec<u32>: DjogiSqlType` is not satisfied
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error[E0599]: the method `contains` exists for struct `ExplicitPgPredicateField<T, Vec<u32>>`, but its trait bounds were not satisfied
   --> $DIR/unsupported_array_element.rs:19:61
    |
-19 |         .filter(|f| f.unsupported().explicit_pg_predicate().contains(&vals));
-   |                                                             ^^^^^^^^ method cannot be called on `ExplicitPgPredicateField<T, Vec<u32>>` due to unsatisfied trait bounds
+19 | ....explicit_pg_predicate().contains(&vals));
+   |                             ^^^^^^^^ method cannot be called on `ExplicitPgPredicateField<T, Vec<u32>>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
            `u32: IntoArrayFilterValue`
