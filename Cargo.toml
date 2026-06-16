@@ -44,7 +44,7 @@ bytes = "1"
 # formats (postcard, bincode) now emit the inner primitive directly so binary
 # wire sizes are minimal. The `postgres` feature additionally covers the *Desc
 # types and the `ToSql`/`FromSql` impls for all four ID types.
-heeranjid = { version = "0.4.0", features = ["postgres"] }
+heeranjid = { version = "0.5.0", features = ["postgres"] }
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }
