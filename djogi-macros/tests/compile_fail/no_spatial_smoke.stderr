@@ -5,9 +5,12 @@ error[E0432]: unresolved import `djogi::geo`
    |            ^^^ could not find `geo` in `djogi`
    |
 note: found an item that was configured out
-  --> djogi/src/lib.rs:60:6
+  --> djogi/src/lib.rs:61:9
    |
-   = note: the item is gated behind the `spatial` feature
+60 | #[cfg(feature = "spatial")]
+   |       ------------------- the item is gated behind the `spatial` feature
+61 | pub mod geo;
+   |         ^^^
 
 error: aborting due to 1 previous error
 

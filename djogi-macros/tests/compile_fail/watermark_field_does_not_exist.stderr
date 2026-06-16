@@ -5,22 +5,28 @@ error: `watermark_field = "no_such_field"` does not name a field on this model â
    |                       ^^^^^^^^^^^^^^^
 
 error[E0277]: the trait bound `WatermarkMissingRow: Cacheable` is not satisfied
-  --> $DIR/watermark_field_does_not_exist.rs:31:1
-   |
-31 | / #[model(
-32 | |     table = "phase8_t7_watermark_missing_rows",
-33 | |     watermark_field = "no_such_field",
-34 | | )]
-   | |__^ unsatisfied trait bound
-   |
+   --> $DIR/watermark_field_does_not_exist.rs:31:1
+    |
+ 31 | / #[model(
+ 32 | |     table = "phase8_t7_watermark_missing_rows",
+ 33 | |     watermark_field = "no_such_field",
+ 34 | | )]
+    | |__^ unsatisfied trait bound
+    |
 help: the trait `Cacheable` is not implemented for `WatermarkMissingRow`
-  --> $DIR/watermark_field_does_not_exist.rs:36:1
-   |
-36 | pub struct WatermarkMissingRow {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   --> $DIR/watermark_field_does_not_exist.rs:36:1
+    |
+ 36 | pub struct WatermarkMissingRow {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `DjogiContext::punnu`
-  --> djogi/src/context/mod.rs:456:4
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+   --> djogi/src/context/mod.rs:458:12
+    |
+456 |     pub fn punnu<T>(&self) -> Option<Arc<sassi::Punnu<T>>>
+    |            ----- required by a bound in this associated function
+457 |     where
+458 |         T: crate::types::Cacheable + 'static,
+    |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiContext::punnu`
+    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0599]: the method `invalidate` exists for struct `Arc<Punnu<WatermarkMissingRow>>`, but its trait bounds were not satisfied
   --> $DIR/watermark_field_does_not_exist.rs:31:1
