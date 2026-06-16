@@ -1338,11 +1338,7 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
     // The last segment must be `Option` in every accepted spelling.
     // `syn::Ident` compares against `&str` directly (PartialEq<str>),
     // matching how the rest of the macro crate checks segment idents.
-    if path
-        .segments
-        .last()
-        .is_none_or(|seg| seg.ident != "Option")
-    {
+    if path.segments.last().is_none_or(|seg| seg.ident != "Option") {
         return false;
     }
     match path.segments.len() {

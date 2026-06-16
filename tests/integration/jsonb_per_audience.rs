@@ -5,9 +5,9 @@
 //! Every test uses #[djogi_test(sync_models = [...])] and the typed surface
 //! (Model::create, VisageQuerySet, assert_derived_parity); no raw_*.
 
+use djogi::JsonbSchema;
 use djogi::prelude::*;
 use djogi::testing::DerivedParityError;
-use djogi::JsonbSchema;
 
 #[derive(JsonbSchema, serde::Serialize, serde::Deserialize, Default, PartialEq, Debug, Clone)]
 pub struct ProfileMetaAdmin {
@@ -166,7 +166,13 @@ async fn storage_field_still_supports_typed_path_filter(mut ctx: DjogiContext) {
     .expect("create profile");
 
     let found = Profile::objects()
-        .filter(|f| f.metadata().explicit_pg_predicate().typed().display_name().eq("Ann".to_string()))
+        .filter(|f| {
+            f.metadata()
+                .explicit_pg_predicate()
+                .typed()
+                .display_name()
+                .eq("Ann".to_string())
+        })
         .fetch_all(&mut ctx)
         .await
         .expect("typed-path filter on storage field");
@@ -415,8 +421,7 @@ async fn profile_public_storage_side_alias_passthrough_caught_by_parity(mut ctx:
     let from_db = StorageAliasProfilePublic::filter(|f| f.id().eq(profile.id))
         .fetch_one(&mut ctx)
         .await
-        .expect
-        ("fetch public");
+        .expect("fetch public");
 
     match in_memory.assert_derived_parity(&from_db) {
         Err(DerivedParityError::Drift { field, .. }) => assert_eq!(field, "metadata"),
