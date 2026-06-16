@@ -67,6 +67,33 @@ use serde::{Deserialize, Serialize};
 /// }
 /// # }
 /// ```
+///
+/// # Per-audience schema projection
+///
+/// A single `Jsonb<T>` storage column can surface a *narrower* schema on
+/// different audience [visages](crate::DjogiVisage) without a separate
+/// stored column per audience. The model carries the storage truth (the
+/// union / admin schema `T`); each narrow audience receives a projected
+/// `Jsonb<NarrowSchema>` shape through a struct-level `#[derived(...)]`
+/// declaration whose `sql` narrows the JSON server-side with
+/// `jsonb_build_object(...)`.
+///
+/// Narrowing **must** happen at the SQL boundary, not by re-typing the
+/// Rust value: because `Jsonb<T>` preserves unknown keys in its
+/// preserved-unknown-field map and merges them back on serialize,
+/// deserializing a full admin-shaped row into a narrow
+/// `Jsonb<NarrowSchema>` would carry the admin-only keys in that map and
+/// re-emit them to the narrow audience. The macro rejects the most direct
+/// foot-gun — simple-column passthrough from a same-host `Jsonb` storage
+/// column — at parse time (error `E_DJG_VDF_017`); the remaining unsafe
+/// shapes (shallow nested projection, compound passthrough, storage-side
+/// type alias, wire-key mismatch) are caught at runtime by
+/// `djogi::testing::assert_derived_parity` or by decode failure.
+///
+/// See the [per-audience JSONB schema guide](https://docs.rs/djogi)
+/// (`docs/guide/jsonb.md`, "Per-audience JSONB schema") for the canonical
+/// pattern, the recursive-narrowing rule, and the full set of unsafe
+/// counterexamples.
 #[derive(Debug, Clone)]
 pub struct Jsonb<T> {
     /// The typed portion of the JSONB object. Fields from `T` are deserialized
@@ -125,6 +152,17 @@ impl<T: PartialEq> PartialEq for Jsonb<T> {
     fn eq(&self, other: &Self) -> bool {
         self.data == other.data && self.extra == other.extra
     }
+}
+
+/// SQL column type for a `Jsonb<T>` storage field.
+///
+/// Every `Jsonb<T>` maps to the Postgres `JSONB` type regardless of the
+/// inner schema `T`. This impl lets the migration / descriptor emitter
+/// render the column type even when adopters spell the storage column
+/// through a type alias (`type AdminMeta = Jsonb<Schema>;`). See
+/// `docs/spec/jsonb-per-audience-schema.md` §Implementation plan step 1.
+impl<T> crate::descriptor::DjogiSqlType for Jsonb<T> {
+    const SQL_TYPE: &'static str = "JSONB";
 }
 
 // ── Sassi cache-boundary projection ───────────────────────────────────────
@@ -504,5 +542,11 @@ mod tests {
             lhs, with_extra,
             "PartialEq must observe the `extra` difference, not just `data`"
         );
+    }
+
+    #[test]
+    fn jsonb_sql_type_is_jsonb() {
+        use crate::descriptor::DjogiSqlType;
+        assert_eq!(<Jsonb<()> as DjogiSqlType>::SQL_TYPE, "JSONB");
     }
 }
