@@ -38,7 +38,7 @@ use djogi::prelude::*;
 use djogi::jsonb::{Jsonb, UnknownFieldExt};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserMeta {
     pub timezone: String,
     pub locale: String,
@@ -119,13 +119,13 @@ a compile-checked path tree:
 ```rust
 use djogi::prelude::*;
 
-#[derive(JsonbSchema, Serialize, Deserialize)]
+#[derive(JsonbSchema, Serialize, Deserialize, Default)]
 pub struct EngineSpec {
     pub cylinders: i32,
     pub displacement_cc: f32,
 }
 
-#[derive(JsonbSchema, Serialize, Deserialize)]
+#[derive(JsonbSchema, Serialize, Deserialize, Default)]
 pub struct VehicleSpec {
     pub engine: EngineSpec,
     pub weight_kg: f32,
@@ -231,7 +231,7 @@ each narrow audience receives a projected shape through a struct-level
 `stripe_customer_id`. The `public` audience must never see it.
 
 ```rust
-#[derive(serde::Serialize, serde::Deserialize, validator::Validate)]
+#[derive(serde::Serialize, serde::Deserialize, validator::Validate, Default, PartialEq)]
 pub struct ProfileMetaAdmin {
     pub display_name: String,
     pub bio: String,
@@ -239,7 +239,7 @@ pub struct ProfileMetaAdmin {
     pub stripe_customer_id: String,  // admin-only
 }
 
-#[derive(serde::Serialize, serde::Deserialize, validator::Validate)]
+#[derive(serde::Serialize, serde::Deserialize, validator::Validate, Default, PartialEq)]
 pub struct ProfileMetaPublic {
     pub display_name: String,
     pub bio: String,

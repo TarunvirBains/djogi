@@ -1107,14 +1107,17 @@ pub fn cross_check(
 
     // E_DJG_VDF_017 — JSONB simple-column passthrough. A derived entry
     // whose `sql` is a simple reference (bare or simple-quoted ident) to a
-    // same-host storage column whose Rust type is `Jsonb<...>` would ship
-    // the full storage JSON to the wire; the projected Jsonb<NarrowSchema>
-    // deserializes admin-only keys into `extra` and re-emits them on
-    // serialize, leaking them to the narrow audience. The derived `name`
-    // and `ty` are NOT escape hatches — same-name, cross-name, quoted, and
-    // derived-side type-alias spellings all leak identically. Storage-side
-    // type aliases bypass condition 2 (token space cannot resolve them) and
-    // are caught at runtime by the parity gate (spec §OQ-5).
+    // same-host storage column whose Rust type is `Jsonb<...>` — after
+    // stripping transparent `Option<_>` and `Tracked<_>` wrappers, so
+    // `Tracked<Jsonb<...>>`, `Option<Jsonb<...>>`, and their nestings are
+    // all in scope — would ship the full storage JSON to the wire; the
+    // projected Jsonb<NarrowSchema> deserializes admin-only keys into
+    // `extra` and re-emits them on serialize, leaking them to the narrow
+    // audience. The derived `name` and `ty` are NOT escape hatches —
+    // same-name, cross-name, quoted, and derived-side type-alias spellings
+    // all leak identically. Storage-side type aliases bypass condition 2
+    // (token space cannot resolve them) and are caught at runtime by the
+    // parity gate (spec §OQ-5).
     for d in derived {
         for (col, col_ty) in storage_field_types {
             if sql_is_simple_reference_to(&d.sql, col) && type_is_jsonb(col_ty) {
@@ -1308,70 +1311,30 @@ fn sql_is_simple_reference_to(sql: &str, ident: &str) -> bool {
     false
 }
 
-/// Strip a single prelude `Option<_>` wrapper, returning the inner type.
-///
-/// Mirrors `attrs::unwrap_option` (`attrs.rs:4050-4059`): only the prelude
-/// `Option` path forms (`Option<T>`, `std::option::Option<T>`,
-/// `core::option::Option<T>`) are stripped. A user type named `Option` in
-/// the adopter's own module is left unchanged — treating it as nullable
-/// would be wrong, and for the guard it would be an unsound strip. Returns
-/// the input unchanged (by reference-clone semantics via the caller) when
-/// the type is not a prelude `Option<_>`.
-fn unwrap_prelude_option(ty: &syn::Type) -> syn::Type {
-    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
-        && is_prelude_option_path(path)
-        && let Some(last) = path.segments.last()
-        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
-        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-    {
-        return inner.clone();
-    }
-    ty.clone()
-}
-
-/// True iff `path` is one of the three prelude `Option` spellings:
-/// bare `Option`, `std::option::Option`, or `core::option::Option`.
-/// Mirrors the prelude-only recognition `attrs::unwrap_option` uses
-/// (via `attrs::is_prelude_option_path`); duplicated here because that
-/// helper is private to the `attrs` module.
-fn is_prelude_option_path(path: &syn::Path) -> bool {
-    // The last segment must be `Option` in every accepted spelling.
-    // `syn::Ident` compares against `&str` directly (PartialEq<str>),
-    // matching how the rest of the macro crate checks segment idents.
-    if path.segments.last().is_none_or(|seg| seg.ident != "Option") {
-        return false;
-    }
-    match path.segments.len() {
-        // Bare `Option`.
-        1 => true,
-        // `std::option::Option` / `core::option::Option`. Compare each
-        // segment ident as a place (`seg.ident == "lit"`), matching how
-        // the rest of the macro crate checks idents and avoiding any
-        // `&String`/`&str` comparison pitfall.
-        3 => {
-            let first_is_std_or_core =
-                path.segments[0].ident == "std" || path.segments[0].ident == "core";
-            first_is_std_or_core && path.segments[1].ident == "option"
-        }
-        _ => false,
-    }
-}
-
 /// Condition 2 of [E_DJG_VDF_017]: does the storage column's declared Rust
-/// type denote `Jsonb<...>` at its outermost path (after stripping a
-/// prelude `Option<_>`)?
+/// type denote `Jsonb<...>` at its outermost path (after stripping
+/// transparent `Option<_>` and `Tracked<_>` wrappers)?
 ///
-/// True iff, after stripping a single prelude `Option<_>`, the type is a
-/// `syn::Type::Path` with no `qself` whose rightmost `::`-separated path
-/// segment is the identifier `Jsonb` carrying angle-bracketed generic
-/// arguments. So `Jsonb<X>`, `djogi::types::Jsonb<X>`, `djogi::Jsonb<X>`,
-/// `crate::Jsonb<X>`, `super::Jsonb<X>`, `::djogi::Jsonb<X>`, and
-/// `Option<Jsonb<X>>` all match; `AdminMeta`, `String`, `NotJsonb<X>`, and a
-/// bare `Jsonb` without generics do not.
+/// True iff, after stripping transparent `Option<_>` and `Tracked<_>`
+/// wrappers via [`attrs::unwrap_schema_type`] (in any nesting order), the
+/// type is a `syn::Type::Path` with no `qself` whose rightmost
+/// `::`-separated path segment is the identifier `Jsonb` carrying
+/// angle-bracketed generic arguments. So `Jsonb<X>`, `djogi::types::Jsonb<X>`,
+/// `djogi::Jsonb<X>`, `crate::Jsonb<X>`, `super::Jsonb<X>`,
+/// `::djogi::Jsonb<X>`, `Option<Jsonb<X>>`, `Tracked<Jsonb<X>>`,
+/// `Option<Tracked<Jsonb<X>>>`, and `Tracked<Option<Jsonb<X>>>` all match;
+/// `AdminMeta`, `String`, `NotJsonb<X>`, and a bare `Jsonb` without generics
+/// do not.
+///
+/// `Tracked<_>` is the `#[field(track)]` dirty-tracking wrapper; its storage
+/// type is the inner `T`, so a `Tracked<Jsonb<...>>` column is a JSONB column
+/// for leak purposes exactly as a bare `Jsonb<...>` column is. Stripping it
+/// (alongside the nullable `Option<_>` layer) keeps the guard sound for every
+/// wrapper combination an adopter can declare.
 ///
 /// This is a structural `syn::Type` match, NOT a token-string match — it
-/// mirrors the shipped `descriptor.rs::is_jsonb_type` (which also strips
-/// `Option` first) and the structural `Jsonb<…>` arm of
+/// mirrors the shipped `descriptor.rs::is_jsonb_type` (which strips the same
+/// wrappers via `unwrap_schema_type`) and the structural `Jsonb<…>` arm of
 /// `attrs::rust_type_to_sql` (`attrs.rs:3563-3582`), so the guard's JSONB
 /// detection is exactly as strong as the descriptor / migration emitter's.
 /// Proc macros still cannot resolve type *aliases* — a storage column
@@ -1380,8 +1343,9 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
 /// (spec §OQ-5).
 ///
 /// [E_DJG_VDF_017]: ../docs/spec/jsonb-per-audience-schema.md#error-taxonomy-extension
+/// [`attrs::unwrap_schema_type`]: super::attrs::unwrap_schema_type
 fn type_is_jsonb(ty: &syn::Type) -> bool {
-    let inner = unwrap_prelude_option(ty);
+    let (inner, _) = super::attrs::unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { qself: None, path }) = &inner else {
         return false;
     };
@@ -1930,6 +1894,16 @@ mod tests {
         // not `Jsonb`, so it does not match (mirrors unwrap_option's prelude-
         // only recognition at attrs.rs:4040-4059).
         assert!(!type_is_jsonb(&ty("my_crate::Option<Jsonb<X>>")));
+        // Tracked<_> wrapper forms are also stripped (via unwrap_schema_type),
+        // in any nesting order with Option<_>: a #[field(track)] JSONB column
+        // is a JSONB column for leak purposes, so the guard must see through
+        // the dirty-tracking wrapper.
+        assert!(type_is_jsonb(&ty("Tracked<Jsonb<X>>")));
+        assert!(type_is_jsonb(&ty("Option<Tracked<Jsonb<X>>>")));
+        assert!(type_is_jsonb(&ty("Tracked<Option<Jsonb<X>>>")));
+        // Stripping wrappers does not turn a non-JSONB inner type into JSONB.
+        assert!(!type_is_jsonb(&ty("Tracked<String>")));
+        assert!(!type_is_jsonb(&ty("Option<Tracked<String>>")));
     }
 
     // Storage-type list builder for E_DJG_VDF_017 tests: (column, parsed type).

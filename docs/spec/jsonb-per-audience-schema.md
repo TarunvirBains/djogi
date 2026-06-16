@@ -508,11 +508,17 @@ parse-time rule fires when **both** conditions hold for a single
    derived `name` matches the source column name (`name = metadata,
    sql = "metadata"` or `sql = "\"metadata\""`) or differs
    (`name = metadata_public_view, sql = "metadata"`).
-2. The matched model field's declared Rust type token-string contains
-   the rightmost identifier `Jsonb` followed by `<` (so the absolute,
-   `djogi::types::`, `djogi::`, and bare-prelude paths all converge —
-   same dispatch shape as the [INTERVAL typed surface](./decisions.md)
-   `Interval` lookup).
+2. The matched model field's declared Rust type, after stripping
+   transparent `Option<_>` and `Tracked<_>` wrappers via
+   `attrs::unwrap_schema_type`, has the rightmost identifier `Jsonb`
+   followed by `<` (so the absolute, `djogi::types::`, `djogi::`, and
+   bare-prelude paths all converge — same dispatch shape as the
+   [INTERVAL typed surface](./decisions.md) `Interval` lookup). Stripping
+   the transparent wrappers means `Tracked<Jsonb<T>>` (a
+   `#[field(track)]` JSONB column), `Option<Jsonb<T>>`,
+   `Option<Tracked<Jsonb<T>>>`, and `Tracked<Option<Jsonb<T>>>` all
+   satisfy condition 2 — each carries the same admin-shaped JSONB bytes
+   as a bare `Jsonb<T>` column, so the passthrough leak is identical.
 
 When both hold, the macro emits `E_DJG_VDF_017` at the `sql = "..."`
 literal span. The diagnostic names the source model column (matched by
@@ -979,7 +985,7 @@ table:
 
 | Code | Condition | Span |
 |---|---|---|
-| `E_DJG_VDF_017` | JSONB simple-column passthrough from a same-host `Jsonb` storage column: the trimmed `sql` literal is either byte-identical to the `ident` of a same-host model storage column (`metadata`) or a simple quoted spelling of that ident (`"metadata"`), and that matched column's declared Rust type matches `Jsonb<...>`. The derived `name` and derived `ty` alias spelling are **not** escape hatches — the guard fires for same-name, cross-name, quoted, and unresolved type-alias passthrough shapes. Rejected at parse time because a projected `Jsonb<NarrowSchema>` would deserialize admin-only keys into `extra` regardless of the visage field alias, then `Jsonb<T>::Serialize` would merge `data + extra` on the wire. Derived-side type aliases remain allowed with real narrowing SQL such as `jsonb_build_object(...)`; the guard is about the storage-column passthrough, not about Rust type spelling by itself. | `sql = "..."` literal |
+| `E_DJG_VDF_017` | JSONB simple-column passthrough from a same-host `Jsonb` storage column: the trimmed `sql` literal is either byte-identical to the `ident` of a same-host model storage column (`metadata`) or a simple quoted spelling of that ident (`"metadata"`), and that matched column's declared Rust type, after stripping transparent `Option<_>` and `Tracked<_>` wrappers, matches `Jsonb<...>` (so `Tracked<Jsonb<T>>`, `Option<Jsonb<T>>`, `Option<Tracked<Jsonb<T>>>`, and `Tracked<Option<Jsonb<T>>>` storage columns are all covered). The derived `name` and derived `ty` alias spelling are **not** escape hatches — the guard fires for same-name, cross-name, quoted, and unresolved type-alias passthrough shapes. Rejected at parse time because a projected `Jsonb<NarrowSchema>` would deserialize admin-only keys into `extra` regardless of the visage field alias, then `Jsonb<T>::Serialize` would merge `data + extra` on the wire. Derived-side type aliases remain allowed with real narrowing SQL such as `jsonb_build_object(...)`; the guard is about the storage-column passthrough, not about Rust type spelling by itself. | `sql = "..."` literal |
 
 The diagnostic shape mirrors the existing E_DJG_VDF_* family: a
 span-precise `syn::Error` at the offending `sql` literal,

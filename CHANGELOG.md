@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- fix(#312): the E_DJG_VDF_017 guard that rejects `Jsonb<T>` storage columns
+  in visage `#[derived]` fields now strips transparent `Tracked<_>` wrappers
+  (alongside the existing `Option<_>` stripping) before testing for `Jsonb<T>`.
+  Previously, fields typed as `Tracked<Jsonb<T>>`, `Option<Tracked<Jsonb<T>>>`,
+  or `Tracked<Option<Jsonb<T>>>` were silently accepted as passthrough derivations,
+  potentially leaking admin-audience subfields to narrower audiences. The
+  `is_gin_compatible_type` GIN-index classifier and `is_jsonb_type` descriptor
+  classifier receive the same fix. Three new compile-fail fixtures verify the
+  guard fires for all three wrapper permutations; one compile-pass fixture
+  verifies canonical narrowing still compiles.
+
 ## [0.1.0-alpha.17] - 2026-06-15
 
 ### Added
