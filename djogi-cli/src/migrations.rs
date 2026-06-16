@@ -4892,7 +4892,6 @@ mod tests {
     /// and the ledger has exactly two rows for the composed version.
     /// Uses `#[djogi_test]` for per-test database isolation (the macro drops
     /// the test database on normal return or caught panic).
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn cross_bucket_fk_applies_in_dependency_order(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
@@ -5209,7 +5208,6 @@ mod tests {
     /// End-to-end test: two buckets sharing an enum type (`mood`) plus
     /// a cross-bucket FK. Compose + apply, then assert exactly one `CREATE TYPE`
     /// in Postgres, both tables exist, and no error during apply.
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn shared_enum_multi_slice_applies(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
@@ -5695,7 +5693,6 @@ mod tests {
         report
     }
 
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_column_drift_before_second_migration(
         mut ctx: djogi::context::DjogiContext,
@@ -5799,7 +5796,6 @@ mod tests {
         assert_eq!(first_rows, 1, "baseline apply should remain intact");
     }
 
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_missing_snapshot_for_applied_bucket(
         mut ctx: djogi::context::DjogiContext,
@@ -5857,7 +5853,6 @@ mod tests {
         assert_eq!(exit, 2, "missing baseline must refuse on applied bucket");
     }
 
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_dropped_index_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -5920,7 +5915,6 @@ mod tests {
         assert_eq!(exit, 2, "dropped index drift must refuse");
     }
 
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_foreign_key_shape_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -6016,7 +6010,6 @@ mod tests {
         assert_eq!(exit, 2, "FK shape drift must refuse");
     }
 
-    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn fake_apply_succeeds_with_corrupt_snapshot_on_disk(
         mut ctx: djogi::context::DjogiContext,

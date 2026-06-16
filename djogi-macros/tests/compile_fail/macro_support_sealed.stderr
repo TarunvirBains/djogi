@@ -1,8 +1,16 @@
-error[E0599]: no method named `__query_all_for_macros` found on mutable reference `&mut DjogiContext` in the current scope
-  --> $DIR/macro_support_sealed.rs:14:16
+error[E0599]: no method named `__query_all_for_macros` found for mutable reference `&mut DjogiContext` in the current scope
+  --> $DIR/macro_support_sealed.rs:14:17
    |
 14 |     let _ = ctx.__query_all_for_macros("SELECT 1", &[]).await;
-   |                ^^^^^^^^^^^^^^^^^^^^^^^^ method not found in `&mut DjogiContext`
+   |                 ^^^^^^^^^^^^^^^^^^^^^^ method not found in `&mut DjogiContext`
+   |
+   = help: items from traits can only be used if the trait is in scope
+help: the following traits which provide `__query_all_for_macros` are implemented but not in scope; perhaps you want to import one of them
+   |
+ 8 + use djogi::context::macro_support::MacroSupportExt;
+   |
+ 8 + use djogi::context::macro_support::MacroSupportExtBase;
+   |
 
 error: aborting due to 1 previous error
 
