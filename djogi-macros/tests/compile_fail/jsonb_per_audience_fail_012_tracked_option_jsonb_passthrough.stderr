@@ -1,0 +1,7 @@
+error: derived field projects storage `Jsonb` column `metadata` via simple-column passthrough (`sql = "metadata"`), which leaks every key of `metadata` to the projected `Option < Jsonb < ProfileMetaPublic > >` through its preserved unknown-field (`extra`) map on re-serialize. Replace the passthrough with an explicit narrowing builder, e.g. `jsonb_build_object('field', metadata->'field', ...)`, naming only the keys the narrow audience may see (E_DJG_VDF_017)
+  --> $DIR/jsonb_per_audience_fail_012_tracked_option_jsonb_passthrough.rs:42:14
+   |
+42 |     sql    = "metadata",
+   |              ^^^^^^^^^^
+
+error: aborting due to 1 previous error

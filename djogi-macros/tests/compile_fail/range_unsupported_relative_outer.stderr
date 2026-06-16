@@ -210,6 +210,7 @@ help: the trait `DjogiSqlType` is not implemented for `Range<i32>`
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error[E0277]: the trait bound `Range<i32>: DjogiSqlType` is not satisfied
@@ -228,6 +229,7 @@ help: the trait `DjogiSqlType` is not implemented for `Range<i32>`
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error[E0277]: the trait bound `Range<i32>: djogi::__private::postgres_types::FromSql<'_>` is not satisfied
@@ -316,6 +318,7 @@ help: the trait `DjogiSqlType` is not implemented for `Range<i32>`
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error: aborting due to 11 previous errors

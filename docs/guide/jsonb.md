@@ -38,7 +38,7 @@ use djogi::prelude::*;
 use djogi::jsonb::{Jsonb, UnknownFieldExt};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserMeta {
     pub timezone: String,
     pub locale: String,
@@ -119,13 +119,13 @@ a compile-checked path tree:
 ```rust
 use djogi::prelude::*;
 
-#[derive(JsonbSchema, Serialize, Deserialize)]
+#[derive(JsonbSchema, Serialize, Deserialize, Default)]
 pub struct EngineSpec {
     pub cylinders: i32,
     pub displacement_cc: f32,
 }
 
-#[derive(JsonbSchema, Serialize, Deserialize)]
+#[derive(JsonbSchema, Serialize, Deserialize, Default)]
 pub struct VehicleSpec {
     pub engine: EngineSpec,
     pub weight_kg: f32,
@@ -213,6 +213,162 @@ wrapper emit the same typed cast the underlying scalar would emit.
 Pre-djogi#161 the delegation was missing — wrapper-typed payloads
 silently fell back to text comparison (`'10' < '9'` because text
 ordering is lexicographic).
+
+---
+
+## Per-audience JSONB schema
+
+A single `Jsonb<T>` storage column can surface a *narrower* shape on
+different audience visages without a wholly separate derived struct per
+audience. The model carries the storage truth (the union / admin schema);
+each narrow audience receives a projected shape through a struct-level
+`#[derived(...)]` declaration. This is one application of
+[visage-derived fields](./derived-projections.md) — no new attribute.
+
+### Scenario
+
+`Profile.metadata` stores the full admin schema including
+`stripe_customer_id`. The `public` audience must never see it.
+
+```rust
+#[derive(serde::Serialize, serde::Deserialize, validator::Validate, Default, PartialEq)]
+pub struct ProfileMetaAdmin {
+    pub display_name: String,
+    pub bio: String,
+    pub avatar_url: Option<String>,
+    pub stripe_customer_id: String,  // admin-only
+}
+
+#[derive(serde::Serialize, serde::Deserialize, validator::Validate, Default, PartialEq)]
+pub struct ProfileMetaPublic {
+    pub display_name: String,
+    pub bio: String,
+    pub avatar_url: Option<String>,
+}
+```
+
+### Canonical pattern
+
+The model carries `Jsonb<ProfileMetaAdmin>` and exposes it only to scopes
+allowed to see every field. The narrow `public` shape is a derived
+projection built with `jsonb_build_object(...)`:
+
+```rust
+#[derive(Model, Debug, Clone)]
+#[model(table = "profiles")]
+#[derived(
+    name   = metadata,
+    ty     = "Jsonb<ProfileMetaPublic>",
+    scopes = [public],
+    sql    = "jsonb_build_object(\
+                  'display_name', metadata->'display_name', \
+                  'bio',          metadata->'bio', \
+                  'avatar_url',   metadata->'avatar_url')",
+    rust   = "Jsonb::new(ProfileMetaPublic { \
+                  display_name: model.metadata.data.display_name.clone(), \
+                  bio:          model.metadata.data.bio.clone(), \
+                  avatar_url:   model.metadata.data.avatar_url.clone() })",
+)]
+pub struct Profile {
+    #[field(expose(self_view, admin, export))]
+    pub metadata: Jsonb<ProfileMetaAdmin>,
+}
+```
+
+`ProfilePublic.metadata` is typed `Jsonb<ProfileMetaPublic>`. The
+`public` scope is intentionally omitted from the storage field's
+`expose(...)` list, so the storage shape never reaches `ProfilePublic`.
+
+### When to use subfield masking vs a separate `#[derived]` struct
+
+Use this per-audience JSONB pattern when the JSONB *schema is stable* and
+the audiences differ only in **which subset of keys** they may see — you
+write one `#[derived]` per audience whose `sql` names exactly that
+audience's keys. Reach for an entirely separate non-JSONB derived field
+(or a different model column) only when an audience needs a value that is
+*computed* from multiple columns or that has no counterpart in the stored
+JSONB at all. For pure key-subset narrowing, the JSONB pattern above is
+the canonical choice.
+
+### Safety: why `jsonb_build_object` is required, not merely preferred
+
+`Jsonb<T>` preserves unknown keys: any key in the database object absent
+from `T` lands in an internal `extra` map and is merged back onto the wire
+on serialize. That is correct for *storage* (forward compatibility) but
+**dangerous for projection** — if a narrow `Jsonb<ProfileMetaPublic>` is
+populated from the full admin JSON, the admin-only keys land in `extra`
+and re-emit to the public audience.
+
+Narrowing therefore happens at the **SQL boundary**: a top-level
+`jsonb_build_object(...)` that names only the narrow schema's wire keys
+produces JSON bytes that contain only those keys, so `extra` is
+structurally empty and nothing leaks.
+
+The framework mechanically rejects the most direct foot-gun —
+**simple-column passthrough** — at compile time with **E_DJG_VDF_017**. A
+derived entry whose `sql` is a bare or simply-quoted reference to a
+same-host `Jsonb` storage column is rejected regardless of the derived
+`name` or `ty` spelling:
+
+```rust
+// ALL of these are rejected at parse time by E_DJG_VDF_017:
+sql = "metadata"                  // same name as the column
+// with name = metadata_public_view: sql = "metadata"   // cross-name
+sql = "\"metadata\""              // quoted identifier
+// with ty = "PublicMeta" (a Jsonb alias): sql = "metadata"  // derived alias
+```
+
+A derived-side type alias is fine **with real narrowing SQL** — e.g.
+`type PublicMeta = Jsonb<ProfileMetaPublic>; ty = "PublicMeta"` paired with
+`sql = "jsonb_build_object(...)"`. The guard targets storage-column
+passthrough, not Rust type spelling.
+
+### Unsafe shapes the macro cannot catch (runtime gates)
+
+Some leak shapes are not detectable in token space. Each is caught at
+runtime — write a `#[djogi::djogi_test]` that fetches the visage and
+calls `assert_derived_parity` against `(&model).into()`:
+
+- **Storage-side type alias.** `type AdminMeta = Jsonb<...>; pub metadata:
+  AdminMeta;` with `sql = "metadata"` compiles (the macro sees `AdminMeta`,
+  not `Jsonb<...>`). Leaks; caught by parity. Prefer spelling `Jsonb<...>`
+  directly on storage columns so the parse-time guard stays engaged.
+- **Shallow nested projection.** `jsonb_build_object('theme',
+  metadata->'theme')` ships the full `theme` sub-object. Leaks recursively
+  through the nested `Jsonb<ThemePublic>::extra`; caught by parity. Use the
+  recursive form below.
+- **Compound passthrough.** `coalesce(metadata, '{}'::jsonb)`, `(metadata)`,
+  `metadata || '{}'::jsonb`, `jsonb_set(metadata, ...)`, `(SELECT metadata)`
+  all compile (not simple identifiers) and leak; caught by parity.
+- **Wire-key mismatch.** If the narrow schema renames a field with
+  `#[serde(rename = "displayName")]` (or `#[serde(rename_all = ...)]`), the
+  SQL builder key must be the *wire* key (`'displayName'`), not the Rust
+  field name. A mismatch on a **required** field fails the fetch with
+  `VisageError::DbComputedTypeMismatch`; on an **optional / defaulted**
+  field the mismatched key sits in `extra` and is caught by parity.
+
+### Recursive narrowing rule
+
+Every nesting level that contains a nested `Jsonb<...>` sub-schema must
+itself be shaped by `jsonb_build_object(...)`:
+
+```sql
+jsonb_build_object(
+  'theme', jsonb_build_object(
+    'color',       metadata->'theme'->'color',
+    'font_family', metadata->'theme'->'font_family'))
+```
+
+Under the recursive form, `extra` is empty at every level and the wire
+output equals a freshly-constructed `Jsonb::new(...)`.
+
+> Array (`Vec<Inner>`) and map (`IndexMap<String, Inner>`) container
+> element narrowing requires the `aggregate = true` projection key and is
+> tracked under djogi#226-container; not yet available.
+
+See also: [derived projections](./derived-projections.md) for the derived
+field surface, and [visages](./visages.md#typed-json-fields) for the
+scope / `expose` semantics.
 
 ---
 

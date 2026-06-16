@@ -1507,10 +1507,15 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
 }
 
 /// Detect if a field type is `Jsonb<T>` by checking the last-segment ident.
-/// Returns `true` if the type path ends in `Jsonb`, after stripping `Option`.
-/// Uses last-segment path matching to accept bare `Jsonb<T>`, `djogi::Jsonb<T>`, etc.
+/// Returns `true` if the type path ends in `Jsonb`, after stripping
+/// transparent `Option<_>` and `Tracked<_>` wrappers via `unwrap_schema_type`.
+/// Stripping `Tracked<_>` keeps GIN index selection correct for
+/// `#[field(track)]` JSONB columns (`Tracked<Jsonb<T>>`), whose storage type
+/// is the inner `Jsonb<T>`; `Option<_>` is stripped so nullable JSONB columns
+/// are likewise classified. Uses last-segment path matching to accept bare
+/// `Jsonb<T>`, `djogi::Jsonb<T>`, etc.
 fn is_jsonb_type(ty: &syn::Type) -> bool {
-    let (inner, _) = unwrap_option(ty);
+    let (inner, _) = unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
         return false;
     };
@@ -1660,6 +1665,33 @@ mod tests {
     #[test]
     fn test_is_jsonb_type_vec_false() {
         let ty = syn::parse_str::<syn::Type>("Vec<String>").unwrap();
+        assert!(!is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_tracked() {
+        // `#[field(track)]` JSONB column: storage type is the inner Jsonb<T>,
+        // so the `Tracked<_>` wrapper must be stripped for GIN classification.
+        let ty = syn::parse_str::<syn::Type>("Tracked<Jsonb<String>>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_option_tracked() {
+        let ty = syn::parse_str::<syn::Type>("Option<Tracked<Jsonb<String>>>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_tracked_option() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Option<Jsonb<String>>>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_tracked_string_false() {
+        // Stripping `Tracked<_>` does not promote a non-JSONB inner to JSONB.
+        let ty = syn::parse_str::<syn::Type>("Tracked<String>").unwrap();
         assert!(!is_jsonb_type(&ty));
     }
 

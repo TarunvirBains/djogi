@@ -67,6 +67,33 @@ use serde::{Deserialize, Serialize};
 /// }
 /// # }
 /// ```
+///
+/// # Per-audience schema projection
+///
+/// A single `Jsonb<T>` storage column can surface a *narrower* schema on
+/// different audience [visages](crate::DjogiVisage) without a separate
+/// stored column per audience. The model carries the storage truth (the
+/// union / admin schema `T`); each narrow audience receives a projected
+/// `Jsonb<NarrowSchema>` shape through a struct-level `#[derived(...)]`
+/// declaration whose `sql` narrows the JSON server-side with
+/// `jsonb_build_object(...)`.
+///
+/// Narrowing **must** happen at the SQL boundary, not by re-typing the
+/// Rust value: because `Jsonb<T>` preserves unknown keys in its
+/// preserved-unknown-field map and merges them back on serialize,
+/// deserializing a full admin-shaped row into a narrow
+/// `Jsonb<NarrowSchema>` would carry the admin-only keys in that map and
+/// re-emit them to the narrow audience. The macro rejects the most direct
+/// foot-gun — simple-column passthrough from a same-host `Jsonb` storage
+/// column — at parse time (error `E_DJG_VDF_017`); the remaining unsafe
+/// shapes (shallow nested projection, compound passthrough, storage-side
+/// type alias, wire-key mismatch) are caught at runtime by
+/// `djogi::testing::assert_derived_parity` or by decode failure.
+///
+/// See the [per-audience JSONB schema guide](https://docs.rs/djogi)
+/// (`docs/guide/jsonb.md`, "Per-audience JSONB schema") for the canonical
+/// pattern, the recursive-narrowing rule, and the full set of unsafe
+/// counterexamples.
 #[derive(Debug, Clone)]
 pub struct Jsonb<T> {
     /// The typed portion of the JSONB object. Fields from `T` are deserialized
@@ -108,6 +135,34 @@ impl<T> Jsonb<T> {
     pub fn extra(&self) -> &IndexMap<String, UnknownField> {
         &self.extra
     }
+}
+
+/// Structural equality over both the typed `data` and the preserved
+/// unknown-field `extra` map.
+///
+/// `extra` is compared deliberately: per-audience JSONB projections
+/// (`docs/spec/jsonb-per-audience-schema.md`) detect accidental
+/// admin-only-key leaks at runtime by observing whether unknown keys
+/// were preserved on a fetched projection. A `PartialEq` that ignored
+/// `extra` would let a leak through the parity gate
+/// (`djogi::testing::assert_derived_parity`) undetected. `UnknownField`
+/// is `serde_json::Value`, which implements `PartialEq`, so only
+/// `T: PartialEq` is required.
+impl<T: PartialEq> PartialEq for Jsonb<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.extra == other.extra
+    }
+}
+
+/// SQL column type for a `Jsonb<T>` storage field.
+///
+/// Every `Jsonb<T>` maps to the Postgres `JSONB` type regardless of the
+/// inner schema `T`. This impl lets the migration / descriptor emitter
+/// render the column type even when adopters spell the storage column
+/// through a type alias (`type AdminMeta = Jsonb<Schema>;`). See
+/// `docs/spec/jsonb-per-audience-schema.md` §Implementation plan step 1.
+impl<T> crate::descriptor::DjogiSqlType for Jsonb<T> {
+    const SQL_TYPE: &'static str = "JSONB";
 }
 
 // ── Sassi cache-boundary projection ───────────────────────────────────────
@@ -452,5 +507,46 @@ mod tests {
         let back: serde_json::Value = mir.into();
         assert_eq!(back["name"], json!("x"));
         assert_eq!(back["value"], json!(9));
+    }
+
+    #[test]
+    fn partial_eq_compares_data_and_extra() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+        struct Schema {
+            a: i32,
+        }
+
+        // Equal data + equal (empty) extra → equal.
+        let lhs = Jsonb::new(Schema { a: 1 });
+        let rhs = Jsonb::new(Schema { a: 1 });
+        assert_eq!(lhs, rhs);
+
+        // Differing typed data → not equal.
+        let other_data = Jsonb::new(Schema { a: 2 });
+        assert_ne!(lhs, other_data);
+
+        // Equal typed data but one side carries an unknown key in `extra`
+        // (the exact leak shape the parity gate must catch). `extra` is
+        // pub(crate) with no public mutator, so populate it through
+        // Deserialize from a JSON object with an extra key.
+        let with_extra: Jsonb<Schema> =
+            serde_json::from_value(serde_json::json!({ "a": 1, "leaked": "x" }))
+                .expect("deserialize with unknown key");
+        assert!(
+            !with_extra.extra().is_empty(),
+            "guard: extra must be populated"
+        );
+        assert_ne!(
+            lhs, with_extra,
+            "PartialEq must observe the `extra` difference, not just `data`"
+        );
+    }
+
+    #[test]
+    fn jsonb_sql_type_is_jsonb() {
+        use crate::descriptor::DjogiSqlType;
+        assert_eq!(<Jsonb<()> as DjogiSqlType>::SQL_TYPE, "JSONB");
     }
 }

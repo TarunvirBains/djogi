@@ -280,6 +280,7 @@ help: the trait `DjogiSqlType` is not implemented for `adopter::Range<i32>`
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error[E0277]: the trait bound `alias_shadow::Range<i32>: DjogiSqlType` is not satisfied
@@ -298,6 +299,7 @@ help: the trait `DjogiSqlType` is not implemented for `alias_shadow::Range<i32>`
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error: aborting due to 10 previous errors

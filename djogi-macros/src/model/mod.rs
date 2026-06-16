@@ -184,6 +184,21 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     if !derived_attrs.is_empty() {
         let mut column_exposures: Vec<(String, Vec<&'static str>)> = Vec::new();
         let mut relation_form_exposures: Vec<(String, Vec<&'static str>)> = Vec::new();
+        // All named storage fields with their parsed Rust types, collected
+        // regardless of `expose` so E_DJG_VDF_017 can detect simple-column
+        // passthrough even from hidden (`expose(none)`) Jsonb storage
+        // columns. The type is cloned as a `syn::Type` (not stringified)
+        // so the guard's JSONB matcher mirrors the shipped descriptor.rs
+        // is_jsonb_type matcher.
+        let mut storage_field_types: Vec<(String, syn::Type)> = Vec::new();
+        for field in struct_item.fields.iter() {
+            let Some(ident) = field.ident.as_ref() else {
+                continue;
+            };
+            let col = crate::syn_util::column_name_from_ident(ident);
+            storage_field_types.push((col, field.ty.clone()));
+        }
+
         for (field, fa) in struct_item.fields.iter().zip(field_attrs.iter()) {
             let Some(ident) = field.ident.as_ref() else {
                 continue;
@@ -239,6 +254,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         derived::cross_check(
             &derived_attrs,
             &column_exposures,
+            &storage_field_types,
             &relation_form_exposures,
             matches!(model_attrs.pk, attrs::PkStrategy::None),
         )?;

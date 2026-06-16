@@ -3583,8 +3583,12 @@ fn is_strict_id_check_compatible(ty: &syn::Type) -> bool {
 }
 
 /// `true` when `ty` is an accepted target for `#[field(index = "gin")]`
-/// i.e. `Jsonb<T>`, `MirJzSON`, `Vec<T>`, or `TsVector`, unwrapping one
-/// layer of `Option<…>` so nullable columns are accepted too.
+/// i.e. `Jsonb<T>`, `MirJzSON`, `Vec<T>`, or `TsVector`, stripping
+/// transparent `Option<_>` and `Tracked<_>` wrappers via `unwrap_schema_type`
+/// so nullable and dirty-tracked columns are both accepted. A
+/// `#[field(track)]` JSONB column is typed `Tracked<Jsonb<T>>`; its storage
+/// type is the inner `Jsonb<T>`, so it must validate as GIN-compatible
+/// exactly as a bare `Jsonb<T>` column does.
 /// Uses last-segment name matching so bare idents, `djogi::Jsonb<T>`,
 /// `djogi::jsonb::MirJzSON`, `djogi::fts::TsVector`, and similar qualified
 /// forms all resolve. Q4 codifies this set; anything
@@ -3594,7 +3598,7 @@ fn is_strict_id_check_compatible(ty: &syn::Type) -> bool {
 /// sibling of `Jsonb<T>` and shares the same GIN-index suitability for
 /// containment / `jsonb_path_ops` lookups.
 fn is_gin_compatible_type(ty: &syn::Type) -> bool {
-    let (inner, _) = unwrap_option(ty);
+    let (inner, _) = unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
         return false;
     };
@@ -4345,7 +4349,9 @@ pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_visage_names_list, rust_type_to_sql, unwrap_schema_type};
+    use super::{
+        is_gin_compatible_type, parse_visage_names_list, rust_type_to_sql, unwrap_schema_type,
+    };
     use syn::parse_quote;
 
     /// `Jsonb<T>` for any `T: JsonbSchema` must lower to
@@ -5005,5 +5011,34 @@ mod tests {
     fn rejects_internal_sentinel_key() {
         let list: syn::MetaList = parse_quote!(visage_names(internal = Foo));
         assert!(parse_visage_names_list(&list).is_err());
+    }
+
+    // `is_gin_compatible_type` must strip transparent `Option<_>` and
+    // `Tracked<_>` wrappers so `#[field(index = "gin")]` on a nullable or
+    // dirty-tracked JSONB column validates. A `#[field(track)]` JSONB column
+    // is typed `Tracked<Jsonb<T>>`; its storage type is the inner `Jsonb<T>`.
+    #[test]
+    fn test_is_gin_compatible_type_tracked_jsonb() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Jsonb<String>>").unwrap();
+        assert!(is_gin_compatible_type(&ty));
+    }
+
+    #[test]
+    fn test_is_gin_compatible_type_option_tracked_jsonb() {
+        let ty = syn::parse_str::<syn::Type>("Option<Tracked<Jsonb<String>>>").unwrap();
+        assert!(is_gin_compatible_type(&ty));
+    }
+
+    #[test]
+    fn test_is_gin_compatible_type_tracked_option_jsonb() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Option<Jsonb<String>>>").unwrap();
+        assert!(is_gin_compatible_type(&ty));
+    }
+
+    #[test]
+    fn test_is_gin_compatible_type_tracked_string_false() {
+        // Stripping `Tracked<_>` does not make a non-GIN inner type GIN-compatible.
+        let ty = syn::parse_str::<syn::Type>("Tracked<String>").unwrap();
+        assert!(!is_gin_compatible_type(&ty));
     }
 }

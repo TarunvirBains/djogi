@@ -122,6 +122,7 @@ error[E0277]: the trait bound `std::ops::Range<i32>: DjogiSqlType` is not satisf
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error[E0277]: the trait bound `std::ops::Range<i32>: DjogiSqlType` is not satisfied
@@ -135,6 +136,7 @@ error[E0277]: the trait bound `std::ops::Range<i32>: DjogiSqlType` is not satisf
              TsQuery
              TsVector
              djogi::Interval
+             djogi::Jsonb<T>
              djogi::Range<T>
 
 error: aborting due to 6 previous errors
