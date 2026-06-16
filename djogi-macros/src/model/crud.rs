@@ -830,11 +830,12 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // Auto-tenant wiring (Task 10 + Task 11).
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
-    // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
-    // (the public shim over `ensure_tenant_set`) before any SQL runs.
+    // `tenant_id`, this snippet calls
+    // `<::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__ensure_tenant_set_for_macros(ctx, ...)`
+    // before any SQL runs.
     // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
     // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
-    // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
+    // `MacroSupportExt::__tenant_scope_suppressed_for_macros(ctx)` is `true`. Callers that
     // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
     // or `ctx.set_no_tenant_scope()` to suppress the warn.
     // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
