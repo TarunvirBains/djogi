@@ -249,6 +249,87 @@ above.
 
 ---
 
+## Custom Visage Names
+
+By default each generated visage is named `{Model}{Scope}` (`UserPublic`,
+`PostAdmin`). Because these names become adopter-facing Rust API names —
+route-handler return types, shared-contract crate imports, relation
+embedding declarations — an adopter may need a different name (`UserSummary`
+instead of `UserPublic`).
+
+### Syntax: `visage_names`
+
+Assign a custom type name per scope with the `visage_names` argument on
+`#[model(...)]`:
+
+```rust
+#[model(
+    table = "users",
+    visage_names(public = UserSummary, admin = AdminUserView)
+)]
+pub struct User {
+    #[field(expose(public, admin))]
+    pub display_name: String,
+}
+```
+
+This emits the public visage as `UserSummary` and the admin visage as
+`AdminUserView`. `visage_names` accepts any built-in scope (`public`,
+`self_view`, `admin`, `export`) and any custom scope declared via
+`visage_scopes(...)` on the same model. The right-hand side is a bare
+type ident (not a string), so the casing convention (`UserSummary`, not
+`"user_summary"`) is enforced at compile time.
+
+### Canonical-name alias (no embedding churn)
+
+For every renamed scope the macro additionally emits a canonical-name type
+alias:
+
+```rust
+pub type UserPublic = UserSummary;            // struct alias
+pub type UserPublicFields<RootModel = User> = UserSummaryFields<RootModel>;
+pub type UserPublicFilter = UserSummaryFilter;
+```
+
+This is the indirection that keeps a rename local. A peer model that
+embeds the renamed visage by its canonical name —
+
+```rust
+#[field(expose(public -> UserPublic))]
+pub owner: ForeignKey<User>,
+```
+
+— continues to compile unchanged after `User` renames its public visage,
+because `UserPublic` resolves through the alias to `UserSummary`. A rename
+never forces edits at embedding sites.
+
+The canonical alias is always emitted in this version; there is no opt-out.
+Removing the canonical name (keeping only the custom name) is a possible
+future addition if a concrete need arises.
+
+### Collision rules
+
+Visage generation fails at compile time when:
+
+- two scopes are renamed to the same custom name;
+- a custom name equals another scope's canonical `{Model}{Scope}` name —
+  including the case where two scopes swap names (each takes the other's
+  canonical name);
+- a custom name equals the source model's own type name;
+- a custom name equals a model-keyed type the derive already emits in the
+  same module (`{Model}Fields`, `{Model}SqlFields`, `{Model}Filter`,
+  `{Model}Related`, `{Model}OuterRef`, `{Model}Path`, `{Model}Computed`);
+- a custom name equals another scope's visage-keyed sibling type
+  (`{OtherVisage}Fields` or `{OtherVisage}Filter`) — for example renaming
+  one scope to `UserAdminFields` while another scope's visage is `UserAdmin`;
+- `visage_names` names a scope the model does not declare;
+- `visage_names` names the `none` / `internal` sentinel (which generate no
+  visage struct).
+
+All diagnostics are span-precise and name the offending scope / type.
+
+---
+
 ## Relations
 
 Visages may include related data, but only through projected forms.
@@ -322,7 +403,6 @@ Djogi should prefer compile-time diagnostics over runtime surprises.
 
 ## Out of Scope
 
-- Visage renaming rules beyond the default canonical names
 - Partial JSON subfield visages
 - Fallible transforms during visage generation
 - Route-specific wrapper DTO generation
