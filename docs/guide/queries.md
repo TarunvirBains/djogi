@@ -1097,10 +1097,21 @@ Surface notes:
 
 Composite scores that mix pair-aggregate output with Rust-side state
 (score from kinship × Rust-side overlap × Rust-side age product) land
-their final ranking in Rust; the typed pair-tuple `qualify(...)` window
-surface accepts column references only on its `partition_by_pair` /
-`order_by_pair_desc` methods, not arbitrary `Expr<f64>` derived from
-external state.
+their final ranking in Rust. The typed pair-tuple window surface accepts
+both column references (via `partition_by_pair` / `order_by_pair_asc` /
+`order_by_pair_desc`) and expressions (via `partition_by_pair_expr` /
+`order_by_pair_expr_asc` / `order_by_pair_expr_desc`), so computations
+like `l.score * 10` can drive window partitioning and ordering.
+
+**V1 restriction:** expressions passed to `*_pair_expr` methods must
+reference fields from the declared side only. Cross-pair arithmetic (e.g.,
+`l.score / r.score`) requires `ExprNode::PairField`, which is not
+implemented in v0.1.0. The restriction is architectural — no compile-time
+guard is possible — and violating it produces a Postgres
+`42P01 missing FROM-clause` error at execute time. `#[computed]` fields
+and `RawSql` expressions are also unsupported on the expression path;
+window functions can only reference plain model fields and arithmetic
+combinations thereof.
 
 ### Pair-side spatial overlap — `PairAreaOverlapRatio<L, R>`
 
