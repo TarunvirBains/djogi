@@ -150,4 +150,4 @@ hkdf = "0.13"
 # Testing — serial test execution for integration tests that share mutable state
 # (e.g., a single Postgres database). Prevents flaky race conditions when
 # multiple tests concurrently modify the same schema or fixture data.
-serial_test = { version = "3", default-features = false }
+serial_test = { version = "3", default-features = false, features = ["tokio_1"] }
