@@ -1318,16 +1318,13 @@ fn sql_is_simple_reference_to(sql: &str, ident: &str) -> bool {
 /// the input unchanged (by reference-clone semantics via the caller) when
 /// the type is not a prelude `Option<_>`.
 fn unwrap_prelude_option(ty: &syn::Type) -> syn::Type {
-    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty {
-        if is_prelude_option_path(path) {
-            if let Some(last) = path.segments.last() {
-                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return inner.clone();
-                    }
-                }
-            }
-        }
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && is_prelude_option_path(path)
+        && let Some(last) = path.segments.last()
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return inner.clone();
     }
     ty.clone()
 }
@@ -1341,10 +1338,10 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
     // The last segment must be `Option` in every accepted spelling.
     // `syn::Ident` compares against `&str` directly (PartialEq<str>),
     // matching how the rest of the macro crate checks segment idents.
-    if !path
+    if path
         .segments
         .last()
-        .is_some_and(|seg| seg.ident == "Option")
+        .is_none_or(|seg| seg.ident != "Option")
     {
         return false;
     }
