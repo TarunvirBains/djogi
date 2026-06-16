@@ -4232,6 +4232,7 @@ mod tests {
         f()
     }
 
+    #[serial_test::serial]
     #[test]
     fn database_url_env_guard_restores_prior_value() {
         let env_guard = DatabaseUrlEnvGuard::new();
@@ -4596,6 +4597,7 @@ mod tests {
     /// `load_from_workspace` must read `<workspace>/Djogi.toml` not
     /// the cwd's. We assert that by writing a custom config with a
     /// distinctive `database.url` and confirming the loader sees it.
+    #[serial_test::serial]
     #[test]
     fn a1_load_from_workspace_reads_path_specific_djogi_toml() {
         let work = temp_workspace("a1_workspace_config");
@@ -4618,6 +4620,7 @@ mod tests {
     /// must beat any value in
     /// `<workspace>/Djogi.toml`, matching the security contract that
     /// secrets only live in env vars.
+    #[serial_test::serial]
     #[test]
     fn a1_round2_env_override_beats_workspace_toml() {
         let work = temp_workspace("a1r2_env_override");
@@ -4635,6 +4638,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn apply_no_pending_is_identity_free_and_skips_pool_connect() {
         let work = temp_workspace("apply_no_pending");
@@ -4888,6 +4892,7 @@ mod tests {
     /// and the ledger has exactly two rows for the composed version.
     /// Uses `#[djogi_test]` for per-test database isolation (the macro drops
     /// the test database on normal return or caught panic).
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn cross_bucket_fk_applies_in_dependency_order(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
@@ -5204,6 +5209,7 @@ mod tests {
     /// End-to-end test: two buckets sharing an enum type (`mood`) plus
     /// a cross-bucket FK. Compose + apply, then assert exactly one `CREATE TYPE`
     /// in Postgres, both tables exist, and no error during apply.
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn shared_enum_multi_slice_applies(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
@@ -5689,6 +5695,7 @@ mod tests {
         report
     }
 
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_column_drift_before_second_migration(
         mut ctx: djogi::context::DjogiContext,
@@ -5792,6 +5799,7 @@ mod tests {
         assert_eq!(first_rows, 1, "baseline apply should remain intact");
     }
 
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_missing_snapshot_for_applied_bucket(
         mut ctx: djogi::context::DjogiContext,
@@ -5849,6 +5857,7 @@ mod tests {
         assert_eq!(exit, 2, "missing baseline must refuse on applied bucket");
     }
 
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_dropped_index_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -5911,6 +5920,7 @@ mod tests {
         assert_eq!(exit, 2, "dropped index drift must refuse");
     }
 
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn apply_refuses_on_foreign_key_shape_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -6006,6 +6016,7 @@ mod tests {
         assert_eq!(exit, 2, "FK shape drift must refuse");
     }
 
+    #[serial_test::serial]
     #[djogi::djogi_test]
     async fn fake_apply_succeeds_with_corrupt_snapshot_on_disk(
         mut ctx: djogi::context::DjogiContext,
@@ -6347,6 +6358,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn repair_checksum_drift_is_identity_free() {
         let work = temp_workspace("repair_checksum_identity_free");
@@ -6371,6 +6383,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn repair_partial_apply_is_identity_free() {
         let work = temp_workspace("repair_partial_identity_free");
@@ -6395,6 +6408,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn repair_snapshot_rebuild_is_identity_free() {
         let work = temp_workspace("repair_snapshot_identity_free");
@@ -7012,6 +7026,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn rollback_allow_data_loss_with_whitespace_reason_exits_code_2() {
         let work = temp_workspace("rollback-empty-reason");
@@ -7033,6 +7048,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn rollback_missing_identity_exits_code_2_before_db_work() {
         let work = temp_workspace("rollback-no-identity");
@@ -7054,6 +7070,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    #[serial_test::serial]
     #[test]
     fn rollback_unreachable_database_exits_code_1() {
         let work = temp_workspace("rollback-unreachable");
