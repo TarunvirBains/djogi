@@ -51,12 +51,12 @@
 //!    harness.
 //! # How it composes with `atomic()`
 //! The emitter takes `&mut DjogiContext` and dispatches via the same
-//! `__inner_mut_for_macros` pattern the macro CRUD uses. A pool-backed
-//! context writes outside any transaction; a transaction-backed context
-//! writes inside the outermost atomic scope. Rollback of the outer
-//! scope removes both the primary row and its outbox companion — the
-//! "transactional" in *transactional outbox* is Postgres' own ACID
-//! guarantee, not a framework-level two-phase dance.
+//! execution helpers the macro CRUD uses. A pool-backed context writes
+//! outside any transaction; a transaction-backed context writes inside
+//! the outermost atomic scope. Rollback of the outer scope removes both
+//! the primary row and its outbox companion — the "transactional" in
+//! *transactional outbox* is Postgres' own ACID guarantee, not a
+//! framework-level two-phase dance.
 //! # Payload filtering
 //! `emit_event` serializes the row via `serde_json::to_value` and then
 //! walks `T::descriptor().fields` to strip keys whose

@@ -1078,7 +1078,7 @@ impl RawAccessExt for DjogiContext {
         reject_transaction_backed_sql(self, sql)?;
         // No post-query decode — the existing `query_all` guard already
         // covers the only Err/cancel exit shape.
-        self.__query_all_for_macros(sql, params).await
+        self.query_all(sql, params).await
     }
 
     async fn raw_fetch_one<T: FromPgRow>(
@@ -1130,7 +1130,7 @@ impl RawAccessExt for DjogiContext {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
         reject_transaction_backed_sql(self, sql)?;
-        self.__execute_for_macros(sql, params).await
+        self.execute(sql, params).await
     }
 
     async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {

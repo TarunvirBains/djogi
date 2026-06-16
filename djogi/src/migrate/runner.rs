@@ -4460,7 +4460,7 @@ async fn generate_run_id(ctx: &mut DjogiContext, version: &str) -> Result<i64, R
         // against the same workspace are impossible (the workspace
         // lock guarantees exclusion), so collision risk is zero.
         let row = ctx
-            .__query_one_for_macros(
+            .query_one(
                 "SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000000000)::BIGINT AS run_id",
                 &[],
             )

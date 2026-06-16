@@ -265,7 +265,9 @@ pub fn expand(
         fn __djogi_should_collect_bulk_update_ids(
             ctx: &::djogi::context::DjogiContext,
         ) -> bool {
-            ctx.__djogi_is_transaction_backed_for_macros()
+            <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__djogi_is_transaction_backed_for_macros(
+                ctx,
+            )
                 && ctx.punnu::<Self>().is_some()
         }
 
@@ -864,7 +866,10 @@ pub fn expand(
                     ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
                 match __djogi_tid {
                     ::std::option::Option::Some(__djogi_tid_str) => {
-                        ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__ensure_tenant_set_for_macros(
+                            ctx, &__djogi_tid_str,
+                        )
+                        .await?;
                     }
                     ::std::option::Option::None => {
                         // Auth present but carries no tenant_id. Clear any
@@ -876,7 +881,9 @@ pub fn expand(
                         if ctx.applied_tenant_id().is_some() {
                             ctx.clear_tenant().await?;
                         }
-                        if !ctx.__tenant_scope_suppressed_for_macros() {
+                        if !<::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__tenant_scope_suppressed_for_macros(
+                            ctx,
+                        ) {
                             ::djogi::__private::tracing::warn!(
                                 model = #model_name_str,
                                 "auth attached but tenant_id is None on a tenant-keyed model; \
@@ -897,7 +904,10 @@ pub fn expand(
     let snapshot_auth_state_before_auto_set =
         if model_attrs.hooks && model_attrs.tenant_key.is_some() {
             quote! {
-                let __djogi_auth_snapshot = ctx.__snapshot_auth_state_for_macros();
+                let __djogi_auth_snapshot =
+                    <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__snapshot_auth_state_for_macros(
+                        ctx,
+                    );
             }
         } else {
             TokenStream::new()
@@ -1048,7 +1058,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1200,7 +1213,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1476,7 +1492,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1617,7 +1636,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }
@@ -1658,7 +1680,10 @@ pub fn expand(
                     .await
                 {
                     if let ::std::result::Result::Err(__djogi_restore_err) =
-                        ctx.__restore_auth_state_for_macros(__djogi_auth_snapshot).await
+                        <::djogi::DjogiContext as ::djogi::__private::MacroSupportExt>::__restore_auth_state_for_macros(
+                            ctx, __djogi_auth_snapshot,
+                        )
+                        .await
                     {
                         return ::std::result::Result::Err(__djogi_restore_err);
                     }

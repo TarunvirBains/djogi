@@ -306,7 +306,7 @@ pub async fn side_effects_suppressed(ctx: &mut DjogiContext) -> Result<bool, Hoo
         name = SIDE_EFFECT_SUPPRESSION_TXN_LOCAL,
     );
     let row_opt = ctx
-        .__query_opt_for_macros(&sql, &[])
+        .query_opt(&sql, &[])
         .await
         .map_err(HookError::from)?;
     let row = match row_opt {
