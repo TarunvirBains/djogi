@@ -1,3 +1,66 @@
+//! Typed cross-model set operations (UNION / INTERSECT / EXCEPT) between
+//! different `Model` types.
+//! # What
+//! [`CrossModelSetOpQuerySet<R>`] combines rows from two querysets whose
+//! `Model` types differ but whose column shapes are compatible with a common
+//! decode target `R: FromPgRow`. The free constructors
+//! ([`union_as`], [`union_all_as`], [`intersect_as`], [`except_as`]) accept
+//! any arm implementing [`IntoCrossArm<R>`] — today that means
+//! [`QuerySet<M>`] and [`VisageQuerySet<V>`].
+//! # Why cross-model, not same-model
+//! The same-model set ops (`QuerySet::union`, `intersect`, `except`) enforce
+//! that both arms share the same `T: Model` at compile time. Cross-model set
+//! ops remove that constraint: you can union rows from `LoginEvent` and
+//! `ContentEdit` into a single `Vec<Activity>` when both tables expose
+//! columns that decode as the `Activity` row type. The decode target `R` is a
+//! type parameter on the free constructors (e.g. `union_as::<Activity>(...)`)
+//! rather than inferred from the arm models.
+//! # Arm types
+//! - [`QuerySet<M>`] arms: any model's queryset, subject to the same arm
+//!   restrictions as same-model set ops (no prefetch, select_related, lock,
+//!   or cache). Validated at SQL-build time; see the [same-module set-op docs](set_op) for details.
+//! - [`VisageQuerySet<V>`] arms: visage querysets allow cross-schema
+//!   projection — different tables can share a public `DjogiVisage` type, and
+//!   the visage's narrowed SELECT projection becomes the arm shape. This is
+//!   useful when two backend models project through the same audience-facing
+//!   visage (see the [visages guide](../../docs/guide/visages.md)).
+//! # Postgres semantics this layer enforces
+//! Each arm is parenthesised in the emitted SQL so per-arm `ORDER BY` /
+//! `LIMIT` / `OFFSET` stay scoped to that arm. Outer modifiers
+//! ([`order_by`](CrossModelSetOpQuerySet::order_by),
+//! [`limit`](CrossModelSetOpQuerySet::limit),
+//! [`offset`](CrossModelSetOpQuerySet::offset)) apply to the combined result.
+//! # Restrictions
+//! ## Arm-level state
+//! [`DjogiError::SetOpArmInvalid`] surfaces at the terminal level when a
+//! `QuerySet` arm carries any of: `.prefetch(...)`, `.select_related(...)`,
+//! `.select_for_update(...)` / `.nowait()` / `.skip_locked()`, or
+//! `.cache(...)`. Visage arms bypass this check (visages are already narrowed).
+//! ## Outer ordering column names
+//! [`DjogiError::SetOpOuterOrderingInvalid`] surfaces when an outer
+//! `order_by` column is not a valid ASCII identifier or uses the framework-
+//! reserved `__djogi_` namespace. Postgres set-operation outer ORDER BY
+//! accepts only output column names; this validation catches invalid columns
+//! before the SQL round trip.
+//! ## Tenant reconciliation
+//! Terminal execution (`fetch_all`, `first`, `count`) reconciles arm tenants
+//! before issuing any `SET LOCAL`: both tenant-keyed arms must resolve to the
+//! same intended tenant, or at most one may carry a concrete tenant. A
+//! conflict returns [`DjogiError::CrossModelSetOpTenantConflict`] without
+//! modifying the connection's GUC state.
+//! # Lazy
+//! Nothing hits the database until a terminal (`fetch_all`, `first`, `count`)
+//! is awaited. The struct is cheap to construct; arms are boxed behind
+//! [`CrossArm<R>`] trait objects so the set-op value stays compact on the
+//! stack.
+//! # Why RPITIT (not `async fn`)
+//! Matches the existing terminal pattern — every terminal returns
+//! `impl Future<Output = ...> + Send` rather than bare `async fn`. The
+//! explicit `+ Send` bound guarantees the returned future can be `.await`ed
+//! across task boundaries. `clippy::manual_async_fn` fires on this pattern;
+//! the lint is allowed at the module level because the explicit-bound form is
+//! the deliberate choice.
+
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
@@ -116,6 +179,14 @@ mod sealed {
         V: super::DjogiVisage + super::FromPgRow + Send + Unpin + 'static { }
 }
 
+/// Sealed conversion trait for cross-model set-op arms.
+/// # What it accepts
+/// - [`QuerySet<M>`] — a plain queryset arm from any `M: Model`.
+/// - [`VisageQuerySet<V>`] — a visage queryset arm from any `V: DjogiVisage`.
+///   Adopters never name this trait directly; they pass either a `QuerySet` or
+///   a `VisageQuerySet` to [`union_as`] / [`intersect_as`] / etc., and the
+///   bound is satisfied automatically. The trait is sealed via
+///   [`sealed::Sealed`] so no external impl can produce a new arm shape.
 pub trait IntoCrossArm<R: FromPgRow>: sealed::Sealed {
     #[doc(hidden)]
     fn into_cross_arm(self) -> Box<dyn CrossArm<R>>;
@@ -141,6 +212,21 @@ where
     }
 }
 
+/// A typed cross-model set operation (`UNION` / `UNION ALL` / `INTERSECT` /
+/// `EXCEPT`) between two querysets whose `Model` types may differ.
+/// Constructed via [`union_as`] / [`union_all_as`] / [`intersect_as`] /
+/// [`except_as`]. Outer `ORDER BY` / `LIMIT` / `OFFSET` are applied to the
+/// combined result.
+/// # Lazy
+/// Nothing hits the database until a terminal (`fetch_all`, `first`, `count`)
+/// is awaited. The struct is cheap to construct; arms are boxed behind
+/// [`CrossArm<R>`] trait objects so the value stays compact on the stack.
+/// # Type parameter
+/// The `R: FromPgRow` type parameter is the decode target for all result
+/// rows. Both arms must produce columns positionally compatible with `R`, but
+/// the arms' own `Model` types can differ. There is no compile-time guarantee
+/// that the arm columns match `R`; mismatches surface as Postgres decode
+/// errors at terminal execution time.
 pub struct CrossModelSetOpQuerySet<R: FromPgRow> {
     pub(crate) left: Box<dyn CrossArm<R>>,
     pub(crate) op: SetOpKind,
@@ -162,30 +248,101 @@ impl<R: FromPgRow> std::fmt::Debug for CrossModelSetOpQuerySet<R> {
     }
 }
 
+/// Combine two querysets via Postgres `UNION` (de-duplicated).
+/// Both arms can be different `Model` types or visage types; the decode
+/// target `R` is specified as a turbofish type parameter.
+/// # Semantics
+/// `(LEFT) UNION (RIGHT)` — Postgres de-duplicates by the implicit full-row
+/// tuple. A row appearing in both arms shows up once in the result. Per-arm
+/// `ORDER BY` / `LIMIT` / `OFFSET` apply inside each parenthesised arm; outer
+/// modifiers apply to the combined result.
+/// # Restrictions on arms
+/// `QuerySet` arms with `.prefetch(...)`, `.select_related(...)`,
+/// `.select_for_update(...)`, or `.cache(...)` are rejected at the terminal
+/// with [`DjogiError::SetOpArmInvalid`]. Visage arms bypass this check.
+/// # Example
+/// ```ignore
+/// use djogi::prelude::*;
+/// // Combine login events and content edits into a unified activity feed.
+/// let logins = LoginEvent::objects().filter(|f| f.created_at().gt(last_hour()));
+/// let edits  = ContentEdit::objects().filter(|f| f.created_at().gt(last_hour()));
+/// let activities: Vec<Activity> = union_as::<Activity, _, _>(logins, edits)
+///     .order_by("created_at", OuterOrder::Desc)
+///     .limit(50)
+///     .fetch_all(&mut ctx)
+///     .await?;
+/// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn union_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
 where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
     CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Union, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
 }
 
+/// Combine two querysets via Postgres `UNION ALL` (duplicate-preserving).
+/// Behaves like [`union_as`] but every row from both arms appears in the
+/// output, including duplicates. Cheaper than `UNION` when the caller knows
+/// the arms are already disjoint — Postgres can skip the de-duplication pass.
+/// # Example
+/// ```ignore
+/// use djogi::prelude::*;
+/// let logins = LoginEvent::objects();
+/// let edits  = ContentEdit::objects();
+/// let feed: Vec<Activity> = union_all_as::<Activity, _, _>(logins, edits)
+///     .fetch_all(&mut ctx)
+///     .await?;
+/// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn union_all_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
 where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
     CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::UnionAll, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
 }
 
+/// Combine two querysets via Postgres `INTERSECT` (de-duplicated).
+/// Returns only rows whose full-row tuple appears in **both** arms.
+/// # Semantics
+/// `(LEFT) INTERSECT (RIGHT)` — the result is implicitly de-duplicated;
+/// `INTERSECT ALL` (multiset arithmetic) is not exposed today.
+/// # Example
+/// ```ignore
+/// use djogi::prelude::*;
+/// // Items that appear in both warehouse tables.
+/// let wh_a = WarehouseA::objects().filter(|f| f.stocked().eq(true));
+/// let wh_b = WarehouseB::objects().filter(|f| f.stocked().eq(true));
+/// let in_both: Vec<Inventory> = intersect_as::<Inventory, _, _>(wh_a, wh_b)
+///     .fetch_all(&mut ctx)
+///     .await?;
+/// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn intersect_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
 where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
     CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Intersect, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
 }
 
+/// Combine two querysets via Postgres `EXCEPT` (de-duplicated).
+/// Returns rows in the left arm that are **not** in the right arm.
+/// # Semantics
+/// `(LEFT) EXCEPT (RIGHT)` — set difference. NOT symmetric:
+/// `except_as(a, b) != except_as(b, a)`. The result is implicitly de-
+/// duplicated; `EXCEPT ALL` is not exposed today.
+/// # Example
+/// ```ignore
+/// use djogi::prelude::*;
+/// // Users who have profiles but have never logged in.
+/// let with_profile = UserProfile::objects();
+/// let logged_in    = LoginRecord::objects();
+/// let no_login: Vec<UserSummary> = except_as::<UserSummary, _, _>(with_profile, logged_in)
+///     .fetch_all(&mut ctx)
+///     .await?;
+/// ```
 #[must_use = "cross-model set ops are lazy"]
 pub fn except_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
 where R: FromPgRow, A: IntoCrossArm<R>, B: IntoCrossArm<R> {
     CrossModelSetOpQuerySet { left: left.into_cross_arm(), op: SetOpKind::Except, right: right.into_cross_arm(), ordering: Vec::new(), limit: None, offset: None, _row: PhantomData }
 }
 
+/// Sort direction for outer `ORDER BY` on a [`CrossModelSetOpQuerySet`].
+/// Used with [`CrossModelSetOpQuerySet::order_by`] to control whether a
+/// column is sorted ascending or descending in the combined result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OuterOrder { Asc, Desc }
@@ -220,14 +377,25 @@ impl OuterColumnOrder {
 }
 
 impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
+    /// Read-only access to the operator. Useful for tests asserting SQL
+    /// structure and for downstream tooling that inspects which set op was
+    /// chosen without re-emitting SQL.
     pub fn op(&self) -> SetOpKind { self.op }
 
+    /// Add an outer `ORDER BY` clause applied to the combined result.
+    /// The `column` must be a valid ASCII identifier (letters, digits,
+    /// underscore; starting with a letter or underscore). Columns using
+    /// the framework-reserved `__djogi_` namespace are rejected with
+    /// [`DjogiError::SetOpOuterOrderingInvalid`].
+    /// Multiple calls chain additional columns into the ORDER BY list.
     #[must_use = "cross-model set ops are lazy"]
     pub fn order_by(mut self, column: impl Into<String>, direction: OuterOrder) -> Self {
         self.ordering.push(OuterColumnOrder { column: column.into(), direction });
         self
     }
 
+    /// Set an outer `LIMIT` applied to the combined result.
+    /// `None` means no limit; setting this replaces any previous limit.
     #[must_use = "cross-model set ops are lazy"]
     pub fn limit(mut self, n: u64) -> Self {
         debug_assert!(n <= i64::MAX as u64);
@@ -235,6 +403,8 @@ impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
         self
     }
 
+    /// Set an outer `OFFSET` applied to the combined result.
+    /// `None` means no offset; setting this replaces any previous offset.
     #[must_use = "cross-model set ops are lazy"]
     pub fn offset(mut self, n: u64) -> Self {
         debug_assert!(n <= i64::MAX as u64);
