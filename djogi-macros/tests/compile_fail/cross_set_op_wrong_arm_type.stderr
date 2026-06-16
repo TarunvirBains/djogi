@@ -5,26 +5,26 @@ error[E0277]: the trait bound `SetOpQuerySet<Login>: IntoCrossArm<Activity>` is 
     |                                                   ^ the trait `IntoCrossArm<Activity>` is not implemented for `SetOpQuerySet<Login>`
     |
 help: the following other types implement trait `IntoCrossArm<R>`
-   --> djogi/src/query/cross_set_op.rs:200:1
+   --> djogi/src/query/cross_set_op.rs:211:1
     |
-200 | / impl<M, R> IntoCrossArm<R> for QuerySet<M>
-201 | | where
-202 | |     M: Model + FromPgRow + Send + Unpin + 'static,
-203 | |     R: FromPgRow + 'static,
+211 | / impl<M, R> IntoCrossArm<R> for QuerySet<M>
+212 | | where
+213 | |     M: Model + FromPgRow + Send + Unpin + 'static,
+214 | |     R: FromPgRow + 'static,
     | |___________________________^ `QuerySet<M>`
 ...
-213 | / impl<V, R> IntoCrossArm<R> for VisageQuerySet<V>
-214 | | where
-215 | |     V: DjogiVisage + FromPgRow + Send + Unpin + 'static,
-216 | |     R: FromPgRow + 'static,
+224 | / impl<V, R> IntoCrossArm<R> for VisageQuerySet<V>
+225 | | where
+226 | |     V: DjogiVisage + FromPgRow + Send + Unpin + 'static,
+227 | |     R: FromPgRow + 'static,
     | |___________________________^ `VisageQuerySet<V>`
 note: required by a bound in `union_as`
-   --> djogi/src/query/cross_set_op.rs:290:8
+   --> djogi/src/query/cross_set_op.rs:303:8
     |
-287 | pub fn union_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
+300 | pub fn union_as<R, A, B>(left: A, right: B) -> CrossModelSetOpQuerySet<R>
     |        -------- required by a bound in this function
 ...
-290 |     A: IntoCrossArm<R>,
+303 |     A: IntoCrossArm<R>,
     |        ^^^^^^^^^^^^^^^ required by this bound in `union_as`
 
 error: aborting due to 1 previous error
