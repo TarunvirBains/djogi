@@ -837,6 +837,15 @@ name = "visage_derived_projection"
 path = "../tests/integration/visage_derived_projection.rs"
 harness = true
 
+# Issue #312 — per-audience JSONB schema projection: live narrowing,
+# parity gate, recursive-nesting leak detection, wire-key decode failure,
+# compound/storage-alias passthrough parity. Goes through the typed
+# VisageQuerySet surface only; no raw_* escapes.
+[[test]]
+name = "jsonb_per_audience"
+path = "../tests/integration/jsonb_per_audience.rs"
+harness = true
+
 # Issue #168 — typed isolation-level surface.
 # Verifies `atomic_with(IsolationLevel::{ReadCommitted, RepeatableRead,
 # Serializable}, ...)` opens a Postgres transaction at the requested
