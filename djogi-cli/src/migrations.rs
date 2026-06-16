@@ -4893,6 +4893,7 @@ mod tests {
     /// Uses `#[djogi_test]` for per-test database isolation (the macro drops
     /// the test database on normal return or caught panic).
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn cross_bucket_fk_applies_in_dependency_order(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
         static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -5209,6 +5210,7 @@ mod tests {
     /// a cross-bucket FK. Compose + apply, then assert exactly one `CREATE TYPE`
     /// in Postgres, both tables exist, and no error during apply.
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn shared_enum_multi_slice_applies(mut ctx: djogi::context::DjogiContext) {
         // Unique suffix for table names — avoids collisions when tests run in parallel.
         static E2E_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -5694,6 +5696,7 @@ mod tests {
     }
 
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn apply_refuses_on_column_drift_before_second_migration(
         mut ctx: djogi::context::DjogiContext,
     ) {
@@ -5797,6 +5800,7 @@ mod tests {
     }
 
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn apply_refuses_on_missing_snapshot_for_applied_bucket(
         mut ctx: djogi::context::DjogiContext,
     ) {
@@ -5854,6 +5858,7 @@ mod tests {
     }
 
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn apply_refuses_on_dropped_index_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -5916,6 +5921,7 @@ mod tests {
     }
 
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn apply_refuses_on_foreign_key_shape_drift(mut ctx: djogi::context::DjogiContext) {
         static DRIFT_COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = DRIFT_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -6011,6 +6017,7 @@ mod tests {
     }
 
     #[djogi::djogi_test]
+    #[serial_test::serial]
     async fn fake_apply_succeeds_with_corrupt_snapshot_on_disk(
         mut ctx: djogi::context::DjogiContext,
     ) {
