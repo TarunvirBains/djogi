@@ -1230,6 +1230,127 @@ impl ExprSpan for syn::Expr {
     }
 }
 
+/// Condition 1 of [E_DJG_VDF_017]: is the derived `sql` literal a *simple
+/// reference* to the storage column named `ident`?
+///
+/// Two spellings count as simple references, after trimming ASCII
+/// whitespace from both ends of `sql`:
+/// 1. the bare unquoted identifier byte-identical to `ident`;
+/// 2. a simple double-quoted identifier — the trimmed literal begins and
+///    ends with `"`, contains no embedded `"` between them, and the
+///    unquoted body is byte-identical to `ident`.
+///
+/// Any compound expression (parentheses, function calls, operators,
+/// subqueries, doubly-quoted or embedded-quote forms) is NOT a simple
+/// reference and returns `false` — those are adopter-owned compound
+/// territory caught at runtime by the parity gate, not at parse time.
+/// No regex, no SQL parser (`feedback_no_regex_in_djogi.md`).
+///
+/// [E_DJG_VDF_017]: ../docs/spec/jsonb-per-audience-schema.md#error-taxonomy-extension
+fn sql_is_simple_reference_to(sql: &str, ident: &str) -> bool {
+    let trimmed = sql.trim();
+    // Spelling 1: bare unquoted ident.
+    if trimmed == ident {
+        return true;
+    }
+    // Spelling 2: simple quoted ident. Must be at least `""` plus a body,
+    // begin and end with `"`, and have no `"` anywhere in the interior.
+    let bytes = trimmed.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'"' && bytes[bytes.len() - 1] == b'"' {
+        let body = &trimmed[1..trimmed.len() - 1];
+        if !body.is_empty() && !body.as_bytes().contains(&b'"') {
+            return body == ident;
+        }
+    }
+    false
+}
+
+/// Strip a single prelude `Option<_>` wrapper, returning the inner type.
+///
+/// Mirrors `attrs::unwrap_option` (`attrs.rs:4050-4059`): only the prelude
+/// `Option` path forms (`Option<T>`, `std::option::Option<T>`,
+/// `core::option::Option<T>`) are stripped. A user type named `Option` in
+/// the adopter's own module is left unchanged — treating it as nullable
+/// would be wrong, and for the guard it would be an unsound strip. Returns
+/// the input unchanged (by reference-clone semantics via the caller) when
+/// the type is not a prelude `Option<_>`.
+fn unwrap_prelude_option(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty {
+        if is_prelude_option_path(path) {
+            if let Some(last) = path.segments.last() {
+                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                        return inner.clone();
+                    }
+                }
+            }
+        }
+    }
+    ty.clone()
+}
+
+/// True iff `path` is one of the three prelude `Option` spellings:
+/// bare `Option`, `std::option::Option`, or `core::option::Option`.
+/// Mirrors the prelude-only recognition `attrs::unwrap_option` uses
+/// (via `attrs::is_prelude_option_path`); duplicated here because that
+/// helper is private to the `attrs` module.
+fn is_prelude_option_path(path: &syn::Path) -> bool {
+    // The last segment must be `Option` in every accepted spelling.
+    // `syn::Ident` compares against `&str` directly (PartialEq<str>),
+    // matching how the rest of the macro crate checks segment idents.
+    if !path.segments.last().is_some_and(|seg| seg.ident == "Option") {
+        return false;
+    }
+    match path.segments.len() {
+        // Bare `Option`.
+        1 => true,
+        // `std::option::Option` / `core::option::Option`. Compare each
+        // segment ident as a place (`seg.ident == "lit"`), matching how
+        // the rest of the macro crate checks idents and avoiding any
+        // `&String`/`&str` comparison pitfall.
+        3 => {
+            let first_is_std_or_core =
+                path.segments[0].ident == "std" || path.segments[0].ident == "core";
+            first_is_std_or_core && path.segments[1].ident == "option"
+        }
+        _ => false,
+    }
+}
+
+/// Condition 2 of [E_DJG_VDF_017]: does the storage column's declared Rust
+/// type denote `Jsonb<...>` at its outermost path (after stripping a
+/// prelude `Option<_>`)?
+///
+/// True iff, after stripping a single prelude `Option<_>`, the type is a
+/// `syn::Type::Path` with no `qself` whose rightmost `::`-separated path
+/// segment is the identifier `Jsonb` carrying angle-bracketed generic
+/// arguments. So `Jsonb<X>`, `djogi::types::Jsonb<X>`, `djogi::Jsonb<X>`,
+/// `crate::Jsonb<X>`, `super::Jsonb<X>`, `::djogi::Jsonb<X>`, and
+/// `Option<Jsonb<X>>` all match; `AdminMeta`, `String`, `NotJsonb<X>`, and a
+/// bare `Jsonb` without generics do not.
+///
+/// This is a structural `syn::Type` match, NOT a token-string match — it
+/// mirrors the shipped `descriptor.rs::is_jsonb_type` (which also strips
+/// `Option` first) and the structural `Jsonb<…>` arm of
+/// `attrs::rust_type_to_sql` (`attrs.rs:3563-3582`), so the guard's JSONB
+/// detection is exactly as strong as the descriptor / migration emitter's.
+/// Proc macros still cannot resolve type *aliases* — a storage column
+/// spelled `type AdminMeta = Jsonb<...>; pub metadata: AdminMeta;` is
+/// intentionally missed here and caught at runtime by the parity gate
+/// (spec §OQ-5).
+///
+/// [E_DJG_VDF_017]: ../docs/spec/jsonb-per-audience-schema.md#error-taxonomy-extension
+fn type_is_jsonb(ty: &syn::Type) -> bool {
+    let inner = unwrap_prelude_option(ty);
+    let syn::Type::Path(syn::TypePath { qself: None, path }) = &inner else {
+        return false;
+    };
+    path.segments.last().is_some_and(|seg| {
+        seg.ident == "Jsonb"
+            && matches!(seg.arguments, syn::PathArguments::AngleBracketed(_))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1699,5 +1820,63 @@ mod tests {
             msg.contains("after the first character"),
             "expected body-byte diagnostic, got: {msg}"
         );
+    }
+
+    #[test]
+    fn vdf017_sql_is_simple_reference_to() {
+        // Bare unquoted ident matches.
+        assert!(sql_is_simple_reference_to("metadata", "metadata"));
+        assert!(sql_is_simple_reference_to("  metadata  ", "metadata")); // trimmed
+        // Simple quoted ident matches.
+        assert!(sql_is_simple_reference_to("\"metadata\"", "metadata"));
+        assert!(sql_is_simple_reference_to("  \"metadata\"  ", "metadata"));
+        // Wrong column name does not match.
+        assert!(!sql_is_simple_reference_to("metadata", "other_col"));
+        assert!(!sql_is_simple_reference_to("\"metadata\"", "other_col"));
+        // Compound / non-simple shapes do NOT match (adopter-owned territory).
+        assert!(!sql_is_simple_reference_to("(metadata)", "metadata"));
+        assert!(!sql_is_simple_reference_to("coalesce(metadata, '{}'::jsonb)", "metadata"));
+        assert!(!sql_is_simple_reference_to("metadata || '{}'::jsonb", "metadata"));
+        assert!(!sql_is_simple_reference_to("jsonb_set(metadata, '{}', '{}')", "metadata"));
+        assert!(!sql_is_simple_reference_to("(SELECT metadata)", "metadata"));
+        assert!(!sql_is_simple_reference_to("jsonb_build_object('a', metadata)", "metadata"));
+        // Doubly-quoted / embedded-quote shapes are NOT simple quoted idents.
+        assert!(!sql_is_simple_reference_to("\"\"metadata\"\"", "metadata"));
+        assert!(!sql_is_simple_reference_to("\"meta\"\"data\"", "metadata"));
+        // Empty / lone-quote edge cases.
+        assert!(!sql_is_simple_reference_to("", "metadata"));
+        assert!(!sql_is_simple_reference_to("\"\"", ""));
+    }
+
+    #[test]
+    fn vdf017_type_is_jsonb() {
+        // Helper to parse a Rust type from source for the test table.
+        fn ty(s: &str) -> syn::Type {
+            syn::parse_str::<syn::Type>(s).expect("type parses")
+        }
+
+        // Direct and qualified Jsonb<…> forms all match.
+        assert!(type_is_jsonb(&ty("Jsonb<ProfileMetaAdmin>")));
+        assert!(type_is_jsonb(&ty("djogi::types::Jsonb<X>")));
+        assert!(type_is_jsonb(&ty("djogi::Jsonb<X>")));
+        assert!(type_is_jsonb(&ty("crate::Jsonb<X>")));
+        assert!(type_is_jsonb(&ty("super::Jsonb<X>")));
+        assert!(type_is_jsonb(&ty("::djogi::Jsonb<X>")));
+        // Nullable Jsonb<_> matches — Option<_> is stripped first:
+        // a nullable JSONB storage column leaks
+        // identically to a non-null one when the row is non-NULL, so the
+        // guard MUST treat it as a JSONB column.
+        assert!(type_is_jsonb(&ty("Option<Jsonb<X>>")));
+        assert!(type_is_jsonb(&ty("std::option::Option<Jsonb<X>>")));
+        // Not Jsonb.
+        assert!(!type_is_jsonb(&ty("AdminMeta")));
+        assert!(!type_is_jsonb(&ty("String")));
+        assert!(!type_is_jsonb(&ty("NotJsonb<X>"))); // rightmost segment is NotJsonb
+        assert!(!type_is_jsonb(&ty("Jsonb")));       // no angle-bracket generics
+        // A user type literally named `Option` in their own module is not the
+        // prelude Option, so it is NOT stripped; its last segment is `Option`,
+        // not `Jsonb`, so it does not match (mirrors unwrap_option's prelude-
+        // only recognition at attrs.rs:4040-4059).
+        assert!(!type_is_jsonb(&ty("my_crate::Option<Jsonb<X>>")));
     }
 }
