@@ -708,6 +708,74 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    /// Construct a [`QuerySet<T>`] seeding the default condition
+    /// **explicitly** rather than calling
+    /// [`Model::default_filter_condition`]. The model's default ordering
+    /// ([`Model::default_order_by`]) is still applied, exactly as
+    /// [`QuerySet::new`] does.
+    ///
+    /// This is the substrate behind the macro-emitted
+    /// `objects_including_deleted()` on `#[model(soft_deletable)]` models.
+    /// It is `#[doc(hidden)] pub` — **not** `pub(crate)` — because
+    /// `objects_including_deleted()` expands in adopter crates and calls
+    /// this across the crate boundary; a `pub(crate)` ctor would fail
+    /// `E0624` downstream. The `__`-prefix + `#[doc(hidden)]`
+    /// pair signals it is not supported user surface (same contract
+    /// [`crate::query::internal::Condition::__from_raw_sql_fragment`]
+    /// carries). Adopters reach the audited bypass through
+    /// `objects_including_deleted()`, never this constructor directly.
+    ///
+    /// # Why `Option<Condition>` rather than a vacuous ctor
+    /// `objects_including_deleted()` must bypass the **soft-delete** filter
+    /// while preserving any **proxy** default filter — otherwise a model
+    /// that is both a proxy and soft-deletable would leak proxy-scoped-out
+    /// rows. The caller passes
+    /// [`Model::__soft_delete_inclusive_condition`] (the proxy-only filter,
+    /// or `None`) so only the soft-delete leaf is dropped. `None` yields a
+    /// vacuous `Q::always_true()` condition — the "truly empty" shape for a
+    /// non-proxy soft-deletable model.
+    ///
+    /// The `Option<Condition> -> Q<T>` mapping is performed in-crate here
+    /// (identical to [`QuerySet::new`] at the `default_filter_condition()`
+    /// site), which keeps the `#[non_exhaustive]` `Q<T>` construction inside
+    /// `djogi` and off the adopter-crate emission path.
+    ///
+    /// # Why ordering is still seeded
+    /// The bypass disables the default *filter*, not the default *sort*.
+    /// A proxy that bypasses its `default_filter` still wants its
+    /// `default_order`; a soft-deletable model has no default order, so
+    /// this returns the empty `Vec` for it. Either way the ordering hook
+    /// behaves identically to `new()`.
+    #[doc(hidden)]
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn __new_with_explicit_condition(
+        default_condition: ::std::option::Option<crate::query::internal::Condition>,
+    ) -> Self {
+        // Map Option<Condition> -> Q<T> in-crate, identical to QuerySet::new's
+        // default_filter_condition() handling. Keeping this mapping in-crate
+        // avoids constructing the #[non_exhaustive] Q<T> from adopter-crate
+        // macro output.
+        let condition = default_condition.map_or_else(Q::always_true, |c| {
+            use crate::query::q::Q;
+            Q::Condition(c)
+        });
+        let ordering = T::default_order_by();
+        QuerySet {
+            condition,
+            ordering,
+            has_explicit_ordering: false,
+            distinct: DistinctMode::None,
+            limit: None,
+            offset: None,
+            is_empty: false,
+            prefetch_paths: Vec::new(),
+            select_related_paths: Vec::new(),
+            lock: crate::query::lock::LockMode::None,
+            cache_target: None,
+            _model: PhantomData,
+        }
+    }
+
     /// Performs an `INNER JOIN LATERAL` against the provided `inner` queryset.
     /// Returns a [`LateralQuerySet`] that evaluates to `(L, R)` tuples.
     /// Parent rows (`L`) are dropped from the result if the `inner`

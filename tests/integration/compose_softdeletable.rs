@@ -220,3 +220,50 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
          comment recording the change should be added below.",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 4 — objects_including_deleted() returns ALL rows, including deleted.
+// ---------------------------------------------------------------------------
+
+#[model(table = "soft_bypass", soft_deletable)]
+#[derive(Debug, Clone)]
+pub struct SoftBypass {
+    pub note: String,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[djogi::djogi_test(sync_models = [SoftBypass])]
+async fn softdeletable_objects_including_deleted_returns_all(mut ctx: djogi::DjogiContext) {
+    let _live = SoftBypass::create(
+        &mut ctx,
+        SoftBypass {
+            note: "live".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live row should succeed");
+
+    let _trashed = SoftBypass::create(
+        &mut ctx,
+        SoftBypass {
+            note: "trashed".into(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create trashed row should succeed");
+
+    let rows = SoftBypass::objects_including_deleted()
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all should succeed");
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "objects_including_deleted() must bypass the soft-delete default filter and return deleted rows",
+    );
+}
