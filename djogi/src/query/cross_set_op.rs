@@ -293,6 +293,158 @@ pub(crate) fn build_cross_set_op_count<R: FromPgRow>(
     Ok(acc)
 }
 
+/// Decide whether two arm-models' **intended** tenant scopes are
+/// compatible. Compatible when at most one arm carries a concrete intended
+/// tenant, or both carry the same one. Incompatible (two *different*
+/// intended tenants) surfaces [`DjogiError::CrossModelSetOpTenantConflict`].
+/// Each tuple is `(model_type_name, intended_tenant)` as produced by an
+/// arm's [`CrossArm::intended_tenant`] **pure** read. Reconciliation runs
+/// against these intent values BEFORE any `SET LOCAL` is issued, so the
+/// conflict path returns with the connection's GUC unchanged — this is the
+/// fix for the GUC-poisoning defect where firing both arms' tenant wiring
+/// first would overwrite the GUC before the conflict was detected.
+fn reconcile_arm_tenants(
+    left: (&'static str, Option<String>),
+    right: (&'static str, Option<String>),
+) -> Result<(), DjogiError> {
+    if let (Some(lt), Some(rt)) = (&left.1, &right.1) {
+        if lt != rt {
+            return Err(DjogiError::CrossModelSetOpTenantConflict {
+                left_model: left.0,
+                right_model: right.0,
+                left_tenant: lt.clone(),
+                right_tenant: rt.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+// ── Terminals: fetch_all / first (Send + Unpin) ──────────────────────────
+
+impl<R> CrossModelSetOpQuerySet<R>
+where
+    R: FromPgRow + Send + Unpin,
+{
+    /// Execute the cross-model set operation and collect every row into a `Vec<R>`.
+    /// # Errors
+    /// - [`DjogiError::SetOpArmInvalid`] if either arm carries prefetch/lock/cache bindings.
+    /// - [`DjogiError::SetOpOuterOrderingInvalid`] if outer ORDER BY column is invalid.
+    /// - [`DjogiError::CrossModelSetOpTenantConflict`] if arms resolve to different tenants.
+    /// - Postgres error if arm columns don't align with `R`.
+    pub fn fetch_all<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<R>, DjogiError>> + Send + 'ctx
+    where
+        R: 'ctx,
+    {
+        async move {
+            let acc = build_cross_set_op_select(&self)?;
+            let left_intended = self.left.intended_tenant(ctx);
+            let right_intended = self.right.intended_tenant(ctx);
+            reconcile_arm_tenants(left_intended, right_intended)?;
+            self.left.fire_tenant(ctx).await?;
+            self.right.fire_tenant(ctx).await?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            rows.iter().map(|r| R::from_pg_row(r)).collect()
+        }
+    }
+
+    /// Execute with `LIMIT 1` and return the first row, or `None`.
+    /// Same validation / tenant ordering as [`fetch_all`](Self::fetch_all).
+    pub fn first<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Option<R>, DjogiError>> + Send + 'ctx
+    where
+        R: 'ctx,
+    {
+        async move {
+            let mut sop = self;
+            sop.limit = Some(1);
+            let acc = build_cross_set_op_select(&sop)?;
+            let left_intended = sop.left.intended_tenant(ctx);
+            let right_intended = sop.right.intended_tenant(ctx);
+            reconcile_arm_tenants(left_intended, right_intended)?;
+            sop.left.fire_tenant(ctx).await?;
+            sop.right.fire_tenant(ctx).await?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let opt = ctx.query_opt(&sql, &params).await?;
+            opt.as_ref().map(|r| R::from_pg_row(r)).transpose()
+        }
+    }
+}
+
+// ── Terminal: count (no Send + Unpin bound) ──────────────────────────────
+
+impl<R> CrossModelSetOpQuerySet<R>
+where
+    R: FromPgRow,
+{
+    /// `SELECT COUNT(*) FROM (<cross-model set op>) AS sub`.
+    /// Outer ORDER BY / LIMIT / OFFSET stripped from emission; per-arm state preserved.
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<i64, DjogiError>> + Send + 'ctx
+    where
+        R: 'ctx,
+    {
+        async move {
+            let acc = build_cross_set_op_count(&self)?;
+            let left_intended = self.left.intended_tenant(ctx);
+            let right_intended = self.right.intended_tenant(ctx);
+            reconcile_arm_tenants(left_intended, right_intended)?;
+            self.left.fire_tenant(ctx).await?;
+            self.right.fire_tenant(ctx).await?;
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let row = ctx.query_one(&sql, &params).await?;
+            let n: i64 = crate::pg::decode::try_get_scalar(&row, 0)?;
+            Ok(n)
+        }
+    }
+
+    /// Render the full cross-model set-op SQL for test assertions.
+    /// **Internal-test plumbing — never call from adopter code.**
+    #[doc(hidden)]
+    pub fn __sql_for_test(&self) -> Result<String, DjogiError> {
+        let acc = build_cross_set_op_select(self)?;
+        Ok(acc.into_parts().0)
+    }
+
+    /// Render the count SQL + post-strip bind count for test assertions.
+    /// **Internal-test plumbing — never call from adopter code.**
+    #[doc(hidden)]
+    pub fn __count_sql_for_test(&self) -> Result<(String, u32), DjogiError> {
+        let acc = build_cross_set_op_count(self)?;
+        let bind_count = acc.bind_count();
+        Ok((acc.into_parts().0, bind_count))
+    }
+}
+
+// ── Testing-feature mirrors ───────────────────────────────────────────────
+
+#[cfg(any(test, feature = "testing"))]
+impl<R: FromPgRow> CrossModelSetOpQuerySet<R> {
+    /// `testing`-feature mirror of [`__sql_for_test`](Self::__sql_for_test).
+    pub fn render_cross_set_op_sql_for_testing(&self) -> Result<String, DjogiError> {
+        let acc = build_cross_set_op_select(self)?;
+        Ok(acc.into_parts().0)
+    }
+
+    /// `testing`-feature mirror of [`__count_sql_for_test`](Self::__count_sql_for_test).
+    pub fn render_cross_count_sql_for_testing(&self) -> Result<(String, u32), DjogiError> {
+        let acc = build_cross_set_op_count(self)?;
+        let bind_count = acc.bind_count();
+        Ok((acc.into_parts().0, bind_count))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +542,73 @@ mod tests {
             matches!(err, DjogiError::SetOpOuterOrderingInvalid { reason, .. }
                 if reason.contains("__djogi_")),
             "framework-reserved outer order column must be rejected: {err:?}"
+        );
+    }
+
+    #[test]
+    fn tenant_conflict_detected_when_arms_resolve_to_different_tenants() {
+        let res = reconcile_arm_tenants(
+            ("LeftWidget", Some("org_a".to_string())),
+            ("RightGadget", Some("org_b".to_string())),
+        );
+        assert!(
+            matches!(res.unwrap_err(), DjogiError::CrossModelSetOpTenantConflict { .. }),
+        );
+    }
+
+    #[test]
+    fn tenant_no_conflict_when_one_arm_untenanted() {
+        assert!(reconcile_arm_tenants(("LeftWidget", Some("org_a".to_string())), ("RightGadget", None)).is_ok());
+        assert!(reconcile_arm_tenants(("LeftWidget", None), ("RightGadget", None)).is_ok());
+        assert!(reconcile_arm_tenants(
+            ("LeftWidget", Some("org_a".to_string())),
+            ("RightGadget", Some("org_a".to_string()))
+        ).is_ok());
+    }
+
+    #[tokio::test]
+    async fn untenanted_arm_intent_is_none_despite_stale_applied_tenant() {
+        use crate::auth::AuthContext;
+
+        let pool = crate::pg::pool::DjogiPool::builder("postgres://localhost/_djogi_unreachable")
+            .max_size(1)
+            .build()
+            .await
+            .expect("pool build should not connect until checkout");
+        let mut ctx = crate::context::DjogiContext::from_pool(pool);
+
+        ctx.set_auth(AuthContext::new(crate::HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+        ctx.applied_tenant_id = Some("org_stale".to_string());
+
+        let arm = IntoCrossArm::<CombinedRow>::into_cross_arm(LeftWidget::objects());
+        let (model_name, intent) = arm.intended_tenant(&ctx);
+
+        assert_eq!(
+            intent, None,
+            "untenanted arm must report None regardless of auth or stale applied_tenant_id: got {intent:?} for {model_name}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_keyed_arm_intent_is_auth_tenant_not_stale_applied() {
+        use crate::auth::AuthContext;
+
+        let pool = crate::pg::pool::DjogiPool::builder("postgres://localhost/_djogi_unreachable")
+            .max_size(1)
+            .build()
+            .await
+            .expect("pool build should not connect until checkout");
+        let mut ctx = crate::context::DjogiContext::from_pool(pool);
+        ctx.set_auth(AuthContext::new(crate::HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+        ctx.applied_tenant_id = Some("org_stale".to_string());
+
+        let arm = IntoCrossArm::<CombinedRow>::into_cross_arm(TenantWidget::objects());
+        let (_model_name, intent) = arm.intended_tenant(&ctx);
+
+        assert_eq!(
+            intent,
+            Some("org_a".to_string()),
+            "tenant-keyed arm must report AUTH tenant (org_a), not stale applied_tenant_id"
         );
     }
 }
