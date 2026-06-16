@@ -11,7 +11,8 @@ pub struct DebugGuardPost {
 
 #[cfg(debug_assertions)]
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION: probes FromJoinedPgRow debug guard with hand-crafted SQL row
+// JUSTIFICATION (djogi#475): no typed helper for constructing rows with controlled column aliases;
+// raw SQL builds a synthetic row without the expected __djogi_old__ prefix to trigger the debug guard
 #[djogi::djogi_test(sync_models = [DebugGuardPost])]
 async fn from_joined_pg_row_debug_guard_rejects_missing_old_alias(mut ctx: djogi::DjogiContext) {
     let rows = ctx

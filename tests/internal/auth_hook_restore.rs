@@ -1,4 +1,3 @@
-use djogi::__bypass::RawAccessExt;
 use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
@@ -34,6 +33,9 @@ impl djogi::hooks::ModelHooks for TenantHookPost {
     }
 }
 
+#[djogi::deliberately_bypass_convention_with_raw_sql]
+// JUSTIFICATION (djogi#473): no typed GUC-reading API; raw SQL reads current_setting('app.tenant_id')
+// so the two test functions that call this helper can probe session state without a top-level use import
 async fn current_tenant_guc(ctx: &mut djogi::DjogiContext) -> Option<String> {
     let rows = ctx
         .raw_rows("SELECT current_setting('app.tenant_id', true)", &[])
@@ -47,7 +49,8 @@ async fn current_tenant_guc(ctx: &mut djogi::DjogiContext) -> Option<String> {
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION: probes session GUC state to verify tenant scope restoration
+// JUSTIFICATION (djogi#473): no typed GUC-reading API; raw SQL probes current_setting('app.tenant_id')
+// to verify tenant scope is restored after a hook error aborts the transaction
 #[djogi::djogi_test(sync_models = [TenantHookPost])]
 async fn update_returning_pair_hook_err_restores_pre_hook_tenant_scope(
     mut ctx: djogi::DjogiContext,
@@ -90,7 +93,8 @@ async fn update_returning_pair_hook_err_restores_pre_hook_tenant_scope(
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
-// JUSTIFICATION: probes session GUC state to verify tenant scope restoration
+// JUSTIFICATION (djogi#473): no typed GUC-reading API; raw SQL probes current_setting('app.tenant_id')
+// to verify tenant scope is restored after a before_delete hook error aborts the transaction
 #[djogi::djogi_test(sync_models = [TenantHookPost])]
 async fn delete_returning_hook_err_restores_pre_hook_tenant_scope(mut ctx: djogi::DjogiContext) {
     let mut tx = ctx.begin().await.expect("begin transaction");
