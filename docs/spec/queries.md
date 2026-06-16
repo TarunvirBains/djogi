@@ -340,6 +340,15 @@ Additional v0.1.0 restrictions on the expression path:
   SQL is not available inside the `Expr<V>` node structure.
 - `RawSql` expressions are unsupported — the arbitrary SQL string cannot
   be projected through the side-alias context.
-- Aggregate and subquery nodes are rejected via `debug_assert!` at
-  construction time — window clauses require scalar expressions per row,
-  not row-group aggregates.
+- Nodes that are not alias-safe — aggregates, subqueries, full-text-search
+  functions (`TsRank`, `TsRankCd`, `TsMatch`), `ArrayLength`, raw SQL
+  fragments, spatial expressions, `RowAggregate`, outer-ref nodes, and
+  `Excluded` — are rejected at **fetch time** with `DjogiError::Validation`
+  via `is_allowed_window_expr_node`. The builders (`partition_by_pair_expr`,
+  `order_by_pair_expr_asc`, `order_by_pair_expr_desc`) are infallible
+  (`-> Self`) and never panic. Rejection is uniform across debug and release
+  builds. The accepted set is: field references, literals, arithmetic
+  (`Add`, `Sub`, `Mul`, `Div`), boolean operations (`And`, `Or`, `Not`),
+  `IsNull`/`IsNotNull`, `Coalesce`, `Cmp`, `Case` (over accepted nodes),
+  and trgm similarity expressions (`TrgmSimilarTo`, `TrgmSimilarityScore`)
+  when the `trgm` feature is enabled.
