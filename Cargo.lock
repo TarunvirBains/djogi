@@ -645,6 +645,7 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "serial_test",
  "thiserror",
  "time",
  "tokio",
