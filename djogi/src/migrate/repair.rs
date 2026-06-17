@@ -51,6 +51,7 @@
 //!    changed, so the operator can audit (and replay-via-shell-history
 //!    when needed).
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::__bypass::guarded_batch_execute;
@@ -667,7 +668,31 @@ fn check_phase_zero_repair(
     // Resolve the up-file path for this bucket + version.
     let bucket_dir = super::target::bucket_dir(workspace, bucket);
     let up_path = bucket_dir.join(super::naming::up_filename(version));
-    let bytes = std::fs::read(&up_path).map_err(|e| RepairError::LedgerIo {
+
+    let workspace_canon = std::fs::canonicalize(workspace).map_err(|e| RepairError::LedgerIo {
+        source: DjogiError::Db(crate::error::DbError::other(format!(
+            "canonicalize workspace {}: {e}",
+            workspace.display()
+        ))),
+    })?;
+    let bucket_dir_canon = std::fs::canonicalize(&bucket_dir).map_err(|e| RepairError::LedgerIo {
+        source: DjogiError::Db(crate::error::DbError::other(format!(
+            "canonicalize bucket dir {}: {e}",
+            bucket_dir.display()
+        ))),
+    })?;
+    let up_filename = super::naming::up_filename(version);
+    let up_path_canon = bucket_dir_canon.join(up_filename);
+    if !up_path_canon.starts_with(&workspace_canon) {
+        return Err(RepairError::LedgerIo {
+            source: DjogiError::Db(crate::error::DbError::other(format!(
+                "resolved up-file path escapes workspace: {}",
+                up_path.display()
+            ))),
+        });
+    }
+
+    let bytes = std::fs::read(&up_path_canon).map_err(|e| RepairError::LedgerIo {
         source: DjogiError::Db(crate::error::DbError::other(format!(
             "read Phase 0 up-file at {}: {e}",
             up_path.display()
@@ -1689,9 +1714,21 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-repair-{tag}-{nanos}-{n}"));
+        let temp_dir_canon = std::env::temp_dir().canonicalize().unwrap();
+        let p = temp_dir_canon.join(format!("djogi-repair-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    fn safe_remove_dir_all(path: &Path) {
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+            if let Ok(path_canon) = path.canonicalize() {
+                if !path_canon.starts_with(&temp_canon) {
+                    panic!("remove_dir_all refused: path escapes temp directory");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(path);
     }
 
     fn phase_zero_bucket() -> BucketKey {
@@ -1805,9 +1842,16 @@ mod tests {
 
     fn write_phase_zero_artifact(root: &Path, bucket: &BucketKey, sql: &str) {
         let dir = super::super::target::bucket_dir(root, bucket);
-        fs::create_dir_all(&dir).unwrap();
+        let dir_canon = fs::canonicalize(dir).unwrap_or_else(|_| {
+            fs::create_dir_all(&dir).unwrap();
+            fs::canonicalize(&dir).unwrap()
+        });
+        let root_canon = fs::canonicalize(root).unwrap();
+        if !dir_canon.starts_with(&root_canon) {
+            panic!("bucket dir escapes root");
+        }
         fs::write(
-            dir.join(super::super::naming::up_filename(PHASE_ZERO_VERSION)),
+            dir_canon.join(super::super::naming::up_filename(PHASE_ZERO_VERSION)),
             sql,
         )
         .unwrap();
@@ -1919,7 +1963,7 @@ mod tests {
             "repair must refuse missing Phase 0 artifacts; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_dir_all(&root);
     }
 
     #[test]
@@ -1934,7 +1978,7 @@ mod tests {
             "repair must refuse incomplete Phase 0 artifacts; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_dir_all(&root);
     }
 
     #[test]
@@ -1949,7 +1993,7 @@ mod tests {
             "repair must refuse markerless seed Phase 0 artifacts; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_dir_all(&root);
     }
 
     #[test]
@@ -1965,7 +2009,7 @@ mod tests {
                 "repair must refuse extended seed Phase 0 artifact {name}; got {result:?}"
             );
 
-            let _ = fs::remove_dir_all(&root);
+            safe_remove_dir_all(&root);
         }
     }
 
@@ -2022,7 +2066,7 @@ mod tests {
             "missing resume identity must refuse before pin/connection checkout, got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -2077,7 +2121,7 @@ mod tests {
                 "{name} Phase 0 artifact must refuse before resume pins, got {result:?}"
             );
 
-            let _ = fs::remove_dir_all(&root);
+            safe_remove_dir_all(&root);
         }
     }
 
