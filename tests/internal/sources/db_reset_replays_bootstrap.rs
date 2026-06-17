@@ -38,9 +38,27 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-bootstrap-replay-{label}-{stamp}"));
+    let temp_dir_canon = std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+    let path = temp_dir_canon.join(format!("djogi-bootstrap-replay-{label}-{stamp}"));
     fs::create_dir_all(&path).expect("create workspace root");
+    if let Ok(path_canon) = std::fs::canonicalize(&path) {
+        assert!(
+            path_canon.starts_with(&temp_dir_canon),
+            "workspace path escapes temp directory"
+        );
+    }
     path
+}
+
+fn safe_remove_workspace(path: &Path) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!("remove_dir_all refused: workspace path escapes temp directory");
+            }
+        }
+    }
+    let _ = fs::remove_dir_all(path);
 }
 
 fn lock_for(workspace: &Path) -> WorkspaceGuard {
@@ -288,7 +306,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
     drop(admin_client);
     let _ = teardown_driver.await;
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }
 
 /// Proves the `#275` checksum-parity gate is checked before the
@@ -403,6 +421,10 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     let phase_zero_path = work.join(format!(
         "migrations/{virgin_db}/_global_/{PHASE_ZERO_VERSION}.sdjql"
     ));
+    let work_canon = std::fs::canonicalize(&work).expect("canonicalize workspace");
+    if !phase_zero_path.canonicalize().unwrap_or(phase_zero_path.clone()).starts_with(&work_canon) {
+        panic!("phase_zero_path escapes workspace");
+    }
     let original_sql = fs::read_to_string(&phase_zero_path).expect("read bootstrap SQL");
     fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))
         .expect("mutate bootstrap SQL");
@@ -493,5 +515,5 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     drop(admin_client);
     let _ = teardown_driver.await;
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }

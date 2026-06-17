@@ -51,7 +51,6 @@
 //!    changed, so the operator can audit (and replay-via-shell-history
 //!    when needed).
 
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::__bypass::guarded_batch_execute;
