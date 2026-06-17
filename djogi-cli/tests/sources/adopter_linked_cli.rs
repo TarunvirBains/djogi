@@ -1359,7 +1359,8 @@ fn nocargo_compose_without_cargo_or_source() {
         let runtime_dir_canon = runtime_dir
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied_bin = copied_bin
+        let copied_bin = runtime_dir_canon
+            .join("djogi")
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
         if !copied_bin.starts_with(&runtime_dir_canon) || !copied_bin.is_file() {
@@ -1411,7 +1412,8 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         let runtime_dir_canon = runtime_dir
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied = copied
+        let copied = runtime_dir_canon
+            .join("djogi")
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
         if !copied.starts_with(&runtime_dir_canon) || !copied.is_file() {

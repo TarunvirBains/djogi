@@ -272,19 +272,22 @@ mod tests {
 
     #[test]
     fn read_cache_ids_collects_subdirs_only() {
-        let tmp = std::env::temp_dir().join(format!(
+        let tmp_name = format!(
             "djogi-gc-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
-        ));
+        );
+        if tmp_name.contains('/') || tmp_name.contains('\\') || tmp_name.contains("..") {
+            panic!("unsafe temp path component: {tmp_name}");
+        }
+        let tmp = std::env::temp_dir().join(tmp_name);
         let temp_canon = std::env::temp_dir().canonicalize().unwrap();
         if !tmp.starts_with(&temp_canon) {
             panic!("refusing to create tmp outside temp: {}", tmp.display());
         }
-        fs::create_dir_all(tmp.parent().unwrap_or(&tmp)).unwrap();
         fs::create_dir_all(&tmp).unwrap();
         let tmp = tmp.canonicalize().unwrap();
 

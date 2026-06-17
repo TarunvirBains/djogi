@@ -1345,34 +1345,56 @@ mod tests {
     #[test]
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
         let temp_canon = env::temp_dir().canonicalize().unwrap();
-        let root = temp_canon.join(format!("djogi-check-secrets-fs-{}", std::process::id()));
+        let root_name = format!("djogi-check-secrets-fs-{}", std::process::id());
+        if root_name.contains('/') || root_name.contains('\\') || root_name.contains("..") {
+            panic!("unsafe temp root name: {root_name}");
+        }
+        let root = temp_canon.join(&root_name);
         if root.starts_with(&temp_canon) {
             let _ = fs::remove_dir_all(&root);
         }
         if !root.starts_with(&temp_canon) {
             panic!("refusing to create dir outside temp: {}", root.display());
         }
-        if let Some(parent) = root.parent() {
-            let parent = parent.canonicalize().unwrap_or_else(|_| temp_canon.clone());
-            let root = parent.join(root.file_name().unwrap());
-            fs::create_dir_all(&root).unwrap();
-        }
+        fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        fs::create_dir_all(root.join(".github/workflows")).unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::create_dir_all(root.join(".git/objects")).unwrap();
-        fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
+        let github_dir = root.join(".github");
+        fs::create_dir_all(&github_dir).unwrap();
+        let github_dir = github_dir.canonicalize().unwrap();
+        let github_workflows = github_dir.join("workflows");
+        fs::create_dir_all(&github_workflows).unwrap();
 
-        fs::write(root.join(".github/workflows/ci.yml"), "name: CI").unwrap();
-        fs::write(root.join("src/lib.rs"), "pub fn ok() {}").unwrap();
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let src_dir = src_dir.canonicalize().unwrap();
+
+        let target_dir = root.join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let target_dir = target_dir.canonicalize().unwrap();
+        let target_debug = target_dir.join("debug");
+        fs::create_dir_all(&target_debug).unwrap();
+
+        let git_dir = root.join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        let git_dir = git_dir.canonicalize().unwrap();
+        let git_objects = git_dir.join("objects");
+        fs::create_dir_all(&git_objects).unwrap();
+
+        let worktrees_dir = root.join(".worktrees");
+        fs::create_dir_all(&worktrees_dir).unwrap();
+        let worktrees_dir = worktrees_dir.canonicalize().unwrap();
+        let worktrees_issue = worktrees_dir.join("issue");
+        fs::create_dir_all(&worktrees_issue).unwrap();
+
+        fs::write(github_workflows.join("ci.yml"), "name: CI").unwrap();
+        fs::write(src_dir.join("lib.rs"), "pub fn ok() {}").unwrap();
         fs::write(
-            root.join("target/debug/build.log"),
+            target_debug.join("build.log"),
             "DATABASE_URL=postgres://real:secret@db/app",
         )
         .unwrap();
-        fs::write(root.join(".git/config"), "ignored").unwrap();
-        fs::write(root.join(".worktrees/issue/file.rs"), "ignored").unwrap();
+        fs::write(git_dir.join("config"), "ignored").unwrap();
+        fs::write(worktrees_issue.join("file.rs"), "ignored").unwrap();
 
         let files = list_filesystem_repo_files(&root).unwrap();
         let as_strings: BTreeSet<_> = files
