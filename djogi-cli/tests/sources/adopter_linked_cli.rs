@@ -1359,7 +1359,9 @@ fn nocargo_compose_without_cargo_or_source() {
         let copied_bin = copied_bin
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
-        assert!(copied_bin.starts_with(&runtime_dir));
+        if !copied_bin.starts_with(&runtime_dir) {
+            panic!("copied binary escapes runtime dir: {}", copied_bin.display());
+        }
         std::fs::set_permissions(copied_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -1406,7 +1408,9 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         let copied = copied
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
-        assert!(copied.starts_with(&runtime_dir));
+        if !copied.starts_with(&runtime_dir) {
+            panic!("copied binary escapes runtime dir: {}", copied.display());
+        }
         std::fs::set_permissions(copied, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 

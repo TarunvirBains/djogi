@@ -75,7 +75,12 @@ pub fn run(dry_run: bool) -> ExitCode {
             continue;
         }
         let vetted = path.canonicalize().unwrap_or_else(|e| panic!("{e}"));
-        assert!(vetted.starts_with(&cache_root));
+        if !vetted.starts_with(&cache_root) {
+            panic!(
+                "refusing to remove cache path outside root: {}",
+                vetted.display()
+            );
+        }
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
@@ -276,28 +281,32 @@ mod tests {
                 .unwrap_or(0)
         ));
         let temp_canon = std::env::temp_dir().canonicalize().unwrap();
-        assert!(tmp.starts_with(&temp_canon));
+        if !tmp.starts_with(&temp_canon) {
+            panic!("refusing to create tmp outside temp: {}", tmp.display());
+        }
         fs::create_dir_all(tmp.parent().unwrap_or(&tmp)).unwrap();
         fs::create_dir_all(&tmp).unwrap();
         let tmp = tmp.canonicalize().unwrap();
 
         let safe_create_dir = |rel: &str| {
             let candidate = tmp.join(rel);
-            assert!(
-                candidate.starts_with(&tmp),
-                "refusing to create dir outside test root: {}",
-                candidate.display()
-            );
+            if !candidate.starts_with(&tmp) {
+                panic!(
+                    "refusing to create dir outside test root: {}",
+                    candidate.display()
+                );
+            }
             fs::create_dir_all(candidate.parent().unwrap_or(&candidate)).unwrap();
             fs::create_dir_all(&candidate).unwrap();
         };
         let safe_write = |rel: &str, contents: &[u8]| {
             let candidate = tmp.join(rel);
-            assert!(
-                candidate.starts_with(&tmp),
-                "refusing to write outside test root: {}",
-                candidate.display()
-            );
+            if !candidate.starts_with(&tmp) {
+                panic!(
+                    "refusing to write outside test root: {}",
+                    candidate.display()
+                );
+            }
             fs::write(&candidate, contents).unwrap();
         };
 

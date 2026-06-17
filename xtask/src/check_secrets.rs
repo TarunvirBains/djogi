@@ -1349,7 +1349,9 @@ mod tests {
         if root.starts_with(&temp_canon) {
             let _ = fs::remove_dir_all(&root);
         }
-        assert!(root.starts_with(&temp_canon));
+        if !root.starts_with(&temp_canon) {
+            panic!("refusing to create dir outside temp: {}", root.display());
+        }
         if let Some(parent) = root.parent() {
             let parent = parent.canonicalize().unwrap_or_else(|_| temp_canon.clone());
             let root = parent.join(root.file_name().unwrap());
@@ -1358,11 +1360,12 @@ mod tests {
         let root = root.canonicalize().unwrap();
         let safe_create_dir = |rel: &str| {
             let candidate = root.join(rel);
-            assert!(
-                candidate.starts_with(&root),
-                "refusing to create dir outside test root: {}",
-                candidate.display()
-            );
+            if !candidate.starts_with(&root) {
+                panic!(
+                    "refusing to create dir outside test root: {}",
+                    candidate.display()
+                );
+            }
             if let Some(parent) = candidate.parent() {
                 fs::create_dir_all(parent).unwrap();
             }

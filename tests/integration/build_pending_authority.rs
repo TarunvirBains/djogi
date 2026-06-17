@@ -24,18 +24,20 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         .canonicalize()
         .unwrap_or_else(|err| panic!("canonicalize workspace parent {}: {err}", parent.display()));
     let canon = parent_canon.join(workspace.file_name().expect("workspace path filename"));
-    assert!(
-        canon.starts_with(&temp) || canon.starts_with(&cwd),
-        "workspace path {} is outside temp directory and current directory",
-        canon.display()
-    );
+    if !canon.starts_with(&temp) && !canon.starts_with(&cwd) {
+        panic!(
+            "workspace path {} is outside temp directory and current directory",
+            canon.display()
+        );
+    }
     fs::create_dir_all(&canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
-    assert!(
-        canon.starts_with(&temp) || canon.starts_with(&cwd),
-        "workspace path {} is outside temp directory and current directory",
-        canon.display()
-    );
+    if !canon.starts_with(&temp) && !canon.starts_with(&cwd) {
+        panic!(
+            "workspace path {} is outside temp directory and current directory",
+            canon.display()
+        );
+    }
     canon
 }
 
@@ -50,7 +52,9 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .canonicalize()
         .expect("canonicalize temp directory");
     let p = temp_canon.join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
-    assert!(p.starts_with(&temp_canon));
+    if !p.starts_with(&temp_canon) {
+        panic!("workspace path {} is outside temp directory", p.display());
+    }
     fs::create_dir_all(&p).unwrap();
     safe_workspace(&p)
 }
@@ -59,11 +63,12 @@ fn safe_create_dir(path: &Path) {
     let parent = path.parent().expect("path parent");
     let parent = safe_workspace(parent);
     let candidate = parent.join(path.file_name().expect("path filename"));
-    assert!(
-        candidate.starts_with(&parent),
-        "refusing to create dir outside safe parent: {}",
-        candidate.display()
-    );
+    if !candidate.starts_with(&parent) {
+        panic!(
+            "refusing to create dir outside safe parent: {}",
+            candidate.display()
+        );
+    }
     fs::create_dir_all(&candidate).unwrap();
 }
 
@@ -84,7 +89,12 @@ fn vetted_child_path(path: &Path) -> PathBuf {
         .expect("current directory exists")
         .canonicalize()
         .expect("canonicalize current directory");
-    assert!(parent.starts_with(&temp_canon) || parent.starts_with(&cwd_canon));
+    if !parent.starts_with(&temp_canon) && !parent.starts_with(&cwd_canon) {
+        panic!(
+            "path parent {} is outside temp directory and current directory",
+            parent.display()
+        );
+    }
     let parent = safe_workspace(parent);
     parent.join(path.file_name().expect("path filename"))
 }
@@ -189,11 +199,10 @@ fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema
     let snapshot_path =
         vetted_child_path(&work.join("migrations/main/_global_/schema_snapshot.json"));
     safe_create_dir(snapshot_path.parent().unwrap());
-    fs::write(
+    safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(snapshot_schema).unwrap(),
-    )
-    .unwrap();
+    );
 }
 
 type InventoryWriter = fn(&std::path::Path);
@@ -438,11 +447,10 @@ fn build_collect_diagnostics_includes_hidden_phase_zero_pending() {
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), pending_schema.clone());
     safe_create_dir(&work.join("target"));
-    fs::write(
-        vetted_child_path(&work.join("target/djogi_models.json")),
+    safe_write_bytes(
+        &work.join("target/djogi_models.json"),
         serde_json::to_vec_pretty(&models).unwrap(),
-    )
-    .unwrap();
+    );
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
     safe_create_dir(snapshot_path.parent().unwrap());
