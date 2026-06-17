@@ -398,6 +398,8 @@ mod tests {
             let path =
                 common::resolve_maybe_missing_workspace_path(&temp_root, Path::new(&dir_name))
                     .unwrap_or_else(|_| temp_root.join(&dir_name));
+            let path = common::resolve_write_workspace_path(&temp_root, &path)
+                .expect("resolve tempdir path");
             std::fs::create_dir_all(&path).expect("create tempdir");
             TempDir(path)
         }
@@ -552,7 +554,7 @@ mod tests {
     fn read_plan_rejects_malformed_json() {
         let tmp = TempDir::new("read-malformed");
         let path = tmp.path().join("malformed.json");
-        std::fs::write(&path, b"{ not json }").expect("write malformed");
+        common::write_workspace_file(tmp.path(), &path, b"{ not json }").expect("write malformed");
         let err = read_plan(tmp.path(), &path).expect_err("parse should fail");
         assert!(matches!(err, PlanFileError::JsonParse { .. }));
     }

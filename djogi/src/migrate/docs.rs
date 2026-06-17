@@ -681,6 +681,8 @@ mod tests {
             .canonicalize()
             .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
+        let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve temp docs root");
         fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
             assert!(
@@ -689,6 +691,28 @@ mod tests {
             );
         }
         p
+    }
+
+    fn safe_read_workspace(root: &Path, path: impl AsRef<Path>) -> Vec<u8> {
+        crate::migrate::common::read_workspace_file(root, path.as_ref())
+            .expect("read workspace file")
+    }
+
+    fn safe_read_workspace_string(root: &Path, path: impl AsRef<Path>) -> String {
+        crate::migrate::common::read_workspace_file_to_string(root, path.as_ref())
+            .expect("read workspace string")
+    }
+
+    fn safe_remove_workspace(dir: &Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let dir = std::fs::canonicalize(dir).expect("canonicalize docs workspace");
+        assert!(
+            dir.starts_with(&temp_canon),
+            "remove_dir_all refused: workspace path escapes temp directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fixture_users() -> ModelDescriptor {
@@ -801,7 +825,7 @@ mod tests {
         assert_eq!(report.models_rendered, 2);
 
         // README at the root.
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let readme = safe_read_workspace_string(&root, root.join("README.md"));
         assert!(readme.contains("# Djogi model reference"));
         assert!(readme.contains("`User`"));
         assert!(readme.contains("`Post`"));
@@ -823,7 +847,7 @@ mod tests {
 
         // The global model lists `<global>` in its body, not the
         // on-disk directory token.
-        let post_body = fs::read_to_string(root.join("_global_/Post.md")).unwrap();
+        let post_body = safe_read_workspace_string(&root, root.join("_global_/Post.md"));
         assert!(post_body.contains("**App:** <global>"));
     }
 
@@ -839,12 +863,12 @@ mod tests {
         render_inventory(&descriptors, &root_a, None).unwrap();
         render_inventory(&descriptors, &root_b, None).unwrap();
 
-        let user_a = fs::read(root_a.join("accounts/User.md")).unwrap();
-        let user_b = fs::read(root_b.join("accounts/User.md")).unwrap();
+        let user_a = safe_read_workspace(&root_a, root_a.join("accounts/User.md"));
+        let user_b = safe_read_workspace(&root_b, root_b.join("accounts/User.md"));
         assert_eq!(user_a, user_b);
 
-        let readme_a = fs::read(root_a.join("README.md")).unwrap();
-        let readme_b = fs::read(root_b.join("README.md")).unwrap();
+        let readme_a = safe_read_workspace(&root_a, root_a.join("README.md"));
+        let readme_b = safe_read_workspace(&root_b, root_b.join("README.md"));
         assert_eq!(readme_a, readme_b);
     }
 
@@ -862,8 +886,8 @@ mod tests {
         render_inventory(&order_a, &root_a, None).unwrap();
         render_inventory(&order_b, &root_b, None).unwrap();
 
-        let readme_a = fs::read(root_a.join("README.md")).unwrap();
-        let readme_b = fs::read(root_b.join("README.md")).unwrap();
+        let readme_a = safe_read_workspace(&root_a, root_a.join("README.md"));
+        let readme_b = safe_read_workspace(&root_b, root_b.join("README.md"));
         assert_eq!(readme_a, readme_b, "render must be input-order-invariant");
     }
 
@@ -873,7 +897,7 @@ mod tests {
         let report = render_inventory(&[], &root, None).expect("render");
         assert_eq!(report.models_rendered, 0);
         // README still gets written, with the sentinel message.
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let readme = safe_read_workspace_string(&root, root.join("README.md"));
         assert!(readme.contains("No models registered"));
     }
 
@@ -1034,7 +1058,7 @@ mod tests {
         if let Ok(dir_canon) = std::fs::canonicalize(&dir)
             && dir_canon.starts_with(&temp_canon)
         {
-            let _ = std::fs::remove_dir_all(&dir);
+            safe_remove_workspace(&dir);
         }
     }
 }

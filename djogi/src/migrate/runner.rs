@@ -6668,8 +6668,10 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         if let Ok(temp_canon) = temp_dir.canonicalize()
             && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&cleanup_path);
+            let _ = std::fs::remove_file(&vetted);
         }
     }
 
@@ -6715,8 +6717,10 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         if let Ok(temp_canon) = temp_dir.canonicalize()
             && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&cleanup_path);
+            let _ = std::fs::remove_file(&vetted);
         }
     }
 
@@ -6855,8 +6859,10 @@ mod tests {
         let temp_dir = std::env::temp_dir();
         if let Ok(temp_canon) = temp_dir.canonicalize()
             && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&cleanup_path);
+            let _ = std::fs::remove_file(&vetted);
         }
     }
 

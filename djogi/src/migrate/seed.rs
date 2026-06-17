@@ -377,26 +377,19 @@ pub fn discover_seeds(
         source: err,
     })?;
     let dir = workspace_root.join(SEEDS_DIRNAME).join(database);
-    if let Err(source) = common::ensure_within_base(&ws_canon, &dir)
-        && dir.exists()
-    {
-        return Err(SeedError::Io {
-            path: dir.clone(),
-            source,
-        });
-    }
-
-    let mut out: Vec<DiscoveredSeed> = Vec::new();
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(err) => {
-            return Err(SeedError::Io {
-                path: dir,
-                source: err,
-            });
+    let dir = match common::resolve_existing_workspace_path(&ws_canon, &dir) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(SeedError::Io { path: dir, source });
         }
     };
+
+    let mut out: Vec<DiscoveredSeed> = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|err| SeedError::Io {
+        path: dir.clone(),
+        source: err,
+    })?;
     for entry in entries {
         let entry = entry.map_err(|err| SeedError::Io {
             path: dir.clone(),
@@ -864,6 +857,8 @@ mod tests {
             .canonicalize()
             .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-seed-{tag}-{nanos}-{n}"));
+        let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve temp workspace path");
         fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
             assert!(
@@ -874,14 +869,27 @@ mod tests {
         p
     }
 
+    fn safe_create_workspace_dir(root: &Path, path: impl AsRef<Path>) {
+        let path = crate::migrate::common::resolve_write_workspace_path(root, path.as_ref())
+            .expect("resolve workspace dir");
+        fs::create_dir_all(&path).expect("create workspace dir");
+    }
+
+    fn safe_write_workspace_file(root: &Path, path: impl AsRef<Path>, contents: &str) {
+        crate::migrate::common::write_workspace_file(root, path.as_ref(), contents.as_bytes())
+            .expect("write workspace file");
+    }
+
     fn safe_remove_workspace(path: &Path) {
-        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-            && let Ok(path_canon) = path.canonicalize()
-            && !path_canon.starts_with(&temp_canon)
-        {
-            panic!("remove_dir_all refused: workspace path escapes temp directory");
-        }
-        let _ = fs::remove_dir_all(path);
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let path = path.canonicalize().expect("canonicalize workspace path");
+        assert!(
+            path.starts_with(&temp_canon),
+            "remove_dir_all refused: workspace path escapes temp directory"
+        );
+        let _ = fs::remove_dir_all(&path);
     }
 
     #[test]
@@ -896,16 +904,24 @@ mod tests {
     fn discover_seeds_filters_to_sql_files_in_alphabetical_order() {
         let root = temp_root("filter");
         let dir = root.join("seeds/main");
-        fs::create_dir_all(&dir).unwrap();
+        safe_create_workspace_dir(&root, &dir);
         // Two SQL files — should be discovered, sorted ascending.
-        fs::write(dir.join("02_data.sql"), "INSERT INTO foo VALUES (1);\n").unwrap();
-        fs::write(dir.join("01_init.sql"), "INSERT INTO foo VALUES (0);\n").unwrap();
+        safe_write_workspace_file(
+            &root,
+            dir.join("02_data.sql"),
+            "INSERT INTO foo VALUES (1);\n",
+        );
+        safe_write_workspace_file(
+            &root,
+            dir.join("01_init.sql"),
+            "INSERT INTO foo VALUES (0);\n",
+        );
         // Non-SQL files and hidden files — skipped.
-        fs::write(dir.join("readme.md"), "# notes").unwrap();
-        fs::write(dir.join(".gitkeep"), "").unwrap();
+        safe_write_workspace_file(&root, dir.join("readme.md"), "# notes");
+        safe_write_workspace_file(&root, dir.join(".gitkeep"), "");
         // A subdirectory inside `seeds/main/` — must not produce a
         // ghost entry. Walk is non-recursive by design.
-        fs::create_dir_all(dir.join("subdir")).unwrap();
+        safe_create_workspace_dir(&root, dir.join("subdir"));
 
         let seeds = discover_seeds(&root, "main").expect("ok");
         let names: Vec<&str> = seeds.iter().map(|s| s.seed_name.as_str()).collect();
@@ -920,8 +936,8 @@ mod tests {
         // constraint would surface a confusing error otherwise).
         let root = temp_root("empty_stem");
         let dir = root.join("seeds/main");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(".sql"), "noop").unwrap();
+        safe_create_workspace_dir(&root, &dir);
+        safe_write_workspace_file(&root, dir.join(".sql"), "noop");
         let seeds = discover_seeds(&root, "main").expect("ok");
         assert!(seeds.is_empty(), "got {seeds:?}");
         safe_remove_workspace(&root);

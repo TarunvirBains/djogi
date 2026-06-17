@@ -1718,6 +1718,8 @@ mod tests {
             .as_nanos();
         let temp_dir_canon = std::env::temp_dir().canonicalize().unwrap();
         let p = temp_dir_canon.join(format!("djogi-repair-{tag}-{nanos}-{n}"));
+        let p = super::common::resolve_write_workspace_path(&temp_dir_canon, &p)
+            .expect("resolve temp repair path");
         fs::create_dir_all(&p).unwrap();
         p
     }
@@ -1729,7 +1731,9 @@ mod tests {
         {
             panic!("remove_dir_all refused: path escapes temp directory");
         }
-        let _ = fs::remove_dir_all(path);
+        if let Ok(path_canon) = path.canonicalize() {
+            let _ = fs::remove_dir_all(path_canon);
+        }
     }
 
     fn phase_zero_bucket() -> BucketKey {
@@ -1844,6 +1848,7 @@ mod tests {
     fn write_phase_zero_artifact(root: &Path, bucket: &BucketKey, sql: &str) {
         let dir = super::super::target::bucket_dir(root, bucket);
         let dir_canon = fs::canonicalize(&dir).unwrap_or_else(|_| {
+            super::common::create_workspace_parent_dirs(root, dir.join(".keep")).unwrap();
             fs::create_dir_all(&dir).unwrap();
             fs::canonicalize(&dir).unwrap()
         });

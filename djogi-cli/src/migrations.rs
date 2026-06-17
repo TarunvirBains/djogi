@@ -4425,6 +4425,8 @@ mod tests {
             p.starts_with(&temp_canon),
             "workspace path escapes temp directory"
         );
+        let p = djogi::migrate::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve temp workspace");
         fs::create_dir_all(&p).unwrap();
         p.canonicalize().expect("canonicalize temp workspace")
     }
@@ -4477,7 +4479,7 @@ mod tests {
             vetted.starts_with(&workspace_canon),
             "workspace file escapes workspace root"
         );
-        fs::write(vetted, contents).unwrap();
+        djogi::migrate::write_workspace_file(workspace, &vetted, contents.as_bytes()).unwrap();
     }
 
     fn vetted_workspace_path(path: &std::path::Path, workspace: &std::path::Path) -> PathBuf {
@@ -4485,7 +4487,7 @@ mod tests {
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
         let parent = path.parent().expect("path parent");
-        fs::create_dir_all(parent).unwrap();
+        djogi::migrate::create_workspace_parent_dirs(&workspace_canon, path).unwrap();
         let parent_canon = parent
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
@@ -4538,6 +4540,13 @@ mod tests {
         .expect("auto-emit Phase 0");
         let sql = fs::read_to_string(&emitted[0].up_sql_path).expect("read emitted Phase 0");
         drop(guard);
+        djogi::migrate::resolve_write_workspace_path(
+            &std::env::temp_dir()
+                .canonicalize()
+                .expect("canonicalize temp dir"),
+            &work,
+        )
+        .expect("resolve workspace cleanup");
         let _ = fs::remove_dir_all(&work);
         sql
     }
@@ -4630,7 +4639,12 @@ mod tests {
             composed_at: "2026-06-06T00:00:00Z".to_string(),
             depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
         };
-        fs::write(path, serde_json::to_vec_pretty(&pending).unwrap()).unwrap();
+        djogi::migrate::write_workspace_file(
+            workspace,
+            &path,
+            &serde_json::to_vec_pretty(&pending).unwrap(),
+        )
+        .unwrap();
     }
 
     fn write_fallback_migration_files(
@@ -4644,13 +4658,14 @@ mod tests {
             app: String::new(),
         };
         let dir = djogi::migrate::bucket_dir(work, &bucket);
+        djogi::migrate::create_workspace_parent_dirs(work, dir.join(".keep")).unwrap();
         fs::create_dir_all(&dir).unwrap();
         let up_path = vetted_workspace_path(&dir.join(djogi::migrate::up_filename(version)), work);
-        fs::write(up_path, up).unwrap();
+        djogi::migrate::write_workspace_file(work, &up_path, up.as_bytes()).unwrap();
         if let Some(down) = down {
             let down_path =
                 vetted_workspace_path(&dir.join(djogi::migrate::down_filename(version)), work);
-            fs::write(down_path, down).unwrap();
+            djogi::migrate::write_workspace_file(work, &down_path, down.as_bytes()).unwrap();
         }
         bucket
     }
@@ -4824,6 +4839,7 @@ mod tests {
             &djogi::migrate::bucket_dir(&work, &bucket).join(format!("{version}.plan.json")),
             &ws_canon,
         );
+        djogi::migrate::create_workspace_parent_dirs(&ws_canon, &plan_path).unwrap();
         fs::create_dir_all(&plan_path).unwrap();
         let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
         load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
@@ -4845,22 +4861,20 @@ mod tests {
             &work.join("migrations/main/billing/schema_snapshot.json"),
             &ws_canon,
         );
-        fs::create_dir_all(billing_path.parent().expect("billing snapshot parent")).unwrap();
-        fs::write(&billing_path, "{}").unwrap();
+        djogi::migrate::write_workspace_file(&ws_canon, &billing_path, b"{}").unwrap();
         // A second bucket — the global one for the same database
         // exists too. Exercise the multi-bucket walk.
         let global_path = vetted_workspace_path(
             &work.join("migrations/main/_global_/schema_snapshot.json"),
             &ws_canon,
         );
-        fs::create_dir_all(global_path.parent().expect("global snapshot parent")).unwrap();
-        fs::write(&global_path, "{}").unwrap();
+        djogi::migrate::write_workspace_file(&ws_canon, &global_path, b"{}").unwrap();
         // A third on-disk directory WITHOUT a snapshot file — must
         // not be reported (we only union buckets that actually
         // shipped a snapshot).
         let no_snap_dir =
             vetted_workspace_path(&work.join("migrations/main/empty_app/.keep"), &ws_canon);
-        fs::create_dir_all(no_snap_dir.parent().expect("empty app dir")).unwrap();
+        djogi::migrate::write_workspace_file(&ws_canon, &no_snap_dir, b"").unwrap();
 
         let buckets = discover_snapshot_buckets_on_disk(&work);
         let labels: std::collections::BTreeSet<&str> =
@@ -5382,13 +5396,15 @@ mod tests {
 
         // Write minimal workspace config for run_apply.
         let config_path = vetted_workspace_path(&work.join("Djogi.toml"), &ws_canon);
-        fs::write(
+        djogi::migrate::write_workspace_file(
+            &ws_canon,
             &config_path,
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
+            )
+            .as_bytes(),
         )
         .unwrap();
 
@@ -5718,13 +5734,15 @@ mod tests {
 
         // Write minimal workspace config for run_apply.
         let config_path = vetted_workspace_path(&work.join("Djogi.toml"), &ws_canon);
-        fs::write(
+        djogi::migrate::write_workspace_file(
+            &ws_canon,
             &config_path,
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
+            )
+            .as_bytes(),
         )
         .unwrap();
 
@@ -6593,9 +6611,10 @@ mod tests {
         write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
         let vetted_path = vetted_workspace_path(&path, &ws_canon);
-        fs::write(
+        djogi::migrate::write_workspace_file(
+            &ws_canon,
             &vetted_path,
-            serde_json::to_vec_pretty(&PendingPlan {
+            &serde_json::to_vec_pretty(&PendingPlan {
                 version: "V20260606010102__changed".to_string(),
                 ..discovered[0].plan.clone()
             })

@@ -95,6 +95,11 @@ pub use build_match::{
     classify_bucket_with_pending as build_classify_bucket_with_pending, classify_filesystem_drift,
     format_warning_inventory_malformed,
 };
+pub use common::{
+    create_workspace_parent_dirs, read_workspace_file, read_workspace_file_to_string,
+    resolve_existing_workspace_path, resolve_maybe_missing_workspace_path,
+    resolve_read_workspace_path, resolve_write_workspace_path, write_workspace_file,
+};
 pub use compose::{
     AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,
     PENDING_FORMAT_VERSION, PendingLoadError, PendingPlan, compose, load_pending,

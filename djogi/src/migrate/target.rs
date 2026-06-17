@@ -477,9 +477,37 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("djogi-target-{tag}-{nanos}-{n}"));
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let path = temp_canon.join(format!("djogi-target-{tag}-{nanos}-{n}"));
+        let path = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &path)
+            .expect("resolve temp root");
         std::fs::create_dir_all(&path).expect("create temp root");
         path.canonicalize().expect("canonicalize temp root")
+    }
+
+    fn safe_create_workspace_dir(root: &Path, path: impl AsRef<Path>) {
+        let path = crate::migrate::common::resolve_write_workspace_path(root, path.as_ref())
+            .expect("resolve workspace dir");
+        fs::create_dir_all(&path).expect("create workspace dir");
+    }
+
+    fn safe_write_workspace_file(root: &Path, path: impl AsRef<Path>, contents: &str) {
+        crate::migrate::common::write_workspace_file(root, path.as_ref(), contents.as_bytes())
+            .expect("write workspace file");
+    }
+
+    fn safe_remove_workspace(root: &Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let root = root.canonicalize().expect("canonicalize workspace root");
+        assert!(
+            root.starts_with(&temp_canon),
+            "remove_dir_all refused: workspace path escapes temp directory"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -554,9 +582,9 @@ mod tests {
     #[test]
     fn scan_filesystem_finds_two_buckets() {
         let root = temp_root("two");
-        fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
-        fs::create_dir_all(root.join("migrations/main/_global_")).unwrap();
-        fs::create_dir_all(root.join("migrations/crud_log/audit")).unwrap();
+        safe_create_workspace_dir(&root, root.join("migrations/main/billing"));
+        safe_create_workspace_dir(&root, root.join("migrations/main/_global_"));
+        safe_create_workspace_dir(&root, root.join("migrations/crud_log/audit"));
         let buckets = scan_filesystem(&root).expect("ok");
         let expect: BTreeSet<FilesystemBucket> = [
             FilesystemBucket {
@@ -575,16 +603,16 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(buckets, expect);
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
     fn scan_filesystem_skips_files_and_hidden_dirs() {
         let root = temp_root("hidden");
-        fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
-        fs::create_dir_all(root.join("migrations/.git/objects")).unwrap();
-        fs::write(root.join("migrations/README.md"), "noop").unwrap();
-        fs::write(root.join("migrations/main/billing/V1__init.sql"), "").unwrap();
+        safe_create_workspace_dir(&root, root.join("migrations/main/billing"));
+        safe_create_workspace_dir(&root, root.join("migrations/.git/objects"));
+        safe_write_workspace_file(&root, root.join("migrations/README.md"), "noop");
+        safe_write_workspace_file(&root, root.join("migrations/main/billing/V1__init.sql"), "");
         let buckets = scan_filesystem(&root).expect("ok");
         // `.git` starts with `.`; filter rejects.
         // `README.md` is a file at top level, not a directory; skipped.
@@ -597,7 +625,7 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(buckets, expect);
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
@@ -649,9 +677,17 @@ mod tests {
     fn scan_filesystem_accepts_sdjql_extension() {
         let root = temp_root("sdjql-accept");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__test.down.sdjql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.sdjql"),
+            "SELECT 1;",
+        );
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.down.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None).unwrap();
         let bk = BucketKey {
@@ -666,8 +702,12 @@ mod tests {
     fn scan_filesystem_rejects_legacy_sql_schema_migration_files() {
         let root = temp_root("legacy-sql-reject");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__legacy.sql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__legacy.sql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None);
         assert!(
@@ -685,10 +725,14 @@ mod tests {
     fn scan_filesystem_detects_duplicate_same_version_artifacts() {
         let root = temp_root("duplicate-detect");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
+        safe_create_workspace_dir(&root, &bucket);
         // Same version, different extensions — invalid state
-        fs::write(bucket.join("V20260425010203__test.sql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
+        safe_write_workspace_file(&root, bucket.join("V20260425010203__test.sql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None);
         assert!(
@@ -706,11 +750,19 @@ mod tests {
     fn scan_filesystem_skips_down_side_for_sdjql() {
         let root = temp_root("skip-down-sdjql");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__a.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__a.down.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010204__b.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010204__b.down.sdjql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(&root, bucket.join("V20260425010203__a.sdjql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__a.down.sdjql"),
+            "SELECT 1;",
+        );
+        safe_write_workspace_file(&root, bucket.join("V20260425010204__b.sdjql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010204__b.down.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None).unwrap();
         let bk = BucketKey {

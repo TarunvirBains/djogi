@@ -158,7 +158,6 @@ pub fn resolve_field_rationale<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::path::PathBuf;
 
     /// Best-effort tempdir cleaned up on `Drop`. Inlined to avoid a
@@ -177,6 +176,8 @@ mod tests {
             let path =
                 common::resolve_maybe_missing_workspace_path(&temp_root, Path::new(&dir_name))
                     .unwrap_or_else(|_| temp_root.join(&dir_name));
+            let path = common::resolve_write_workspace_path(&temp_root, &path)
+                .expect("resolve tempdir path");
             std::fs::create_dir_all(&path).expect("create tempdir");
             TempDir(path)
         }
@@ -195,10 +196,8 @@ mod tests {
     fn write_intent(dir: &Path, contents: &str) {
         let djogi_dir =
             common::resolve_maybe_missing_workspace_path(dir, ".djogi").expect("intent dir");
-        std::fs::create_dir_all(&djogi_dir).expect("create .djogi");
-        let mut f =
-            std::fs::File::create(djogi_dir.join("intent.json")).expect("create intent.json");
-        f.write_all(contents.as_bytes()).expect("write intent.json");
+        common::write_workspace_file(dir, djogi_dir.join("intent.json"), contents.as_bytes())
+            .expect("write intent.json");
     }
 
     #[test]

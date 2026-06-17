@@ -64,10 +64,11 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        if let Err(error) = fs::remove_dir_all(&path) {
+        let vetted = path.canonicalize().unwrap_or(path.clone());
+        if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
-                path.display()
+                vetted.display()
             );
             return ExitCode::FAILURE;
         }

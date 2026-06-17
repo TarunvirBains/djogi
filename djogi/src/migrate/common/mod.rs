@@ -113,7 +113,7 @@ pub(crate) fn resolve_workspace_path_with_mode(
 }
 
 /// Resolve a workspace path for reads.
-pub(crate) fn resolve_read_workspace_path<P: AsRef<Path>>(
+pub fn resolve_read_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {
@@ -125,7 +125,7 @@ pub(crate) fn resolve_read_workspace_path<P: AsRef<Path>>(
 }
 
 /// Resolve a workspace path for writes.
-pub(crate) fn resolve_write_workspace_path<P: AsRef<Path>>(
+pub fn resolve_write_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {
@@ -166,11 +166,7 @@ pub(crate) fn ensure_within_base(base: &Path, candidate: &Path) -> io::Result<Pa
 
 /// Resolve an absolute-like `candidate` path under the canonicalized
 /// workspace root.
-#[expect(
-    dead_code,
-    reason = "reserved typed helper for future existing-path call sites"
-)]
-pub(crate) fn resolve_existing_workspace_path<P: AsRef<Path>>(
+pub fn resolve_existing_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {
@@ -183,7 +179,7 @@ pub(crate) fn resolve_existing_workspace_path<P: AsRef<Path>>(
 
 /// Resolve a relative `candidate` path under the canonicalized
 /// workspace root, allowing non-existent tail elements.
-pub(crate) fn resolve_maybe_missing_workspace_path<P: AsRef<Path>>(
+pub fn resolve_maybe_missing_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {
@@ -199,7 +195,7 @@ pub(crate) fn resolve_maybe_missing_workspace_path<P: AsRef<Path>>(
 /// This helper is intentionally narrow: it performs path resolution and
 /// containment before the read to avoid duplicating the same guard logic at
 /// each call site.
-pub(crate) fn read_workspace_file<P: AsRef<Path>>(
+pub fn read_workspace_file<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<Vec<u8>> {
@@ -207,12 +203,9 @@ pub(crate) fn read_workspace_file<P: AsRef<Path>>(
     std::fs::read(candidate)
 }
 
+#[allow(dead_code)]
 /// Resolve and read UTF-8 text from a file rooted at `workspace_root` (existing path only).
-#[expect(
-    dead_code,
-    reason = "reserved typed helper for future string-read call sites"
-)]
-pub(crate) fn read_workspace_file_to_string<P: AsRef<Path>>(
+pub fn read_workspace_file_to_string<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<String> {
@@ -222,26 +215,21 @@ pub(crate) fn read_workspace_file_to_string<P: AsRef<Path>>(
 
 /// Resolve and write bytes to a file rooted at `workspace_root`, creating missing
 /// parents if needed.
-#[expect(
-    dead_code,
-    reason = "reserved typed helper for future write call sites"
-)]
-pub(crate) fn write_workspace_file<P: AsRef<Path>>(
+#[allow(dead_code)]
+pub fn write_workspace_file<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
     bytes: &[u8],
 ) -> io::Result<PathBuf> {
+    let _ = create_workspace_parent_dirs(workspace_root, candidate.as_ref())?;
     let candidate = resolve_write_workspace_path(workspace_root, candidate)?;
-    if let Some(parent) = candidate.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
     std::fs::write(&candidate, bytes)?;
     Ok(candidate)
 }
 
 /// Resolve a candidate path and create its parent directories under
 /// a validated workspace root.
-pub(crate) fn create_workspace_parent_dirs<P: AsRef<Path>>(
+pub fn create_workspace_parent_dirs<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {

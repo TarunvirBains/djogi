@@ -719,7 +719,14 @@ pub fn parse_pending_bytes(
 /// Convenience wrapper around [`parse_pending_bytes`] for on-disk
 /// pending JSON files.
 pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
-    let bytes = fs::read(path).map_err(|e| PendingLoadError::Parse {
+    let bytes = super::common::read_workspace_file(
+        path.parent()
+            .and_then(|p| p.parent())
+            .unwrap_or_else(|| Path::new(".")),
+        path,
+    )
+    .or_else(|_| fs::read(path))
+    .map_err(|e| PendingLoadError::Parse {
         path: Some(path.to_path_buf()),
         source: serde_json::Error::io(e),
     })?;

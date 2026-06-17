@@ -778,28 +778,45 @@ pub fn ensure_phase_zero_emitted(
         // no filesystem operations run on unvalidated paths.
         ensure_parent(&up_path)?;
         ensure_parent(&pending_path)?;
+        crate::migrate::common::create_workspace_parent_dirs(workspace_root, &dir).map_err(
+            |e| AutoEmitError::Io {
+                path: dir.clone(),
+                source: e,
+            },
+        )?;
         fs::create_dir_all(&dir).map_err(|e| AutoEmitError::Io {
             path: dir.clone(),
             source: e,
         })?;
-        fs::create_dir_all(pending_database_dir(workspace_root, database)).map_err(|e| {
-            AutoEmitError::Io {
-                path: pending_database_dir(workspace_root, database),
+        let pending_dir = pending_database_dir(workspace_root, database);
+        crate::migrate::common::create_workspace_parent_dirs(workspace_root, &pending_dir)
+            .map_err(|e| AutoEmitError::Io {
+                path: pending_dir.clone(),
                 source: e,
-            }
+            })?;
+        fs::create_dir_all(&pending_dir).map_err(|e| AutoEmitError::Io {
+            path: pending_dir,
+            source: e,
         })?;
-        fs::write(&up_path, up_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+        crate::migrate::common::write_workspace_file(workspace_root, &up_path, up_sql.as_bytes())
+            .map_err(|e| AutoEmitError::Io {
             path: up_path.clone(),
             source: e,
         })?;
-        fs::write(&down_path, down_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+        crate::migrate::common::write_workspace_file(
+            workspace_root,
+            &down_path,
+            down_sql.as_bytes(),
+        )
+        .map_err(|e| AutoEmitError::Io {
             path: down_path.clone(),
             source: e,
         })?;
-        fs::write(&pending_path, &pending_bytes).map_err(|e| AutoEmitError::Io {
-            path: pending_path.clone(),
-            source: e,
-        })?;
+        crate::migrate::common::write_workspace_file(workspace_root, &pending_path, &pending_bytes)
+            .map_err(|e| AutoEmitError::Io {
+                path: pending_path.clone(),
+                source: e,
+            })?;
 
         emitted.push(EmittedPhaseZero {
             database: database.clone(),
@@ -1500,6 +1517,8 @@ mod tests {
         assert!(pending.checksum_up.starts_with("V1:"));
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
         if work.starts_with(&temp_canon) {
+            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
+                .expect("resolve workspace cleanup");
             let _ = std::fs::remove_dir_all(&work);
         }
     }
@@ -1525,6 +1544,8 @@ mod tests {
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
         if work.starts_with(&temp_canon) {
+            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
+                .expect("resolve workspace cleanup");
             let _ = std::fs::remove_dir_all(&work);
         }
     }
@@ -1644,6 +1665,8 @@ mod tests {
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
         if work.starts_with(&temp_canon) {
+            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
+                .expect("resolve workspace cleanup");
             let _ = std::fs::remove_dir_all(&work);
         }
     }
@@ -1690,6 +1713,8 @@ mod tests {
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
         if work.starts_with(&temp_canon) {
+            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
+                .expect("resolve workspace cleanup");
             let _ = std::fs::remove_dir_all(&work);
         }
     }
@@ -1714,16 +1739,28 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        fs::create_dir_all(&dir).unwrap();
+        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+            .expect("seed bucket dir");
         let pend_db_dir = pending_database_dir(&work, "main");
         assert!(pend_db_dir.starts_with(&work));
-        fs::create_dir_all(&pend_db_dir).unwrap();
+        crate::migrate::common::write_workspace_file(&work, pend_db_dir.join(".keep"), b"")
+            .expect("seed pending dir");
         let up_write = dir.join(up_filename(PHASE_ZERO_VERSION));
         assert!(up_write.starts_with(&work));
-        fs::write(&up_write, "-- existing bootstrap-migration up").unwrap();
+        crate::migrate::common::write_workspace_file(
+            &work,
+            &up_write,
+            b"-- existing bootstrap-migration up",
+        )
+        .unwrap();
         let down_write = dir.join(down_filename(PHASE_ZERO_VERSION));
         assert!(down_write.starts_with(&work));
-        fs::write(&down_write, "-- existing bootstrap-migration down").unwrap();
+        crate::migrate::common::write_workspace_file(
+            &work,
+            &down_write,
+            b"-- existing bootstrap-migration down",
+        )
+        .unwrap();
         let legacy_pending = PendingPlan {
             format_version: PENDING_FORMAT_VERSION.to_string(),
             bucket_database: "main".to_string(),
@@ -1755,10 +1792,13 @@ mod tests {
         // Confirm the existing up-sql was NOT overwritten.
         let up_check_path = dir.join(up_filename(PHASE_ZERO_VERSION));
         assert!(up_check_path.starts_with(&work));
-        let content = fs::read_to_string(&up_check_path).unwrap();
+        let content =
+            crate::migrate::common::read_workspace_file_to_string(&work, &up_check_path).unwrap();
         assert_eq!(content, "-- existing bootstrap-migration up");
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
         if work.starts_with(&temp_canon) {
+            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
+                .expect("resolve workspace cleanup");
             let _ = std::fs::remove_dir_all(&work);
         }
     }
@@ -1779,13 +1819,14 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        fs::create_dir_all(&dir).unwrap();
+        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+            .expect("seed bucket dir");
         let up_w = dir.join(up_filename(PHASE_ZERO_VERSION));
         assert!(up_w.starts_with(&work));
-        fs::write(&up_w, "-- old up").unwrap();
+        crate::migrate::common::write_workspace_file(&work, &up_w, b"-- old up").unwrap();
         let down_w = dir.join(down_filename(PHASE_ZERO_VERSION));
         assert!(down_w.starts_with(&work));
-        fs::write(&down_w, "-- old down").unwrap();
+        crate::migrate::common::write_workspace_file(&work, &down_w, b"-- old down").unwrap();
 
         let valid_legacy_pending = PendingPlan {
             format_version: PENDING_FORMAT_VERSION.to_string(),
