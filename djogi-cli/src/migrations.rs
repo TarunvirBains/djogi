@@ -4427,7 +4427,7 @@ mod tests {
         );
         let p = djogi::migrate::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve temp workspace");
-        fs::create_dir_all(&p).unwrap();
+        safe_create_workspace_dir(&temp_canon, &p);
         p.canonicalize().expect("canonicalize temp workspace")
     }
 
@@ -4469,29 +4469,49 @@ mod tests {
         let workspace_canon = workspace
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
-        let candidate = workspace_canon.join(rel);
-        let parent = candidate.parent().expect("workspace file parent");
-        let parent_canon = parent
+        djogi::migrate::write_workspace_file(&workspace_canon, rel, contents.as_bytes()).unwrap();
+    }
+
+    fn safe_write_workspace_bytes(
+        workspace: &std::path::Path,
+        path: impl AsRef<std::path::Path>,
+        contents: &[u8],
+    ) {
+        let workspace_canon = workspace
             .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
-        assert!(
-            vetted.starts_with(&workspace_canon),
-            "workspace file escapes workspace root"
-        );
-        djogi::migrate::write_workspace_file(workspace, &vetted, contents.as_bytes()).unwrap();
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        djogi::migrate::write_workspace_file(&workspace_canon, path.as_ref(), contents).unwrap();
+    }
+
+    fn safe_create_workspace_dir(workspace: &std::path::Path, path: impl AsRef<std::path::Path>) {
+        djogi::migrate::create_workspace_parent_dirs(workspace, path.as_ref().join(".keep"))
+            .unwrap();
+    }
+
+    fn safe_remove_workspace(path: &std::path::Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        if let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
+            let _ = fs::remove_dir_all(&path_canon);
+        }
+    }
+
+    fn safe_remove_workspace_file(path: &std::path::Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        if let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
+            let _ = fs::remove_file(&path_canon);
+        }
     }
 
     fn vetted_workspace_path(path: &std::path::Path, workspace: &std::path::Path) -> PathBuf {
         let workspace_canon = workspace
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
-        let parent = path.parent().expect("path parent");
-        djogi::migrate::create_workspace_parent_dirs(&workspace_canon, path).unwrap();
-        let parent_canon = parent
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        let vetted = parent_canon.join(path.file_name().expect("path file name"));
+        let vetted = djogi::migrate::resolve_write_workspace_path(&workspace_canon, path)
+            .expect("resolve vetted workspace path");
         assert!(
             vetted.starts_with(&workspace_canon),
             "path {} escapes workspace {}",
@@ -4547,7 +4567,7 @@ mod tests {
             &work,
         )
         .expect("resolve workspace cleanup");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
         sql
     }
 
@@ -4659,7 +4679,7 @@ mod tests {
         };
         let dir = djogi::migrate::bucket_dir(work, &bucket);
         djogi::migrate::create_workspace_parent_dirs(work, dir.join(".keep")).unwrap();
-        fs::create_dir_all(&dir).unwrap();
+        safe_create_workspace_dir(work, &dir);
         let up_path = vetted_workspace_path(&dir.join(djogi::migrate::up_filename(version)), work);
         djogi::migrate::write_workspace_file(work, &up_path, up.as_bytes()).unwrap();
         if let Some(down) = down {
@@ -4840,7 +4860,7 @@ mod tests {
             &ws_canon,
         );
         djogi::migrate::create_workspace_parent_dirs(&ws_canon, &plan_path).unwrap();
-        fs::create_dir_all(&plan_path).unwrap();
+        std::fs::create_dir(&plan_path).unwrap();
         let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
         load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
             .expect_err("non-NotFound sidecar read errors must surface");
@@ -4891,7 +4911,7 @@ mod tests {
             !labels.contains("empty_app"),
             "must not include directories without a snapshot: {labels:?}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// The resolved workspace flows into config loading.
@@ -4915,7 +4935,7 @@ mod tests {
             "postgres://discovered-by-workspace-flag/test"
         );
         assert_eq!(config.server.port, 1234);
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Env override precedence: A `DATABASE_URL` in the environment
@@ -4938,7 +4958,7 @@ mod tests {
             config.database.url, "postgres://from-env/test",
             "env DATABASE_URL must win over workspace Djogi.toml"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -4959,7 +4979,7 @@ mod tests {
             exit, 0,
             "no-pending apply must return before identity resolution or pool checkout"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -4999,7 +5019,7 @@ mod tests {
         );
         assert!(discovered[0].is_phase_zero);
         assert_eq!(discovered[1].plan.version, "V20260606010101__later_global");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Same-version buckets order by recorded depends_on, not path order.
@@ -5039,7 +5059,7 @@ mod tests {
         let plans = discover_pending_plans(&work).expect("discovers");
         let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
         assert_eq!(apps, ["users", "system"]);
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Buckets with no dependencies should be ordered alphabetically by app
@@ -5068,7 +5088,7 @@ mod tests {
         let plans = discover_pending_plans(&work).expect("discovers");
         let apps: Vec<&str> = plans.iter().map(|p| p.bucket.app.as_str()).collect();
         assert_eq!(apps, ["alpha", "bravo", "charlie"]);
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// depends_on referencing a bucket NOT in the current pending set is
@@ -5095,7 +5115,7 @@ mod tests {
         let plans = discover_pending_plans(&work).expect("discovers");
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].bucket.app, "system");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Same-version buckets with a dependency cycle are refused at apply time
@@ -5137,7 +5157,7 @@ mod tests {
             err.contains("alpha") && err.contains("beta") && err.contains("cycle"),
             "error should name both apps and mention cycle, got: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// A singleton pending group whose `depends_on` carries a label that
@@ -5509,7 +5529,7 @@ mod tests {
         assert_eq!(ordered_rows[0].try_get::<_, String>(0).unwrap(), "users");
         assert_eq!(ordered_rows[1].try_get::<_, String>(0).unwrap(), "system");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
 
         // Note: reverting the stage-2 topo sort in discover_pending_plans
         // (removing the order_pending_groups_by_dependencies call) would cause
@@ -5818,7 +5838,7 @@ mod tests {
             ledger_rows.len()
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     fn bucket_snapshot(
@@ -6166,7 +6186,7 @@ mod tests {
 
         let snap_path =
             vetted_workspace_path(&reconstruct_snapshot_path(&work, &bucket), &ws_canon);
-        fs::remove_file(&snap_path).expect("delete recorded snapshot");
+        safe_remove_workspace_file(&snap_path);
 
         let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
         assert_eq!(exit, 2, "missing baseline must refuse on applied bucket");
@@ -6387,7 +6407,7 @@ mod tests {
 
         let snap_path =
             vetted_workspace_path(&reconstruct_snapshot_path(&work, &bucket), &ws_canon);
-        fs::write(&snap_path, b"not json").expect("corrupt snapshot");
+        safe_write_workspace_bytes(&work, &snap_path, b"not json");
 
         let exit = run_apply_in_test_db(
             &mut ctx,
@@ -6509,11 +6529,11 @@ mod tests {
             },
         );
         let path = vetted_workspace_path(&path, &ws_canon);
-        fs::write(&path, b"{ not json").unwrap();
+        safe_write_workspace_bytes(&ws_canon, &path, b"{ not json");
 
         let err = discover_pending_plans(&work).expect_err("malformed pending must refuse");
         assert!(err.contains("parse pending JSON"));
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6537,7 +6557,7 @@ mod tests {
             err.contains("expected main from path"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6558,7 +6578,7 @@ mod tests {
             err.contains("Phase 0") && err.contains(".phase_zero"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6579,7 +6599,7 @@ mod tests {
             err.contains("expected billing from path"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6594,7 +6614,7 @@ mod tests {
             err.contains("non-canonical app filename"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6628,7 +6648,7 @@ mod tests {
             err.contains("changed after discovery"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6662,7 +6682,7 @@ mod tests {
             err.contains("changed while waiting for the workspace lock"),
             "unexpected error: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -6682,7 +6702,7 @@ mod tests {
         let locked = reconcile_pending_plans_after_lock(&work, &discovered)
             .expect("unchanged set must reconcile");
         assert_eq!(locked, discovered);
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -6707,7 +6727,7 @@ mod tests {
             ExitCode::from(1),
             "checksum-drift should reach pool connection without shared identity validation"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -6732,7 +6752,7 @@ mod tests {
             ExitCode::from(1),
             "partial-apply should reach pool connection without shared identity validation"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -6750,7 +6770,7 @@ mod tests {
             ExitCode::from(1),
             "snapshot-rebuild should reach pool connection without shared identity validation"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// `compose_with_inputs` must consume the disk-discovered buckets, not
@@ -6883,7 +6903,7 @@ mod tests {
              this proves discover_snapshot_buckets_on_disk reached the differ. \
              SQL: {up_sql}"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// A cross-bucket foreign-key cycle surfaced by `compose` must map to
@@ -7004,7 +7024,7 @@ mod tests {
             ExitCode::from(2),
             "a cross-bucket FK cycle must exit 2 (operator-actionable refusal), not 1"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// All operator-actionable compose refusals should map to exit code
@@ -7233,7 +7253,7 @@ mod tests {
             ExitCode::from(1),
             "malformed workspace Djogi.toml must surface as config load error"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── AttuneError → exit code matrix ──────────────────────────────
@@ -7372,7 +7392,7 @@ mod tests {
             )
         });
         assert_eq!(exit, ExitCode::from(2));
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -7394,7 +7414,7 @@ mod tests {
             )
         });
         assert_eq!(exit, ExitCode::from(2));
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[serial_test::serial]
@@ -7416,7 +7436,7 @@ mod tests {
             )
         });
         assert_eq!(exit, ExitCode::from(1));
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -8086,7 +8106,7 @@ mod tests {
     fn load_drift_baseline_real_corrupt_snapshot_maps_to_corrupted() {
         let work = temp_workspace("load-drift-baseline-corrupt");
         let path = work.join("schema_snapshot.json");
-        fs::write(&path, b"{ not json").unwrap();
+        safe_write_workspace_bytes(&work, &path, b"{ not json");
         let baseline = load_drift_baseline(&FakeMode::Real, &path);
         assert!(
             matches!(baseline, DriftBaseline::Corrupted(_)),
@@ -8529,7 +8549,7 @@ mod tests {
             Some("postgres://user:pass@localhost:5432/myapp_crud"),
             "crud_log pending plans must route through the crud_log database URL"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -8554,7 +8574,7 @@ mod tests {
         let err = resolve_apply_target_urls(&discovered, &cfg)
             .expect_err("pathless app URL must refuse a derived pending database");
         assert!(err.contains("analytics"), "unexpected error: {err}");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── Stage 4D: CLI cleanup identity-free Phase 0 guard ─────────────
@@ -8633,7 +8653,7 @@ mod tests {
     fn classify_phase_zero_for_cleanup_refuses_stale_replay_plan() {
         let work = temp_workspace("stale_cleanup");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         // Write a stale replay plan JSON.
         let replay = CliReplayPlan {
@@ -8649,11 +8669,11 @@ mod tests {
                 }],
             }],
         };
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_string(&replay).unwrap().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8673,14 +8693,14 @@ mod tests {
         let msg = refusal.unwrap();
         assert!(msg.contains("generated-stale"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_allows_current_replay_plan() {
         let work = temp_workspace("current_cleanup");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         // Write a current (production) replay plan JSON.
         let replay = CliReplayPlan {
@@ -8696,11 +8716,11 @@ mod tests {
                 }],
             }],
         };
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_string(&replay).unwrap().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8718,14 +8738,14 @@ mod tests {
             "identity-free Phase 0 should be allowed by cleanup guard; got: {refusal:?}"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_seed_capable_replay_plan() {
         let work = temp_workspace("seed_cleanup_replay_plan");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let replay = CliReplayPlan {
             format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
@@ -8740,11 +8760,11 @@ mod tests {
                 }],
             }],
         };
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_string(&replay).unwrap().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8760,14 +8780,14 @@ mod tests {
         let msg = refusal.expect("seed-capable replay plan must refuse");
         assert!(msg.contains("seed-capable"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_markerless_seed_replay_plan() {
         let work = temp_workspace("markerless_seed_cleanup_replay_plan");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let replay = CliReplayPlan {
             format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
@@ -8782,11 +8802,11 @@ mod tests {
                 }],
             }],
         };
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_string(&replay).unwrap().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8802,14 +8822,14 @@ mod tests {
         let msg = refusal.expect("markerless seed replay plan must refuse");
         assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_cte_seed_dml_replay_plan() {
         let work = temp_workspace("cte_seed_cleanup_replay_plan");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let replay = CliReplayPlan {
             format_version: CLI_REPLAY_PLAN_FORMAT_VERSION.to_string(),
@@ -8827,11 +8847,11 @@ mod tests {
                 }],
             }],
         };
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join("V00000000000000__phase_zero_bootstrap.plan.json"),
-            serde_json::to_string(&replay).unwrap(),
-        )
-        .unwrap();
+            serde_json::to_string(&replay).unwrap().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8847,18 +8867,18 @@ mod tests {
         let msg = refusal.expect("CTE seed replay plan must refuse");
         assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_fallback_sql_file() {
         let work = temp_workspace("fallback_cleanup");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let up_sql = current_production_phase_zero_sql("fallback_sql");
         let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
-        fs::write(bucket_dir.join(&up_filename), up_sql).unwrap();
+        safe_write_workspace_bytes(&work, bucket_dir.join(&up_filename), up_sql.as_bytes());
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8876,17 +8896,21 @@ mod tests {
             "identity-free Phase 0 fallback SQL should be allowed; got: {refusal:?}"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_seed_capable_fallback_sql_file() {
         let work = temp_workspace("seed_cleanup_fallback");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
-        fs::write(bucket_dir.join(&up_filename), seed_capable_phase_zero_sql()).unwrap();
+        safe_write_workspace_bytes(
+            &work,
+            bucket_dir.join(&up_filename),
+            seed_capable_phase_zero_sql().as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8902,21 +8926,21 @@ mod tests {
         let msg = refusal.expect("seed-capable fallback SQL must refuse");
         assert!(msg.contains("seed-capable"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_markerless_seed_fallback_sql_file() {
         let work = temp_workspace("markerless_seed_cleanup_fallback");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join(&up_filename),
-            markerless_seed_phase_zero_sql("markerless_seed_fallback"),
-        )
-        .unwrap();
+            markerless_seed_phase_zero_sql("markerless_seed_fallback").as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8932,24 +8956,25 @@ mod tests {
         let msg = refusal.expect("markerless seed fallback SQL must refuse");
         assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn classify_phase_zero_for_cleanup_refuses_copy_from_seed_fallback_sql_file() {
         let work = temp_workspace("copy_seed_cleanup_fallback");
         let bucket_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
 
         let up_filename = djogi::migrate::up_filename(djogi::migrate::PHASE_ZERO_VERSION);
-        fs::write(
+        safe_write_workspace_bytes(
+            &work,
             bucket_dir.join(&up_filename),
             phase_zero_with_seed_statement(
                 "copy_seed_cleanup_fallback",
                 "COPY \"heer\".\"heer_ranj_node_state\" (\"node_id\") FROM STDIN;",
-            ),
-        )
-        .unwrap();
+            )
+            .as_bytes(),
+        );
 
         let bucket = djogi::migrate::BucketKey {
             database: "main".to_string(),
@@ -8965,7 +8990,7 @@ mod tests {
         let msg = refusal.expect("COPY FROM seed fallback SQL must refuse");
         assert!(msg.contains("seed-dml"), "refusal reason: {msg}");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── per-app version-stream test ─────────────────────────────────
