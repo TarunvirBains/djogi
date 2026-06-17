@@ -259,9 +259,31 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        fs::create_dir_all(tmp.join("abc123def456")).unwrap();
-        fs::create_dir_all(tmp.join("789abc012def")).unwrap();
-        fs::write(tmp.join("not-a-dir"), b"ignored").unwrap();
+        fs::create_dir_all(&tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
+
+        let safe_create_dir = |rel: &str| {
+            let candidate = tmp.join(rel);
+            assert!(
+                candidate.starts_with(&tmp),
+                "refusing to create dir outside test root: {}",
+                candidate.display()
+            );
+            fs::create_dir_all(&candidate).unwrap();
+        };
+        let safe_write = |rel: &str, contents: &[u8]| {
+            let candidate = tmp.join(rel);
+            assert!(
+                candidate.starts_with(&tmp),
+                "refusing to write outside test root: {}",
+                candidate.display()
+            );
+            fs::write(candidate, contents).unwrap();
+        };
+
+        safe_create_dir("abc123def456");
+        safe_create_dir("789abc012def");
+        safe_write("not-a-dir", b"ignored");
 
         let ids = read_cache_ids(&tmp).expect("read");
         assert!(ids.contains("abc123def456"));
