@@ -97,9 +97,7 @@ use super::ledger::compute_checksum;
 use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
 use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
-use super::target::{
-    bucket_dir, pending_database_dir, pending_json_path, phase_zero_pending_json_path,
-};
+use super::target::{bucket_dir, pending_json_path, phase_zero_pending_json_path};
 
 /// Default node id used by single-node deployments.
 /// Matches the value `heeranjid::postgres_schema::seed_default_node`
@@ -778,26 +776,6 @@ pub fn ensure_phase_zero_emitted(
         // no filesystem operations run on unvalidated paths.
         ensure_parent(&up_path)?;
         ensure_parent(&pending_path)?;
-        crate::migrate::common::create_workspace_parent_dirs(workspace_root, &dir).map_err(
-            |e| AutoEmitError::Io {
-                path: dir.clone(),
-                source: e,
-            },
-        )?;
-        fs::create_dir_all(&dir).map_err(|e| AutoEmitError::Io {
-            path: dir.clone(),
-            source: e,
-        })?;
-        let pending_dir = pending_database_dir(workspace_root, database);
-        crate::migrate::common::create_workspace_parent_dirs(workspace_root, &pending_dir)
-            .map_err(|e| AutoEmitError::Io {
-                path: pending_dir.clone(),
-                source: e,
-            })?;
-        fs::create_dir_all(&pending_dir).map_err(|e| AutoEmitError::Io {
-            path: pending_dir,
-            source: e,
-        })?;
         crate::migrate::common::write_workspace_file(workspace_root, &up_path, up_sql.as_bytes())
             .map_err(|e| AutoEmitError::Io {
             path: up_path.clone(),
@@ -1462,7 +1440,8 @@ mod tests {
         if !root.starts_with(&temp_dir_canon) {
             panic!("test workspace path escaped temp directory");
         }
-        std::fs::create_dir_all(&root).expect("create workspace root");
+        crate::migrate::common::create_workspace_parent_dirs(&temp_dir_canon, root.join(".keep"))
+            .expect("create workspace root");
         let lock_path = root.join(crate::migrate::guard::LOCK_FILE_NAME);
         let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(5))
             .expect("acquire workspace lock");
@@ -1516,10 +1495,10 @@ mod tests {
         assert_eq!(pending.bucket_app, "");
         assert!(pending.checksum_up.starts_with("V1:"));
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
-                .expect("resolve workspace cleanup");
-            let _ = std::fs::remove_dir_all(&work);
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
         }
     }
 
@@ -1543,10 +1522,10 @@ mod tests {
             "second run must be a no-op once the bootstrap migration exists"
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
-                .expect("resolve workspace cleanup");
-            let _ = std::fs::remove_dir_all(&work);
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
         }
     }
 
@@ -1664,10 +1643,10 @@ mod tests {
             "cross-database extension bled into crud_log"
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
-                .expect("resolve workspace cleanup");
-            let _ = std::fs::remove_dir_all(&work);
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
         }
     }
 
@@ -1712,10 +1691,10 @@ mod tests {
             "bootstrap-migration up SQL must auto-install btree_gist: {up}",
         );
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
-                .expect("resolve workspace cleanup");
-            let _ = std::fs::remove_dir_all(&work);
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
         }
     }
 
@@ -1741,7 +1720,7 @@ mod tests {
         assert!(dir.starts_with(&work));
         crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
             .expect("seed bucket dir");
-        let pend_db_dir = pending_database_dir(&work, "main");
+        let pend_db_dir = crate::migrate::target::pending_database_dir(&work, "main");
         assert!(pend_db_dir.starts_with(&work));
         crate::migrate::common::write_workspace_file(&work, pend_db_dir.join(".keep"), b"")
             .expect("seed pending dir");
@@ -1796,10 +1775,10 @@ mod tests {
             crate::migrate::common::read_workspace_file_to_string(&work, &up_check_path).unwrap();
         assert_eq!(content, "-- existing bootstrap-migration up");
         let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            crate::migrate::common::resolve_write_workspace_path(&temp_canon, &work)
-                .expect("resolve workspace cleanup");
-            let _ = std::fs::remove_dir_all(&work);
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
         }
     }
 

@@ -1720,18 +1720,19 @@ mod tests {
         let p = temp_dir_canon.join(format!("djogi-repair-{tag}-{nanos}-{n}"));
         let p = super::common::resolve_write_workspace_path(&temp_dir_canon, &p)
             .expect("resolve temp repair path");
-        fs::create_dir_all(&p).unwrap();
+        super::common::create_workspace_parent_dirs(&temp_dir_canon, p.join(".keep"))
+            .expect("create temp repair path");
         p
     }
 
     fn safe_remove_dir_all(path: &Path) {
         if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-            && let Ok(path_canon) = path.canonicalize()
-            && !path_canon.starts_with(&temp_canon)
+            && let Ok(path_canon) =
+                super::common::resolve_existing_workspace_path(&temp_canon, path)
         {
-            panic!("remove_dir_all refused: path escapes temp directory");
-        }
-        if let Ok(path_canon) = path.canonicalize() {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!("remove_dir_all refused: path escapes temp directory");
+            }
             let _ = fs::remove_dir_all(path_canon);
         }
     }
@@ -1849,7 +1850,6 @@ mod tests {
         let dir = super::super::target::bucket_dir(root, bucket);
         let dir_canon = fs::canonicalize(&dir).unwrap_or_else(|_| {
             super::common::create_workspace_parent_dirs(root, dir.join(".keep")).unwrap();
-            fs::create_dir_all(&dir).unwrap();
             fs::canonicalize(&dir).unwrap()
         });
         let root_canon = fs::canonicalize(root).unwrap();

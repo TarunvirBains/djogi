@@ -1963,7 +1963,8 @@ mod tests {
         let p = temp_canon.join(format!("djogi-reset-{tag}-{nanos}-{n}"));
         let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve temp workspace path");
-        fs::create_dir_all(&p).unwrap();
+        crate::migrate::common::create_workspace_parent_dirs(&temp_canon, p.join(".keep"))
+            .expect("create temp root");
         let p_canon = std::fs::canonicalize(&p)
             .unwrap_or_else(|_| panic!("workspace {} must be canonicalizable", p.display()));
         assert!(
@@ -1974,8 +1975,9 @@ mod tests {
     }
 
     fn safe_remove_workspace(path: &Path) {
-        if let (Ok(temp_canon), Ok(path_canon)) =
-            (std::env::temp_dir().canonicalize(), path.canonicalize())
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+            && let Ok(path_canon) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, path)
         {
             if !path_canon.starts_with(&temp_canon) {
                 panic!("remove_dir_all refused: workspace path escapes temp directory");
@@ -1987,7 +1989,8 @@ mod tests {
     fn safe_create_workspace_dir(root: &Path, path: impl AsRef<Path>) {
         let path = crate::migrate::common::resolve_write_workspace_path(root, path.as_ref())
             .expect("resolve workspace dir");
-        fs::create_dir_all(&path).expect("create workspace dir");
+        crate::migrate::common::create_workspace_parent_dirs(root, path.join(".keep"))
+            .expect("create workspace dir");
     }
 
     fn safe_write_workspace_file(root: &Path, path: impl AsRef<Path>, contents: &str) {
