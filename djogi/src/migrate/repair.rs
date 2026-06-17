@@ -1841,7 +1841,7 @@ mod tests {
 
     fn write_phase_zero_artifact(root: &Path, bucket: &BucketKey, sql: &str) {
         let dir = super::super::target::bucket_dir(root, bucket);
-        let dir_canon = fs::canonicalize(dir).unwrap_or_else(|_| {
+        let dir_canon = fs::canonicalize(&dir).unwrap_or_else(|_| {
             fs::create_dir_all(&dir).unwrap();
             fs::canonicalize(&dir).unwrap()
         });

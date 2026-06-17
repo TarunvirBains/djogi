@@ -2002,14 +2002,14 @@ mod tests {
     }
 
     fn safe_remove_workspace(path: &Path) {
-        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-            if let Ok(path_canon) = path.canonicalize() {
-                if !path_canon.starts_with(&temp_canon) {
-                    panic!("remove_dir_all refused: workspace path escapes temp directory");
-                }
+        if let (Ok(temp_canon), Ok(path_canon)) =
+            (std::env::temp_dir().canonicalize(), path.canonicalize())
+        {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!("remove_dir_all refused: workspace path escapes temp directory");
             }
+            let _ = fs::remove_dir_all(&path_canon);
         }
-        let _ = fs::remove_dir_all(path);
     }
 
     fn req<'a>(
@@ -2392,6 +2392,8 @@ mod tests {
         // Lay down two buckets with two up files each.
         let main_global = work.join(format!("{MIGRATIONS_DIR}/main/{GLOBAL_BUCKET_DIRNAME}"));
         let main_billing = work.join(format!("{MIGRATIONS_DIR}/main/billing"));
+        fs::create_dir_all(&main_global).unwrap();
+        fs::create_dir_all(&main_billing).unwrap();
         let mg_canon = main_global.canonicalize().unwrap_or_else(|_| {
             panic!("main_global {} must be canonicalizable", main_global.display())
         });
@@ -2400,8 +2402,6 @@ mod tests {
             panic!("main_billing {} must be canonicalizable", main_billing.display())
         });
         assert!(mb_canon.starts_with(&work_canon), "main_billing escapes workspace");
-        fs::create_dir_all(&main_global).unwrap();
-        fs::create_dir_all(&main_billing).unwrap();
         fs::write(
             main_global.join("V20260301000000__init.sdjql"),
             "-- up\nCREATE TABLE foo (id BIGINT PRIMARY KEY);",
@@ -2488,11 +2488,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000000__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2545,11 +2545,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000001__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2638,11 +2638,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2673,11 +2673,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2742,11 +2742,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000012__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
@@ -2782,11 +2782,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000013__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
@@ -2832,11 +2832,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000004__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2880,11 +2880,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000005__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2918,11 +2918,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000016__phase_zero_like";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE SCHEMA IF NOT EXISTS heeranjid;",
@@ -2951,11 +2951,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000006__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "-- AddTable widgets\n\
@@ -3016,11 +3016,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000008__pk_flip_call";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n",
@@ -3048,11 +3048,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000009__pk_flip_do";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "DO $$\n\
@@ -3084,11 +3084,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000010__pk_flip_partitioned";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
@@ -3125,11 +3125,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000011__pk_flip_call_invalid";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
         let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
         fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
         fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
@@ -3161,11 +3161,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000007__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
 
         let up_sql = "-- AddTable widgets\n\
              CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
@@ -3214,11 +3214,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000014__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
 
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3275,11 +3275,11 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000015__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
             panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
         });
         assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
-        fs::create_dir_all(&bucket_dir).unwrap();
 
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3624,6 +3624,10 @@ mod tests {
         let root = temp_root("sdjql-discovery");
         let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
         fs::create_dir_all(&bucket).unwrap();
+        let bucket_canon = fs::canonicalize(&bucket)
+            .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
+        let root_canon = fs::canonicalize(&root).expect("canonicalize root");
+        assert!(bucket_canon.starts_with(&root_canon), "bucket escapes workspace");
 
         fs::write(
             bucket.join("V20260501000000__new.sdjql"),
@@ -3660,6 +3664,10 @@ mod tests {
         let root = temp_root("legacy-sql-reject");
         let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
         fs::create_dir_all(&bucket).unwrap();
+        let bucket_canon = fs::canonicalize(&bucket)
+            .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
+        let root_canon = fs::canonicalize(&root).expect("canonicalize root");
+        assert!(bucket_canon.starts_with(&root_canon), "bucket escapes workspace");
 
         fs::write(
             bucket.join("V20260301000000__legacy.sql"),
