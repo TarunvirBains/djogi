@@ -62,7 +62,7 @@ use super::segment::{Segment, SegmentKind, plan_delta};
 use super::snapshot::SnapshotError;
 use super::snapshot::serialize_snapshot;
 use super::sql::{OperationSql, lower_delta};
-use super::target::{bucket_dir, pending_database_dir, pending_json_path, snapshot_path};
+use super::target::{bucket_dir, pending_database_dir, pending_json_path, pending_root, snapshot_path};
 
 /// One restore point captured before a tmp file was promoted onto a
 /// destination that already had bytes on it.
@@ -1834,7 +1834,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                     &delta.bucket,
                 )?;
             }
-            check_pending_path_compatible(&pending_path, &delta.bucket)?;
+            check_pending_path_compatible(req.workspace_root, &pending_path, &delta.bucket)?;
 
             // Stage tmp siblings.
             ensure_parent(&up_path)?;
@@ -2564,6 +2564,34 @@ fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathB
     use std::sync::atomic::{AtomicU64, Ordering};
     static BACKUP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    // Canonicalize both paths and verify they share the same parent.
+    // This prevents symlink-based path traversal: the tmp file was
+    // created as a sibling of final_path in atomic_write, so after
+    // canonicalization they must still reside in the same directory.
+    let tmp_canonical = tmp.canonicalize().map_err(|e| ComposeError::Io {
+        path: tmp.to_path_buf(),
+        source: e,
+    })?;
+    let final_parent = final_path.parent().ok_or_else(|| ComposeError::Io {
+        path: final_path.to_path_buf(),
+        source: io::Error::other("final_path has no parent directory"),
+    })?;
+    // Canonicalize the parent (the directory exists; ensure_parent
+    // was called before atomic_write). If final_path itself exists,
+    // canonicalize it too to catch symlinked files.
+    let final_parent_canonical = final_parent.canonicalize().map_err(|e| ComposeError::Io {
+        path: final_parent.to_path_buf(),
+        source: e,
+    })?;
+    if tmp_canonical.parent() != Some(&final_parent_canonical) {
+        return Err(ComposeError::Io {
+            path: tmp.to_path_buf(),
+            source: io::Error::other(
+                "tmp and final_path do not share the same parent directory after canonicalization",
+            ),
+        });
+    }
+
     let backup_path = if final_path.exists() {
         let pid = std::process::id();
         let n = BACKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2612,11 +2640,32 @@ pub fn prepare_pending_dirs(workspace_root: &Path, bucket: &BucketKey) -> Result
 }
 
 fn check_pending_path_compatible(
+    workspace_root: &Path,
     pending_path: &Path,
     bucket: &BucketKey,
 ) -> Result<(), ComposeError> {
     if !pending_path.exists() {
         return Ok(());
+    }
+    // Canonicalize the existing pending path and verify it resolves
+    // within the expected target/djogi_pending/ directory. This prevents
+    // symlink-based traversal where a pending file outside the staging
+    // area could be loaded and misinterpreted.
+    let pending_canonical = pending_path.canonicalize().map_err(|e| ComposeError::Io {
+        path: pending_path.to_path_buf(),
+        source: e,
+    })?;
+    let pending_root = pending_root(workspace_root);
+    // The pending_root directory itself may not exist yet (first compose),
+    // but the file does exist (we just checked). Canonicalize the closest
+    // existing ancestor to validate containment.
+    if !pending_canonical.starts_with(&pending_root) {
+        return Err(ComposeError::Io {
+            path: pending_path.to_path_buf(),
+            source: io::Error::other(
+                "pending path resolves outside the expected target/djogi_pending/ directory",
+            ),
+        });
     }
     let pending = load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
         path: pending_path.to_path_buf(),
