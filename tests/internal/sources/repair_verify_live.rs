@@ -77,75 +77,74 @@ fn temp_workspace_root(stub: &str) -> PathBuf {
 }
 
 fn safe_remove_workspace(path: &std::path::Path) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            if !path_canon.starts_with(&temp_canon) {
-                panic!(
-                    "remove_dir_all refused: workspace path {} escapes temp directory",
-                    path.display()
-                );
-            }
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+        && !path_canon.starts_with(&temp_canon)
+    {
+        panic!(
+            "remove_dir_all refused: workspace path {} escapes temp directory",
+            path.display()
+        );
     }
     let _ = std::fs::remove_dir_all(path);
 }
 
 fn safe_remove_file(path: &std::path::Path) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            if !path_canon.starts_with(&temp_canon) {
-                panic!(
-                    "remove_file refused: path {} escapes temp directory",
-                    path.display()
-                );
-            }
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+        && !path_canon.starts_with(&temp_canon)
+    {
+        panic!(
+            "remove_file refused: path {} escapes temp directory",
+            path.display()
+        );
     }
     let _ = std::fs::remove_file(path);
 }
 
 fn safe_read(path: &std::path::Path) -> Vec<u8> {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            assert!(
-                path_canon.starts_with(&temp_canon),
-                "read refused: path {} escapes temp directory",
-                path.display()
-            );
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+    {
+        assert!(
+            path_canon.starts_with(&temp_canon),
+            "read refused: path {} escapes temp directory",
+            path.display()
+        );
     }
-    std::fs::read(path).expect(&format!("read {}", path.display()))
+    std::fs::read(path).unwrap_or_else(|_| panic!("read {}", path.display()))
 }
 
 fn safe_create_bucket_dir(
     path: &std::path::Path,
 ) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            assert!(
-                path_canon.starts_with(&temp_canon),
-                "create_dir_all refused: bucket path {} escapes temp directory",
-                path.display()
-            );
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+    {
+        assert!(
+            path_canon.starts_with(&temp_canon),
+            "create_dir_all refused: bucket path {} escapes temp directory",
+            path.display()
+        );
     }
-    std::fs::create_dir_all(path).expect(&format!("create bucket dir {}", path.display()));
+    std::fs::create_dir_all(path)
+        .unwrap_or_else(|_| panic!("create bucket dir {}", path.display()));
 }
 
 fn safe_write(
     path: &std::path::Path,
     contents: impl AsRef<[u8]>,
 ) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            assert!(
-                path_canon.starts_with(&temp_canon),
-                "write refused: path {} escapes temp directory",
-                path.display()
-            );
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+    {
+        assert!(
+            path_canon.starts_with(&temp_canon),
+            "write refused: path {} escapes temp directory",
+            path.display()
+        );
     }
-    std::fs::write(path, contents).expect(&format!("write {}", path.display()));
+    std::fs::write(path, contents).unwrap_or_else(|_| panic!("write {}", path.display()));
 }
 
 fn temp_lock() -> PathBuf {
@@ -3107,11 +3106,11 @@ async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::
     let version = "V20260612000000__add_widgets";
 
     safe_write(
-        bucket_directory.join(up_filename(version)),
+        &bucket_directory.join(up_filename(version)),
         COMPOSED_WIDGETS_UP_FIXTURE,
     );
     safe_write(
-        bucket_directory.join(down_filename(version)),
+        &bucket_directory.join(down_filename(version)),
         COMPOSED_WIDGETS_DOWN_FIXTURE,
     );
 
@@ -3197,8 +3196,8 @@ async fn repair_checksum_drift_reconciles_legacy_fallback_row(mut ctx: djogi::Dj
 
     let up_sql = COMPOSED_WIDGETS_UP_FIXTURE;
     let down_sql = COMPOSED_WIDGETS_DOWN_FIXTURE;
-    safe_write(bucket_directory.join(up_filename(version)), up_sql);
-    safe_write(bucket_directory.join(down_filename(version)), down_sql);
+    safe_write(&bucket_directory.join(up_filename(version)), up_sql);
+    safe_write(&bucket_directory.join(down_filename(version)), down_sql);
 
     let plan = transactional_plan(vec![op("Legacy fallback path", up_sql, down_sql)]);
     let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
@@ -3280,8 +3279,8 @@ async fn repair_checksum_drift_reconciles_non_composed_legacy_down_only_row(
     let version = "V20260612000002__non_composed_legacy";
     let up_sql = "CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n";
     let down_sql = "DROP TABLE \"widgets\";\n";
-    safe_write(bucket_directory.join(up_filename(version)), up_sql);
-    safe_write(bucket_directory.join(down_filename(version)), down_sql);
+    safe_write(&bucket_directory.join(up_filename(version)), up_sql);
+    safe_write(&bucket_directory.join(down_filename(version)), down_sql);
 
     let plan = transactional_plan(vec![op("Legacy non-composed fallback path", up_sql, down_sql)]);
     let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
@@ -3615,7 +3614,7 @@ async fn repair_resume_phase_zero_refuses_seed_capable_materialized_stream_even_
     let identity_free_sql =
         djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
     safe_write(
-        bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
+        &bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
         &identity_free_sql,
     );
 
@@ -3731,7 +3730,7 @@ async fn repair_resume_phase_zero_allows_identity_free_materialized_stream(
     let identity_free_sql =
         djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
     safe_write(
-        bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
+        &bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
         &identity_free_sql,
     );
 

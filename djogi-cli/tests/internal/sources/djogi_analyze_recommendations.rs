@@ -330,10 +330,10 @@ async fn analyze_healthy_small_table_returns_healthy(mut ctx: djogi::DjogiContex
         "expected Healthy for a 50-row table with no deletes; row: {row}",
     );
 
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if workspace.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&workspace);
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && workspace.starts_with(&temp_canon)
+    {
+        let _ = fs::remove_dir_all(&workspace);
     }
 }
 
@@ -406,10 +406,10 @@ async fn analyze_high_dead_tuple_ratio_returns_vacuum_needed(mut ctx: djogi::Djo
         "dead_tup_ratio must be finite and >0.2; got {ratio}",
     );
 
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if workspace.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&workspace);
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && workspace.starts_with(&temp_canon)
+    {
+        let _ = fs::remove_dir_all(&workspace);
     }
 }
 
@@ -478,9 +478,9 @@ async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djog
         "reason must echo the override threshold; got: {reason}",
     );
 
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if workspace.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&workspace);
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && workspace.starts_with(&temp_canon)
+    {
+        let _ = fs::remove_dir_all(&workspace);
     }
 }

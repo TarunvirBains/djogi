@@ -894,13 +894,13 @@ fn collect_checksum_parity_issues(
                 source: err,
             })?;
     let scan_dir = migrations_root(workspace_root).join(database);
-    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir) {
-        if scan_dir.exists() {
-            return Err(ResetError::MigrationScanFailed {
-                path: scan_dir.clone(),
-                source,
-            });
-        }
+    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir)
+        && scan_dir.exists()
+    {
+        return Err(ResetError::MigrationScanFailed {
+            path: scan_dir.clone(),
+            source,
+        });
     }
     let on_disk = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
@@ -963,13 +963,13 @@ fn push_checksum_issue_if_needed(
     path: &Path,
     ws_canon: &Path,
 ) -> Result<(), ResetError> {
-    if let Err(source) = common::ensure_within_base(ws_canon, path) {
-        if path.exists() {
-            return Err(ResetError::SqlReadFailed {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
+    if let Err(source) = common::ensure_within_base(ws_canon, path)
+        && path.exists()
+    {
+        return Err(ResetError::SqlReadFailed {
+            path: path.to_path_buf(),
+            source,
+        });
     }
     let on_disk_sql = match fs::read_to_string(path) {
         Ok(sql) => sql,
@@ -1250,13 +1250,13 @@ fn scan_committed_migrations(
                 source: err,
             })?;
     let scan_dir = migrations_root(workspace_root).join(database);
-    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir) {
-        if scan_dir.exists() {
-            return Err(ResetError::MigrationScanFailed {
-                path: scan_dir.clone(),
-                source,
-            });
-        }
+    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir)
+        && scan_dir.exists()
+    {
+        return Err(ResetError::MigrationScanFailed {
+            path: scan_dir.clone(),
+            source,
+        });
     }
     let with_paths = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {

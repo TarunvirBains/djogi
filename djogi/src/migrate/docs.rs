@@ -1031,10 +1031,10 @@ mod tests {
         let report = generate_docs_with_provider(&EmptyProvider, &dir, None)
             .expect("empty provider renders README only");
         assert_eq!(report.models_rendered, 0);
-        if let Ok(dir_canon) = std::fs::canonicalize(&dir) {
-            if dir_canon.starts_with(&temp_canon) {
-                let _ = std::fs::remove_dir_all(&dir);
-            }
+        if let Ok(dir_canon) = std::fs::canonicalize(&dir)
+            && dir_canon.starts_with(&temp_canon)
+        {
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 }

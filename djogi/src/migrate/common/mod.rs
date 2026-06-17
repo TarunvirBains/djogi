@@ -137,6 +137,10 @@ pub(crate) fn resolve_write_workspace_path<P: AsRef<Path>>(
 }
 
 /// Resolve and validate a write path's parent directory.
+#[expect(
+    dead_code,
+    reason = "reserved typed helper for future workspace-parent call sites"
+)]
 pub(crate) fn resolve_parent_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
@@ -162,6 +166,10 @@ pub(crate) fn ensure_within_base(base: &Path, candidate: &Path) -> io::Result<Pa
 
 /// Resolve an absolute-like `candidate` path under the canonicalized
 /// workspace root.
+#[expect(
+    dead_code,
+    reason = "reserved typed helper for future existing-path call sites"
+)]
 pub(crate) fn resolve_existing_workspace_path<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
@@ -200,6 +208,10 @@ pub(crate) fn read_workspace_file<P: AsRef<Path>>(
 }
 
 /// Resolve and read UTF-8 text from a file rooted at `workspace_root` (existing path only).
+#[expect(
+    dead_code,
+    reason = "reserved typed helper for future string-read call sites"
+)]
 pub(crate) fn read_workspace_file_to_string<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
@@ -210,6 +222,10 @@ pub(crate) fn read_workspace_file_to_string<P: AsRef<Path>>(
 
 /// Resolve and write bytes to a file rooted at `workspace_root`, creating missing
 /// parents if needed.
+#[expect(
+    dead_code,
+    reason = "reserved typed helper for future write call sites"
+)]
 pub(crate) fn write_workspace_file<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,

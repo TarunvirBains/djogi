@@ -1723,12 +1723,11 @@ mod tests {
     }
 
     fn safe_remove_dir_all(path: &Path) {
-        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-            if let Ok(path_canon) = path.canonicalize() {
-                if !path_canon.starts_with(&temp_canon) {
-                    panic!("remove_dir_all refused: path escapes temp directory");
-                }
-            }
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+            && let Ok(path_canon) = path.canonicalize()
+            && !path_canon.starts_with(&temp_canon)
+        {
+            panic!("remove_dir_all refused: path escapes temp directory");
         }
         let _ = fs::remove_dir_all(path);
     }

@@ -188,12 +188,11 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
 }
 
 fn safe_remove_workspace(path: &Path) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if let Ok(path_canon) = path.canonicalize() {
-            if !path_canon.starts_with(&temp_canon) {
-                panic!("remove workspace refused: path escapes temp directory");
-            }
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = path.canonicalize()
+        && !path_canon.starts_with(&temp_canon)
+    {
+        panic!("remove workspace refused: path escapes temp directory");
     }
     let _ = fs::remove_dir_all(path);
 }

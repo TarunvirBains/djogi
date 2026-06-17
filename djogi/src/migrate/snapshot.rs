@@ -132,7 +132,7 @@ pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), Snapsh
         source: e,
     })?;
     let path_canon =
-        common::ensure_within_base(&parent_canon, &path).map_err(|err| SnapshotError::Io {
+        common::ensure_within_base(&parent_canon, path).map_err(|err| SnapshotError::Io {
             path: Some(path.to_path_buf()),
             source: err,
         })?;

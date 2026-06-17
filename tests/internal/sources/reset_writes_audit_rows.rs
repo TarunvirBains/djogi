@@ -362,10 +362,10 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
 
     // 6. Cleanup.
     drop_virgin_db(&virgin_db).await;
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if work.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&work);
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && work.starts_with(&temp_canon)
+    {
+        let _ = fs::remove_dir_all(&work);
     }
 }
 
@@ -424,10 +424,9 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     drop(client);
     let _ = driver.await;
     drop_virgin_db(&virgin_db).await;
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-        if work.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&work);
-        }
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && work.starts_with(&temp_canon)
+    {
+        let _ = fs::remove_dir_all(&work);
     }
 }
-

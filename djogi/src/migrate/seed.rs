@@ -377,13 +377,13 @@ pub fn discover_seeds(
         source: err,
     })?;
     let dir = workspace_root.join(SEEDS_DIRNAME).join(database);
-    if let Err(source) = common::ensure_within_base(&ws_canon, &dir) {
-        if dir.exists() {
-            return Err(SeedError::Io {
-                path: dir.clone(),
-                source,
-            });
-        }
+    if let Err(source) = common::ensure_within_base(&ws_canon, &dir)
+        && dir.exists()
+    {
+        return Err(SeedError::Io {
+            path: dir.clone(),
+            source,
+        });
     }
 
     let mut out: Vec<DiscoveredSeed> = Vec::new();
@@ -719,13 +719,13 @@ async fn run_seeds_inner(
     let mut entries: Vec<SeedReportEntry> = Vec::with_capacity(discovered.len());
 
     for seed in discovered {
-        if let Err(source) = common::ensure_within_base(&ws_canon, &seed.path) {
-            if seed.path.exists() {
-                return Err(SeedError::Io {
-                    path: seed.path.clone(),
-                    source,
-                });
-            }
+        if let Err(source) = common::ensure_within_base(&ws_canon, &seed.path)
+            && seed.path.exists()
+        {
+            return Err(SeedError::Io {
+                path: seed.path.clone(),
+                source,
+            });
         }
         let body_bytes = fs::read(&seed.path).map_err(|err| SeedError::Io {
             path: seed.path.clone(),
@@ -875,12 +875,11 @@ mod tests {
     }
 
     fn safe_remove_workspace(path: &Path) {
-        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
-            if let Ok(path_canon) = path.canonicalize() {
-                if !path_canon.starts_with(&temp_canon) {
-                    panic!("remove_dir_all refused: workspace path escapes temp directory");
-                }
-            }
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+            && let Ok(path_canon) = path.canonicalize()
+            && !path_canon.starts_with(&temp_canon)
+        {
+            panic!("remove_dir_all refused: workspace path escapes temp directory");
         }
         let _ = fs::remove_dir_all(path);
     }

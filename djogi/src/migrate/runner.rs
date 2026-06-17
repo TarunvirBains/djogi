@@ -6666,10 +6666,10 @@ mod tests {
         }
 
         let temp_dir = std::env::temp_dir();
-        if let Ok(temp_canon) = temp_dir.canonicalize() {
-            if cleanup_path.starts_with(&temp_canon) {
-                let _ = std::fs::remove_file(&cleanup_path);
-            }
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+        {
+            let _ = std::fs::remove_file(&cleanup_path);
         }
     }
 
@@ -6713,10 +6713,10 @@ mod tests {
         );
 
         let temp_dir = std::env::temp_dir();
-        if let Ok(temp_canon) = temp_dir.canonicalize() {
-            if cleanup_path.starts_with(&temp_canon) {
-                let _ = std::fs::remove_file(&cleanup_path);
-            }
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+        {
+            let _ = std::fs::remove_file(&cleanup_path);
         }
     }
 
@@ -6853,10 +6853,10 @@ mod tests {
         );
 
         let temp_dir = std::env::temp_dir();
-        if let Ok(temp_canon) = temp_dir.canonicalize() {
-            if cleanup_path.starts_with(&temp_canon) {
-                let _ = std::fs::remove_file(&cleanup_path);
-            }
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+        {
+            let _ = std::fs::remove_file(&cleanup_path);
         }
     }
 
