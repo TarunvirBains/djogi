@@ -798,7 +798,8 @@ mod tests {
         );
         let p = djogi::migrate::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve workspace path");
-        fs::create_dir_all(&p).unwrap();
+        djogi::migrate::create_workspace_parent_dirs(&temp_canon, p.join(".keep"))
+            .expect("create workspace root");
         p.canonicalize().expect("canonicalize workspace")
     }
 
@@ -806,8 +807,7 @@ mod tests {
         let temp_canon = std::env::temp_dir()
             .canonicalize()
             .expect("canonicalize temp dir");
-        let path_canon = path
-            .canonicalize()
+        let path_canon = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
         if !path_canon.starts_with(&temp_canon) {
             panic!("remove_dir_all refused: workspace path escapes temp directory");
@@ -819,14 +819,7 @@ mod tests {
         let workspace_canon = workspace
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
-        let candidate = workspace_canon.join(rel);
-        let vetted = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &candidate)
-            .expect("resolve workspace file");
-        assert!(
-            vetted.starts_with(&workspace_canon),
-            "workspace file escapes workspace root"
-        );
-        djogi::migrate::write_workspace_file(workspace, &vetted, contents.as_bytes()).unwrap();
+        djogi::migrate::write_workspace_file(&workspace_canon, rel, contents.as_bytes()).unwrap();
     }
 
     /// `db reset` without node identity must refuse before any prompt,

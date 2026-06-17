@@ -83,16 +83,15 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir = std::env::temp_dir();
-    let path = temp_dir.join(format!("djogi-audit-replay-{label}-{stamp}"));
-    if let Ok(temp_canon) = temp_dir.canonicalize() {
-        assert!(
-            path.starts_with(&temp_canon),
-            "workspace path must stay within temp directory"
-        );
-    }
-    fs::create_dir_all(&path).expect("create workspace root");
-    path
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path = temp_canon.join(format!("djogi-audit-replay-{label}-{stamp}"));
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_canon, &path)
+        .expect("resolve workspace root");
+    djogi::migrate::create_workspace_parent_dirs(&temp_canon, path.join(".keep"))
+        .expect("create workspace root");
+    path.canonicalize().expect("canonicalize workspace root")
 }
 
 fn lock_for(workspace: &Path) -> WorkspaceGuard {
@@ -363,9 +362,9 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
     // 6. Cleanup.
     drop_virgin_db(&virgin_db).await;
     if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && work.starts_with(&temp_canon)
+        && let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, &work)
     {
-        let _ = fs::remove_dir_all(&work);
+        let _ = fs::remove_dir_all(vetted);
     }
 }
 
@@ -425,8 +424,8 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     let _ = driver.await;
     drop_virgin_db(&virgin_db).await;
     if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && work.starts_with(&temp_canon)
+        && let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, &work)
     {
-        let _ = fs::remove_dir_all(&work);
+        let _ = fs::remove_dir_all(vetted);
     }
 }

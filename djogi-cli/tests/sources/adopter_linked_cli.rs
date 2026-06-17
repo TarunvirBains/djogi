@@ -126,7 +126,8 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
-    std::fs::create_dir_all(&canon)
+    let anchor = if canon.starts_with(&temp) { &temp } else { &cwd };
+    djogi::migrate::create_workspace_parent_dirs(anchor, canon.join(".keep"))
         .unwrap_or_else(|err| panic!("create workspace {}: {err}", canon.display()));
     let canon = canon
         .canonicalize()
@@ -141,17 +142,19 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
 
 fn safe_write_workspace_file(workspace: &Path, rel: &str, contents: &str) {
     let workspace_canon = safe_workspace(workspace);
-    let candidate = workspace_canon.join(rel);
-    let parent = candidate.parent().expect("workspace file parent");
-    let parent_canon = parent
-        .canonicalize()
-        .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-    let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
-    assert!(
-        vetted.starts_with(&workspace_canon),
-        "workspace file escapes workspace root"
-    );
-    std::fs::write(vetted, contents).expect("write workspace file");
+    djogi::migrate::write_workspace_file(&workspace_canon, rel, contents.as_bytes())
+        .expect("write workspace file");
+}
+
+fn safe_copy_workspace_file(workspace: &Path, rel: &str, src: &Path) -> PathBuf {
+    let workspace_canon = safe_workspace(workspace);
+    let target = djogi::migrate::resolve_write_workspace_path(&workspace_canon, rel)
+        .unwrap_or_else(|err| panic!("resolve target {}: {err}", rel));
+    djogi::migrate::create_workspace_parent_dirs(&workspace_canon, &target)
+        .unwrap_or_else(|err| panic!("create parent for {}: {err}", target.display()));
+    std::fs::copy(src, &target)
+        .unwrap_or_else(|err| panic!("copy {} -> {}: {err}", src.display(), target.display()));
+    target
 }
 
 /// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
@@ -204,14 +207,12 @@ fn copy_elephant_tracker_workspace() -> PathBuf {
     copy_dir_recursive(&src.join("src"), &dst.join("src"));
     copy_dir_recursive(&src.join("seeds"), &dst.join("seeds"));
     for file in ["Cargo.toml", "Djogi.toml", "README.md"] {
-        let target = dst.join(file);
-        std::fs::copy(src.join(file), target).expect("copy elephant-tracker file");
+        let _ = safe_copy_workspace_file(&dst, file, &src.join(file));
     }
-    std::fs::copy(workspace_root().join("Cargo.lock"), dst.join("Cargo.lock"))
-        .expect("copy workspace Cargo.lock");
+    let _ = safe_copy_workspace_file(&dst, "Cargo.lock", &workspace_root().join("Cargo.lock"));
 
-    let manifest = dst.join("Cargo.toml");
-    let manifest_text = std::fs::read_to_string(&manifest).expect("read copied Cargo.toml");
+    let manifest_text =
+        djogi::migrate::read_workspace_file_to_string(&dst, "Cargo.toml").expect("read copied Cargo.toml");
     let patched = manifest_text
         .replace(
             "path = \"../../djogi\"",
@@ -222,7 +223,8 @@ fn copy_elephant_tracker_workspace() -> PathBuf {
             &format!("path = \"{}\"", workspace_root().join("djogi-cli").display()),
         );
     if patched != manifest_text {
-        std::fs::write(&manifest, patched).expect("rewrite copied Cargo.toml");
+        djogi::migrate::write_workspace_file(&dst, "Cargo.toml", patched.as_bytes())
+            .expect("rewrite copied Cargo.toml");
     }
 
     dst
@@ -274,13 +276,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     let src_root = src
         .canonicalize()
         .unwrap_or_else(|err| panic!("canonicalize source root {}: {err}", src.display()));
-    let mut stack = vec![(src_root.clone(), dst.to_path_buf())];
+    let dst_root = safe_workspace(dst);
+    let mut stack = vec![(src_root.clone(), dst_root.clone())];
     while let Some((src_dir, dst_dir)) = stack.pop() {
-        assert!(
-            std::fs::create_dir_all(&dst_dir).is_ok(),
-            "create dir {}",
-            dst_dir.display()
-        );
+        djogi::migrate::create_workspace_parent_dirs(&dst_root, dst_dir.join(".keep"))
+            .unwrap_or_else(|err| panic!("create dir {}: {err}", dst_dir.display()));
         let entries = match std::fs::read_dir(&src_dir) {
             Ok(entries) => entries,
             Err(err) => panic!("read_dir {}: {err}", src_dir.display()),
@@ -316,11 +316,15 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
                     src_file_canon.display(),
                     src_root.display()
                 );
-                if let Err(err) = std::fs::copy(&src_file_canon, &dst_path) {
+                let vetted_dst = djogi::migrate::resolve_write_workspace_path(&dst_root, &dst_path)
+                    .unwrap_or_else(|err| panic!("resolve dst {}: {err}", dst_path.display()));
+                djogi::migrate::create_workspace_parent_dirs(&dst_root, &vetted_dst)
+                    .unwrap_or_else(|err| panic!("create dst parent {}: {err}", vetted_dst.display()));
+                if let Err(err) = std::fs::copy(&src_file_canon, &vetted_dst) {
                     panic!(
                         "copy {} -> {}: {err}",
                         src_file_canon.display(),
-                        dst_path.display()
+                        vetted_dst.display()
                     );
                 }
             }
@@ -356,7 +360,13 @@ fn rebind_fixture_workspace_paths(workspace: &Path, repo_root: &Path) {
             .replace("path = \"../../../../../djogi\"", &format!("path = \"{}\"", djogi_path.display()))
             .replace("path = \"../../../../../djogi-cli\"", &format!("path = \"{}\"", djogi_cli_path.display()))
             .replace("path = \"../../../../../djogi-macros\"", &format!("path = \"{}\"", djogi_macros_path.display()));
-        if patched != text && let Err(err) = std::fs::write(&manifest_canon, patched) {
+        if patched != text
+            && let Err(err) = djogi::migrate::write_workspace_file(
+                &workspace_canon,
+                &manifest_canon,
+                patched.as_bytes(),
+            )
+        {
             panic!("write {}: {err}", manifest_canon.display());
         }
     }
@@ -1341,8 +1351,7 @@ fn nocargo_compose_without_cargo_or_source() {
 
     // Copy binary + config to an isolated temp dir (no source code there).
     let runtime_dir = safe_workspace(&temp_workspace("nocargo"));
-    let copied_bin = runtime_dir.join("djogi");
-    std::fs::copy(&bin, &copied_bin).expect("copy djogi binary");
+    let copied_bin = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1386,8 +1395,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
 
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let runtime_dir = safe_workspace(&temp_workspace("container-apply"));
-    let copied = runtime_dir.join("djogi");
-    std::fs::copy(&bin, &copied).unwrap();
+    let copied = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
 
     #[cfg(unix)]
     {
