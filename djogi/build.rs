@@ -174,14 +174,18 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     };
     let migrations_root = workspace_root.join("migrations");
     let pending_root = workspace_root.join("target").join("djogi_pending");
+    let safe_read_dir = |dir: &Path| -> Option<std::fs::ReadDir> {
+        let dir = std::fs::canonicalize(dir).ok()?;
+        if !dir.starts_with(&ws_canon) {
+            return None;
+        }
+        std::fs::read_dir(&dir).ok()
+    };
 
     // Walk migrations/<database>/<app>/schema_snapshot.json files.
     let mut snapshots: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
     let mut filesystem: Vec<(String, String)> = Vec::new();
-    if let Ok(migrations_root) = std::fs::canonicalize(&migrations_root)
-        && migrations_root.starts_with(&ws_canon)
-        && let Ok(entries) = std::fs::read_dir(&migrations_root)
-    {
+    if let Some(entries) = safe_read_dir(&migrations_root) {
         for db_entry in entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -193,7 +197,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                 continue;
             }
             let db_path = db_entry.path();
-            let Ok(app_entries) = std::fs::read_dir(&db_path) else {
+            let Some(app_entries) = safe_read_dir(&db_path) else {
                 continue;
             };
             for app_entry in app_entries.flatten() {
@@ -236,10 +240,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     // plan, so future-version pending JSON surfaces a version-mismatch
     // warning instead of falling through to garbage outcome classification.
     let mut pendings: BTreeMap<(String, String), PendingArtifacts> = BTreeMap::new();
-    if let Ok(pending_root) = std::fs::canonicalize(&pending_root)
-        && pending_root.starts_with(&ws_canon)
-        && let Ok(db_entries) = std::fs::read_dir(&pending_root)
-    {
+    if let Some(db_entries) = safe_read_dir(&pending_root) {
         for db_entry in db_entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -250,7 +251,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
             if !is_acceptable_dir_name(database.as_bytes()) {
                 continue;
             }
-            let Ok(file_entries) = std::fs::read_dir(db_entry.path()) else {
+            let Some(file_entries) = safe_read_dir(&db_entry.path()) else {
                 continue;
             };
             for f in file_entries.flatten() {
@@ -261,7 +262,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                     if f.file_name().to_str() != Some(".phase_zero") {
                         continue;
                     }
-                    let Ok(phase_zero_entries) = std::fs::read_dir(f.path()) else {
+                    let Some(phase_zero_entries) = safe_read_dir(&f.path()) else {
                         continue;
                     };
                     for phase_zero_file in phase_zero_entries.flatten() {

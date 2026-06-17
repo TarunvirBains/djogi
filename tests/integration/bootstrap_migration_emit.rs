@@ -75,7 +75,7 @@ fn safe_remove_workspace(path: &Path) {
         if !path_canon.starts_with(&temp_canon) {
             panic!("remove_dir_all refused: workspace path escapes temp directory");
         }
-        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
+        let _ = fs::remove_dir_all(&path_canon);
     }
 }
 

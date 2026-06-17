@@ -25,7 +25,7 @@ pub fn run(dry_run: bool) -> ExitCode {
     let cache_root =
         validate_cache_root_within_home(&home, &cache_root).unwrap_or_else(|e| panic!("{e}"));
 
-    if !cache_root.exists() {
+    if fs::metadata(&cache_root).is_err() {
         println!(
             "gc-target-cache: cache root {} does not exist; nothing to do",
             cache_root.display()
@@ -70,8 +70,10 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        let vetted =
-            validate_cache_root_within_home(&home, &path).unwrap_or_else(|e| panic!("{e}"));
+        let parent = path.parent().expect("cache entry parent");
+        let parent_canon = fs::canonicalize(parent).unwrap_or_else(|e| panic!("{e}"));
+        let vetted = parent_canon.join(path.file_name().expect("cache entry name"));
+        assert!(vetted.starts_with(&cache_root));
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
@@ -271,17 +273,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        let temp_canon = std::env::temp_dir().canonicalize().unwrap();
+        assert!(tmp.starts_with(&temp_canon));
         fs::create_dir_all(&tmp).unwrap();
         let tmp = tmp.canonicalize().unwrap();
 
         let safe_create_dir = |rel: &str| {
             let candidate = tmp.join(rel);
-            let candidate = candidate
-                .parent()
-                .unwrap_or(&tmp)
-                .canonicalize()
-                .unwrap()
-                .join(candidate.file_name().unwrap());
             assert!(
                 candidate.starts_with(&tmp),
                 "refusing to create dir outside test root: {}",
@@ -296,7 +294,7 @@ mod tests {
                 "refusing to write outside test root: {}",
                 candidate.display()
             );
-            fs::write(candidate, contents).unwrap();
+            fs::write(&candidate, contents).unwrap();
         };
 
         safe_create_dir("abc123def456");

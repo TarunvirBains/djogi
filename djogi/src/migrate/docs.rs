@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs::{self, canonicalize};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -161,26 +161,11 @@ pub fn render_inventory(
     // influenced by symlinks or relative components in the caller-
     // supplied `output_root`. The canonicalized path is used for all
     // subsequent file operations.
-    let output_root_canon = if let Ok(path) = canonicalize(output_root) {
-        path
-    } else {
-        // The directory doesn't exist yet (will be created below).
-        // Canonicalize the parent and rejoin the final component so
-        // the resulting root is fully resolved.
-        let parent = output_root.parent().ok_or_else(|| DocsError::Io {
+    let output_root_canon = crate::migrate::common::canonicalize_with_parent_fallback(output_root)
+        .map_err(|e| DocsError::Io {
             path: output_root.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no parent"),
-        })?;
-        let parent_canon = canonicalize(parent).map_err(|e| DocsError::Io {
-            path: parent.to_path_buf(),
             source: e,
         })?;
-        let name = output_root.file_name().ok_or_else(|| DocsError::Io {
-            path: output_root.to_path_buf(),
-            source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no file name"),
-        })?;
-        parent_canon.join(name)
-    };
 
     // Containment check: the resolved output root must reside under
     // the current working directory (or temp dir for tests). This
@@ -680,7 +665,7 @@ mod tests {
         let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
         let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve temp docs root");
-        crate::migrate::common::create_workspace_dir_all(&temp_canon, &p).unwrap();
+        fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
             assert!(
                 p_canon.starts_with(&temp_canon),

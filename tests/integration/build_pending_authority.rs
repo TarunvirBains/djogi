@@ -29,12 +29,7 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
-    let anchor = if canon.starts_with(&temp) {
-        &temp
-    } else {
-        &cwd
-    };
-    djogi::migrate::create_workspace_dir_all(anchor, &canon).unwrap();
+    fs::create_dir_all(&canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
@@ -51,14 +46,25 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let p = std::env::temp_dir().join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let p = temp_canon.join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
+    assert!(p.starts_with(&temp_canon));
     fs::create_dir_all(&p).unwrap();
     safe_workspace(&p)
 }
 
 fn vetted_child_path(path: &Path) -> PathBuf {
     let parent = path.parent().expect("path parent");
-    let _ = safe_workspace(parent);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let cwd_canon = std::env::current_dir()
+        .expect("current directory exists")
+        .canonicalize()
+        .expect("canonicalize current directory");
+    assert!(parent.starts_with(&temp_canon) || parent.starts_with(&cwd_canon));
     let parent = safe_workspace(parent);
     parent.join(path.file_name().expect("path filename"))
 }

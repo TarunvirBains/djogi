@@ -719,13 +719,28 @@ pub fn parse_pending_bytes(
 /// Convenience wrapper around [`parse_pending_bytes`] for on-disk
 /// pending JSON files.
 pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
-    let bytes = super::common::read_workspace_file(
-        path.parent()
-            .and_then(|p| p.parent())
-            .unwrap_or_else(|| Path::new(".")),
-        path,
-    )
-    .map_err(|e| PendingLoadError::Parse {
+    let base = path
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or_else(|| Path::new("."));
+    let base = base.canonicalize().map_err(|e| PendingLoadError::Parse {
+        path: Some(path.to_path_buf()),
+        source: serde_json::Error::io(e),
+    })?;
+    let path = path.canonicalize().map_err(|e| PendingLoadError::Parse {
+        path: Some(path.to_path_buf()),
+        source: serde_json::Error::io(e),
+    })?;
+    if !path.starts_with(&base) {
+        return Err(PendingLoadError::Parse {
+            path: Some(path),
+            source: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "pending path escapes base",
+            )),
+        });
+    }
+    let bytes = fs::read(&path).map_err(|e| PendingLoadError::Parse {
         path: Some(path.to_path_buf()),
         source: serde_json::Error::io(e),
     })?;

@@ -99,13 +99,13 @@ fn safe_remove_file(path: &std::path::Path) {
         .expect("canonicalize temp dir");
     let vetted = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
         .unwrap_or_else(|_| path.to_path_buf());
-    if vetted.exists() && !vetted.starts_with(&temp_canon) {
+    if std::fs::metadata(&vetted).is_ok() && !vetted.starts_with(&temp_canon) {
         panic!(
             "remove_file refused: path {} escapes temp directory",
             path.display()
         );
     }
-    let _ = djogi::migrate::remove_workspace_file(&temp_canon, &vetted);
+    let _ = std::fs::remove_file(&vetted);
 }
 
 fn safe_read(path: &std::path::Path) -> Vec<u8> {

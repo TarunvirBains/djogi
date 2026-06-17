@@ -1348,6 +1348,7 @@ mod tests {
         let root = temp_canon.join(format!("djogi-check-secrets-fs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         assert!(root.starts_with(&temp_canon));
+        assert!(root.starts_with(&temp_canon));
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         fs::create_dir_all(root.join(".github/workflows")).unwrap();
