@@ -253,23 +253,32 @@ fn rebind_fixture_workspace_paths(workspace: &Path, repo_root: &Path) {
     let djogi_path = repo_root.join("djogi");
     let djogi_cli_path = repo_root.join("djogi-cli");
     let djogi_macros_path = repo_root.join("djogi-macros");
+    let workspace_canon = workspace
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
 
     for rel in ["tracker/Cargo.toml", "billing/Cargo.toml", "bin/Cargo.toml"] {
         let manifest = workspace.join(rel);
-        if !manifest.is_file() {
+        if !manifest.exists() {
+            continue;
+        }
+        let manifest_canon = manifest
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize manifest {}: {err}", manifest.display()));
+        if !manifest_canon.starts_with(&workspace_canon) || !manifest_canon.is_file() {
             continue;
         }
 
-        let text = match std::fs::read_to_string(&manifest) {
+        let text = match std::fs::read_to_string(&manifest_canon) {
             Ok(content) => content,
-            Err(err) => panic!("read {}: {err}", manifest.display()),
+            Err(err) => panic!("read {}: {err}", manifest_canon.display()),
         };
         let patched = text
             .replace("path = \"../../../../../djogi\"", &format!("path = \"{}\"", djogi_path.display()))
             .replace("path = \"../../../../../djogi-cli\"", &format!("path = \"{}\"", djogi_cli_path.display()))
             .replace("path = \"../../../../../djogi-macros\"", &format!("path = \"{}\"", djogi_macros_path.display()));
-        if patched != text && let Err(err) = std::fs::write(&manifest, patched) {
-            panic!("write {}: {err}", manifest.display());
+        if patched != text && let Err(err) = std::fs::write(&manifest_canon, patched) {
+            panic!("write {}: {err}", manifest_canon.display());
         }
     }
 }
