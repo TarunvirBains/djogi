@@ -17,6 +17,7 @@ mod live;
 mod migrations;
 mod schema;
 mod verify;
+mod wrapper;
 
 // Re-export CLI types so the thin `main.rs` shim and downstream crates
 // can reference them without duplicating definitions.
@@ -27,6 +28,7 @@ pub use crate::live::*;
 pub use crate::migrations::*;
 pub use crate::schema::*;
 pub use crate::verify::*;
+pub use crate::wrapper::run_cargo_wrapper_from_env;
 
 // Re-export proc macros so adopters write `djogi_cli::djogi_main!(…)` and
 // `djogi_cli::link_anchor!()` instead of depending on `djogi-macros` directly.
