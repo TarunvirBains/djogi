@@ -4463,28 +4463,6 @@ mod tests {
         f()
     }
 
-    /// Guard: verify a path (if it exists on disk) is contained within the
-    /// workspace. Used in test code to satisfy rust/path-injection containment
-    /// requirements before file operations.
-    fn guard_contained(path: &std::path::Path, workspace: &std::path::Path) {
-        let workspace_canon = workspace
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
-        let path_canon = path.canonicalize().unwrap_or_else(|_| {
-            let parent = path.parent().expect("path parent");
-            let parent_canon = parent
-                .canonicalize()
-                .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-            parent_canon.join(path.file_name().expect("path file name"))
-        });
-        assert!(
-            path_canon.starts_with(&workspace_canon),
-            "path {} escapes workspace {}",
-            path.display(),
-            workspace.display()
-        );
-    }
-
     fn safe_write_workspace_file(workspace: &std::path::Path, rel: &str, contents: &str) {
         let workspace_canon = workspace
             .canonicalize()
@@ -4842,10 +4820,11 @@ mod tests {
         let version = "V20260612000005__badplan";
         let bucket =
             write_fallback_migration_files(&work, version, "CREATE TABLE t (id BIGINT);\n", None);
-        let plan_path =
-            djogi::migrate::bucket_dir(&work, &bucket).join(format!("{version}.plan.json"));
+        let plan_path = vetted_workspace_path(
+            &djogi::migrate::bucket_dir(&work, &bucket).join(format!("{version}.plan.json")),
+            &ws_canon,
+        );
         fs::create_dir_all(&plan_path).unwrap();
-        guard_contained(&plan_path, &ws_canon);
         let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
         load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
             .expect_err("non-NotFound sidecar read errors must surface");
@@ -4862,22 +4841,26 @@ mod tests {
         // the OLD app's snapshot. The current model inventory
         // would NOT have this bucket because the app moved to
         // `invoicing` via `#[app(renamed_from = "billing")]`.
-        let billing_dir = work.join("migrations/main/billing");
-        fs::create_dir_all(&billing_dir).unwrap();
-        guard_contained(&billing_dir, &ws_canon);
-        fs::write(billing_dir.join("schema_snapshot.json"), "{}").unwrap();
+        let billing_path = vetted_workspace_path(
+            &work.join("migrations/main/billing/schema_snapshot.json"),
+            &ws_canon,
+        );
+        fs::create_dir_all(billing_path.parent().expect("billing snapshot parent")).unwrap();
+        fs::write(&billing_path, "{}").unwrap();
         // A second bucket — the global one for the same database
         // exists too. Exercise the multi-bucket walk.
-        let global_dir = work.join("migrations/main/_global_");
-        fs::create_dir_all(&global_dir).unwrap();
-        guard_contained(&global_dir, &ws_canon);
-        fs::write(global_dir.join("schema_snapshot.json"), "{}").unwrap();
+        let global_path = vetted_workspace_path(
+            &work.join("migrations/main/_global_/schema_snapshot.json"),
+            &ws_canon,
+        );
+        fs::create_dir_all(global_path.parent().expect("global snapshot parent")).unwrap();
+        fs::write(&global_path, "{}").unwrap();
         // A third on-disk directory WITHOUT a snapshot file — must
         // not be reported (we only union buckets that actually
         // shipped a snapshot).
-        let no_snap_dir = work.join("migrations/main/empty_app");
-        fs::create_dir_all(&no_snap_dir).unwrap();
-        guard_contained(&no_snap_dir, &ws_canon);
+        let no_snap_dir =
+            vetted_workspace_path(&work.join("migrations/main/empty_app/.keep"), &ws_canon);
+        fs::create_dir_all(no_snap_dir.parent().expect("empty app dir")).unwrap();
 
         let buckets = discover_snapshot_buckets_on_disk(&work);
         let labels: std::collections::BTreeSet<&str> =
@@ -5398,10 +5381,9 @@ mod tests {
             .expect("construct per-test database URL from DATABASE_URL");
 
         // Write minimal workspace config for run_apply.
-        let config_path = work.join("Djogi.toml");
-        guard_contained(&config_path, &ws_canon);
+        let config_path = vetted_workspace_path(&work.join("Djogi.toml"), &ws_canon);
         fs::write(
-            config_path,
+            &config_path,
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
@@ -5735,10 +5717,9 @@ mod tests {
             .expect("construct per-test database URL from DATABASE_URL");
 
         // Write minimal workspace config for run_apply.
-        let config_path = work.join("Djogi.toml");
-        guard_contained(&config_path, &ws_canon);
+        let config_path = vetted_workspace_path(&work.join("Djogi.toml"), &ws_canon);
         fs::write(
-            config_path,
+            &config_path,
             format!(
                 "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
@@ -6165,8 +6146,8 @@ mod tests {
             time::OffsetDateTime::UNIX_EPOCH + time::Duration::days(19732),
         );
 
-        let snap_path = reconstruct_snapshot_path(&work, &bucket);
-        guard_contained(&snap_path, &ws_canon);
+        let snap_path =
+            vetted_workspace_path(&reconstruct_snapshot_path(&work, &bucket), &ws_canon);
         fs::remove_file(&snap_path).expect("delete recorded snapshot");
 
         let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
@@ -6386,8 +6367,8 @@ mod tests {
         );
         let second_version = report.composed_buckets[0].version.clone();
 
-        let snap_path = reconstruct_snapshot_path(&work, &bucket);
-        guard_contained(&snap_path, &ws_canon);
+        let snap_path =
+            vetted_workspace_path(&reconstruct_snapshot_path(&work, &bucket), &ws_canon);
         fs::write(&snap_path, b"not json").expect("corrupt snapshot");
 
         let exit = run_apply_in_test_db(
@@ -6509,9 +6490,7 @@ mod tests {
                 app: String::new(),
             },
         );
-        let parent_dir = path.parent().unwrap();
-        fs::create_dir_all(parent_dir).unwrap();
-        guard_contained(parent_dir, &ws_canon);
+        let path = vetted_workspace_path(&path, &ws_canon);
         fs::write(&path, b"{ not json").unwrap();
 
         let err = discover_pending_plans(&work).expect_err("malformed pending must refuse");

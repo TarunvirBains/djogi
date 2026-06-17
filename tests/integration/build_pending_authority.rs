@@ -141,7 +141,8 @@ fn write_hidden_phase_zero_pending(work: &std::path::Path, pending_schema: &Appl
 /// Write a committed snapshot for the synthetic global bucket.
 fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema) {
     let work = safe_workspace(work);
-    let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
+    let snapshot_path =
+        vetted_child_path(&work.join("migrations/main/_global_/schema_snapshot.json"));
     fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
     fs::write(
         &snapshot_path,
