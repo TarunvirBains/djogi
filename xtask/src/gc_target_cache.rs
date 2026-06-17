@@ -90,14 +90,58 @@ pub fn run(dry_run: bool) -> ExitCode {
 }
 
 fn resolve_cache_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())?;
+    let home = PathBuf::from(home);
+
     if let Ok(value) = std::env::var(CACHE_ROOT_ENV)
         && !value.is_empty()
     {
-        return Ok(PathBuf::from(value));
+        let candidate = PathBuf::from(value);
+        return validate_cache_root_within_home(&home, &candidate);
     }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())?;
-    Ok(PathBuf::from(home).join(DEFAULT_CACHE_SUBPATH))
+
+    let default_root = home.join(DEFAULT_CACHE_SUBPATH);
+    validate_cache_root_within_home(&home, &default_root)
+}
+
+fn validate_cache_root_within_home(home: &Path, candidate: &Path) -> Result<PathBuf, String> {
+    let canonical_home = fs::canonicalize(home)
+        .map_err(|error| format!("failed to canonicalize HOME {}: {error}", home.display()))?;
+
+    // Canonicalize when possible (existing paths). For non-existing paths, validate parent.
+    let canonical_candidate = match fs::canonicalize(candidate) {
+        Ok(path) => path,
+        Err(_) => {
+            let parent = candidate.parent().ok_or_else(|| {
+                format!(
+                    "invalid cache root {}; no parent directory to validate",
+                    candidate.display()
+                )
+            })?;
+            let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+                format!(
+                    "failed to canonicalize cache root parent {}: {error}",
+                    parent.display()
+                )
+            })?;
+            canonical_parent.join(
+                candidate
+                    .file_name()
+                    .ok_or_else(|| format!("invalid cache root {}", candidate.display()))?,
+            )
+        }
+    };
+
+    if !canonical_candidate.starts_with(&canonical_home) {
+        return Err(format!(
+            "cache root {} is outside HOME {}",
+            candidate.display(),
+            canonical_home.display()
+        ));
+    }
+
+    Ok(candidate.to_path_buf())
 }
 
 fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
