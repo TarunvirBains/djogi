@@ -12,19 +12,25 @@ mod build_script;
 /// Canonicalize a workspace path and verify it stays within a safe anchor
 /// (temp directory or current working directory). Panics on containment violation.
 fn safe_workspace(workspace: &Path) -> PathBuf {
-    let canon = workspace.canonicalize().unwrap_or_else(|_| {
-        let parent = workspace.parent().expect("workspace path has a parent");
-        let parent_canon = parent
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        parent_canon.join(
-            workspace
-                .file_name()
-                .expect("workspace path has a file name"),
-        )
-    });
-    let temp = std::env::temp_dir();
-    let cwd = std::env::current_dir().expect("current directory exists");
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let cwd = std::env::current_dir()
+        .expect("current directory exists")
+        .canonicalize()
+        .expect("canonicalize current directory");
+    let parent = workspace.parent().expect("workspace parent");
+    let parent_canon = parent
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace parent {}: {err}", parent.display()));
+    let canon = parent_canon.join(workspace.file_name().expect("workspace path filename"));
+    assert!(
+        canon.starts_with(&temp) || canon.starts_with(&cwd),
+        "workspace path {} is outside temp directory and current directory",
+        canon.display()
+    );
+    fs::create_dir_all(&canon).unwrap();
+    let canon = canon.canonicalize().expect("canonicalize workspace");
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
         "workspace path {} is outside temp directory and current directory",
@@ -43,6 +49,13 @@ fn temp_workspace(tag: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
     fs::create_dir_all(&p).unwrap();
     safe_workspace(&p)
+}
+
+fn vetted_child_path(path: &Path) -> PathBuf {
+    let parent = path.parent().expect("path parent");
+    fs::create_dir_all(parent).unwrap();
+    let parent = safe_workspace(parent);
+    parent.join(path.file_name().expect("path filename"))
 }
 
 fn schema(tag: &str) -> AppliedSchema {
@@ -82,7 +95,7 @@ fn write_pending_with_format_version(
     snapshot: &AppliedSchema,
     format_version: &str,
 ) {
-    let _ = safe_workspace(path.parent().expect("pending path has a parent"));
+    let path = vetted_child_path(path);
     let pending = PendingPlan {
         format_version: format_version.to_string(),
         bucket_database: database.to_string(),
@@ -238,15 +251,18 @@ fn build_collect_diagnostics_hidden_phase_zero_without_model_inventory_or_snapsh
 fn malformed_inventory_writers() -> Vec<MalformedInventoryCase> {
     vec![
         ("non_json", |p: &std::path::Path| {
+            let p = vetted_child_path(p);
             fs::write(p, b"not json at all").unwrap();
         }),
         ("non_object_array", |p: &std::path::Path| {
+            let p = vetted_child_path(p);
             fs::write(p, b"[]").unwrap();
         }),
         // A directory at the inventory path makes `read_to_string`
         // return a non-`NotFound` I/O error — the load-bearing
         // distinction from a legitimately-missing file.
         ("unreadable_directory", |p: &std::path::Path| {
+            let p = vetted_child_path(p);
             fs::create_dir_all(p).unwrap();
         }),
     ]

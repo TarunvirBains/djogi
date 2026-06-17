@@ -86,10 +86,31 @@ fn write_committed_sql(
     up_sql: &str,
     down_sql: &str,
 ) {
-    let dir = bucket_dir(workspace, bucket);
+    let workspace_canon = workspace
+        .canonicalize()
+        .expect("canonicalize workspace");
+    let dir = bucket_dir(&workspace_canon, bucket);
     fs::create_dir_all(&dir).expect("create bucket dir");
-    fs::write(dir.join(up_filename(version)), up_sql).expect("write up sql");
-    fs::write(dir.join(down_filename(version)), down_sql).expect("write down sql");
+    let dir = dir.canonicalize().expect("canonicalize bucket dir");
+    assert!(dir.starts_with(&workspace_canon), "bucket dir escapes workspace");
+    let up_path = dir.join(up_filename(version));
+    let down_path = dir.join(down_filename(version));
+    fs::write(up_path, up_sql).expect("write up sql");
+    fs::write(down_path, down_sql).expect("write down sql");
+}
+
+fn safe_remove_workspace(workspace: &Path) {
+    let workspace_canon = workspace
+        .canonicalize()
+        .expect("canonicalize workspace for cleanup");
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    assert!(
+        workspace_canon.starts_with(&temp_canon),
+        "workspace cleanup escapes temp dir"
+    );
+    let _ = fs::remove_dir_all(&workspace_canon);
 }
 
 fn snapshot_path(workspace: &Path, bucket: &BucketKey) -> PathBuf {
@@ -203,7 +224,7 @@ async fn rollback_success_rolls_back_and_reprojects_snapshot(mut ctx: djogi::Djo
         "snapshot rebuild should write schema_snapshot.json"
     );
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -235,7 +256,7 @@ async fn rollback_dry_run_previews_without_mutation(mut ctx: djogi::DjogiContext
     );
     assert_eq!(ledger_status(&mut ctx, version).await, "applied");
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -271,7 +292,7 @@ async fn rollback_lossy_down_refuses_without_allow_data_loss(mut ctx: djogi::Djo
     );
     assert_eq!(ledger_status(&mut ctx, version).await, "applied");
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -311,7 +332,7 @@ async fn rollback_allow_data_loss_records_reason(mut ctx: djogi::DjogiContext) {
         "lossy-allowed rollback should execute down SQL"
     );
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -329,11 +350,13 @@ async fn rollback_checksum_drift_refuses_and_executes_nothing(mut ctx: djogi::Dj
         seed_applied_migration(&mut ctx, &workspace, version, table_name, up_sql, down_sql).await;
 
     let down_path = bucket_dir(&workspace, &bucket).join(down_filename(version));
-    fs::write(
-        &down_path,
-        format!("{down_sql}\nSELECT 1;\n"),
-    )
-    .expect("tamper down file");
+    let down_parent_canon = down_path
+        .parent()
+        .expect("down path parent")
+        .canonicalize()
+        .expect("canonicalize down path parent");
+    let down_path = down_parent_canon.join(down_path.file_name().expect("down path file name"));
+    fs::write(&down_path, format!("{down_sql}\nSELECT 1;\n")).expect("tamper down file");
 
     let output = spawn_rollback(&workspace, &database_url, &["--single-node-dev"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -358,7 +381,7 @@ async fn rollback_checksum_drift_refuses_and_executes_nothing(mut ctx: djogi::Dj
         "pre-execution refusal must not trigger snapshot rebuild"
     );
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -402,5 +425,5 @@ async fn rollback_post_commit_failure_still_reprojects_snapshot(mut ctx: djogi::
         "post-commit failure path should still rebuild the snapshot"
     );
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }

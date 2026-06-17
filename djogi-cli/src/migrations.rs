@@ -4412,9 +4412,21 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-cli-{tag}-{nanos}-{n}"));
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-cli-{tag}-{nanos}-{n}"));
+        let p_parent = p.parent().expect("workspace path parent");
+        let p_parent_canon = p_parent
+            .canonicalize()
+            .expect("canonicalize workspace parent");
+        let p = p_parent_canon.join(p.file_name().expect("workspace path filename"));
+        assert!(
+            p.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
         fs::create_dir_all(&p).unwrap();
-        p
+        p.canonicalize().expect("canonicalize temp workspace")
     }
 
     fn ledger_row(
@@ -4442,9 +4454,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost:1/djogi_unreachable\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        let config_path = work.join("Djogi.toml");
-        guard_contained(&config_path, work);
-        fs::write(config_path, toml).unwrap();
+        safe_write_workspace_file(work, "Djogi.toml", toml);
     }
 
     fn without_database_url<T>(f: impl FnOnce() -> T) -> T {
@@ -4457,14 +4467,58 @@ mod tests {
     /// workspace. Used in test code to satisfy rust/path-injection containment
     /// requirements before file operations.
     fn guard_contained(path: &std::path::Path, workspace: &std::path::Path) {
-        if let Ok(p_canon) = path.canonicalize() {
-            assert!(
-                p_canon.starts_with(workspace),
-                "path {} escapes workspace {}",
-                path.display(),
-                workspace.display()
-            );
-        }
+        let workspace_canon = workspace
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        let path_canon = path.canonicalize().unwrap_or_else(|_| {
+            let parent = path.parent().expect("path parent");
+            let parent_canon = parent
+                .canonicalize()
+                .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+            parent_canon.join(path.file_name().expect("path file name"))
+        });
+        assert!(
+            path_canon.starts_with(&workspace_canon),
+            "path {} escapes workspace {}",
+            path.display(),
+            workspace.display()
+        );
+    }
+
+    fn safe_write_workspace_file(workspace: &std::path::Path, rel: &str, contents: &str) {
+        let workspace_canon = workspace
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        let candidate = workspace_canon.join(rel);
+        let parent = candidate.parent().expect("workspace file parent");
+        let parent_canon = parent
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+        let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
+        assert!(
+            vetted.starts_with(&workspace_canon),
+            "workspace file escapes workspace root"
+        );
+        fs::write(vetted, contents).unwrap();
+    }
+
+    fn vetted_workspace_path(path: &std::path::Path, workspace: &std::path::Path) -> PathBuf {
+        let workspace_canon = workspace
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        let parent = path.parent().expect("path parent");
+        fs::create_dir_all(parent).unwrap();
+        let parent_canon = parent
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+        let vetted = parent_canon.join(path.file_name().expect("path file name"));
+        assert!(
+            vetted.starts_with(&workspace_canon),
+            "path {} escapes workspace {}",
+            vetted.display(),
+            workspace.display()
+        );
+        vetted
     }
 
     #[serial_test::serial]
@@ -4568,6 +4622,15 @@ mod tests {
         version: &str,
         depends_on: &[&str],
     ) {
+        let workspace = path
+            .ancestors()
+            .find(|ancestor| {
+                ancestor
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("djogi-cli-"))
+            })
+            .expect("workspace root for pending fixture");
+        let path = vetted_workspace_path(path, workspace);
         let pending = PendingPlan {
             format_version: djogi::migrate::PENDING_FORMAT_VERSION.to_string(),
             bucket_database: database.to_string(),
@@ -4589,9 +4652,6 @@ mod tests {
             composed_at: "2026-06-06T00:00:00Z".to_string(),
             depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
         };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
         fs::write(path, serde_json::to_vec_pretty(&pending).unwrap()).unwrap();
     }
 
@@ -4607,9 +4667,12 @@ mod tests {
         };
         let dir = djogi::migrate::bucket_dir(work, &bucket);
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(djogi::migrate::up_filename(version)), up).unwrap();
+        let up_path = vetted_workspace_path(&dir.join(djogi::migrate::up_filename(version)), work);
+        fs::write(up_path, up).unwrap();
         if let Some(down) = down {
-            fs::write(dir.join(djogi::migrate::down_filename(version)), down).unwrap();
+            let down_path =
+                vetted_workspace_path(&dir.join(djogi::migrate::down_filename(version)), work);
+            fs::write(down_path, down).unwrap();
         }
         bucket
     }
@@ -4846,9 +4909,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://discovered-by-workspace-flag/test\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        let config_path = work.join("Djogi.toml");
-        guard_contained(&config_path, &ws_canon);
-        fs::write(config_path, toml).unwrap();
+        safe_write_workspace_file(&ws_canon, "Djogi.toml", toml);
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.remove();
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
@@ -4872,9 +4933,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://from-toml/test\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        let config_path = work.join("Djogi.toml");
-        guard_contained(&config_path, &ws_canon);
-        fs::write(config_path, toml).unwrap();
+        safe_write_workspace_file(&ws_canon, "Djogi.toml", toml);
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.set("postgres://from-env/test");
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
@@ -5878,19 +5937,12 @@ mod tests {
         let test_db_url = replace_db_in_url(&admin_url, &test_db)
             .expect("construct per-test database URL from DATABASE_URL");
 
-        let config_path = work.join("Djogi.toml");
-        if let Ok(work_canon) = work.canonicalize() {
-            guard_contained(&config_path, &work_canon);
-        }
-        fs::write(
-            config_path,
-            format!(
-                "[database]\nurl = \"{test_db_url}\"\n\
+        let toml = format!(
+            "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
-        )
-        .unwrap();
+        );
+        safe_write_workspace_file(work, "Djogi.toml", &toml);
 
         let db_url_guard = DatabaseUrlEnvGuard::new();
         db_url_guard.set(&test_db_url);
@@ -6561,9 +6613,9 @@ mod tests {
         );
         write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
-        guard_contained(&path, &ws_canon);
+        let vetted_path = vetted_workspace_path(&path, &ws_canon);
         fs::write(
-            &path,
+            &vetted_path,
             serde_json::to_vec_pretty(&PendingPlan {
                 version: "V20260606010102__changed".to_string(),
                 ..discovered[0].plan.clone()
@@ -7176,7 +7228,7 @@ mod tests {
         // If the workspace path wasn't threaded, status_cmd would
         // try the cwd's Djogi.toml (typically absent) and silently
         // fall through to defaults, giving a different error code.
-        fs::write(work.join("Djogi.toml"), "this is = not = valid toml ===").unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", "this is = not = valid toml ===");
         let exit = status_cmd(Some(work.clone()));
         assert_eq!(
             exit,

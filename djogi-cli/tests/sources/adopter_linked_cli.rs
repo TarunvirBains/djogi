@@ -109,22 +109,49 @@ fn discover_binary_path_str(
 /// (temp directory or current working directory). This prevents symlink-based
 /// path escape in test fixtures. Panics on containment violation.
 fn safe_workspace(workspace: &Path) -> PathBuf {
-    let canon = workspace.canonicalize().unwrap_or_else(|_| {
-        // Path doesn't exist yet (will be created by the caller).
-        // Canonicalize the parent and rejoin the final component.
-        let parent = workspace.parent().expect("workspace path has a parent");
-        let parent_canon = parent.canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        parent_canon.join(workspace.file_name().expect("workspace path has a file name"))
-    });
-    let temp = std::env::temp_dir();
-    let cwd = std::env::current_dir().expect("current directory exists");
+    let temp = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let cwd = std::env::current_dir()
+        .expect("current directory exists")
+        .canonicalize()
+        .expect("canonicalize current directory");
+    let parent = workspace.parent().expect("workspace parent");
+    let parent_canon = parent
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace parent {}: {err}", parent.display()));
+    let canon = parent_canon.join(workspace.file_name().expect("workspace path filename"));
+    assert!(
+        canon.starts_with(&temp) || canon.starts_with(&cwd),
+        "workspace path {} is outside temp directory and current directory",
+        canon.display()
+    );
+    std::fs::create_dir_all(&canon)
+        .unwrap_or_else(|err| panic!("create workspace {}: {err}", canon.display()));
+    let canon = canon
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", canon.display()));
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
     canon
+}
+
+fn safe_write_workspace_file(workspace: &Path, rel: &str, contents: &str) {
+    let workspace_canon = safe_workspace(workspace);
+    let candidate = workspace_canon.join(rel);
+    let parent = candidate.parent().expect("workspace file parent");
+    let parent_canon = parent
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+    let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
+    assert!(
+        vetted.starts_with(&workspace_canon),
+        "workspace file escapes workspace root"
+    );
+    std::fs::write(vetted, contents).expect("write workspace file");
 }
 
 /// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
@@ -166,7 +193,7 @@ package = "{cli_package}"
 bin = "{cli_bin}"
 "#,
     );
-    std::fs::write(ws.join("Djogi.toml"), toml).expect("write Djogi.toml");
+    safe_write_workspace_file(&ws, "Djogi.toml", &toml);
 }
 
 fn copy_elephant_tracker_workspace() -> PathBuf {
@@ -244,7 +271,10 @@ fn build_elephant_tracker_binary(
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) {
-    let mut stack = vec![(src.to_path_buf(), dst.to_path_buf())];
+    let src_root = src
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize source root {}: {err}", src.display()));
+    let mut stack = vec![(src_root.clone(), dst.to_path_buf())];
     while let Some((src_dir, dst_dir)) = stack.pop() {
         assert!(
             std::fs::create_dir_all(&dst_dir).is_ok(),
@@ -258,15 +288,40 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
         for entry in entries.flatten() {
             let src_path = entry.path();
             let dst_path = dst_dir.join(entry.file_name());
-            let file_type = match entry.file_type() {
-                Ok(ft) => ft,
-                Err(err) => panic!("file_type {}: {err}", src_path.display()),
+            let meta = match std::fs::symlink_metadata(&src_path) {
+                Ok(meta) => meta,
+                Err(err) => panic!("symlink_metadata {}: {err}", src_path.display()),
             };
-            if file_type.is_dir() {
-                stack.push((src_path, dst_path));
-            } else {
-                if let Err(err) = std::fs::copy(&src_path, &dst_path) {
-                    panic!("copy {} -> {}: {err}", src_path.display(), dst_path.display());
+            if meta.file_type().is_symlink() {
+                panic!("symlink not allowed in fixture copy: {}", src_path.display());
+            }
+            if meta.is_dir() {
+                let src_dir_canon = src_path
+                    .canonicalize()
+                    .unwrap_or_else(|err| panic!("canonicalize {}: {err}", src_path.display()));
+                assert!(
+                    src_dir_canon.starts_with(&src_root),
+                    "fixture path {} escapes source root {}",
+                    src_dir_canon.display(),
+                    src_root.display()
+                );
+                stack.push((src_dir_canon, dst_path));
+            } else if meta.is_file() {
+                let src_file_canon = src_path
+                    .canonicalize()
+                    .unwrap_or_else(|err| panic!("canonicalize {}: {err}", src_path.display()));
+                assert!(
+                    src_file_canon.starts_with(&src_root),
+                    "fixture path {} escapes source root {}",
+                    src_file_canon.display(),
+                    src_root.display()
+                );
+                if let Err(err) = std::fs::copy(&src_file_canon, &dst_path) {
+                    panic!(
+                        "copy {} -> {}: {err}",
+                        src_file_canon.display(),
+                        dst_path.display()
+                    );
                 }
             }
         }

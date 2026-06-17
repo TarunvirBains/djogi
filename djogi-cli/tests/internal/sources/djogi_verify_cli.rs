@@ -83,8 +83,8 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
     let app_dir = if app.is_empty() { "_global_" } else { app };
     let dir = workspace_canon.join("migrations").join(database).join(app_dir);
     fs::create_dir_all(&dir).expect("create migrations subtree");
-    let dir_canon = fs::canonicalize(&dir).expect("canonicalize migrations dir");
-    if !dir_canon.starts_with(&workspace_canon) {
+    let dir = dir.canonicalize().expect("canonicalize migrations subtree");
+    if !dir.starts_with(&workspace_canon) {
         panic!("migrations dir escapes workspace");
     }
 
@@ -98,7 +98,7 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
 }
 "#
     .to_vec();
-    let path = dir_canon.join("schema_snapshot.json");
+    let path = dir.join("schema_snapshot.json");
     fs::write(&path, &payload).expect("write schema_snapshot.json");
     (path, payload)
 }
@@ -188,13 +188,16 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
 }
 
 fn safe_remove_workspace(path: &Path) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-        && !path_canon.starts_with(&temp_canon)
-    {
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path_canon = path
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
+    if !path_canon.starts_with(&temp_canon) {
         panic!("remove workspace refused: path escapes temp directory");
     }
-    let _ = fs::remove_dir_all(path);
+    let _ = fs::remove_dir_all(&path_canon);
 }
 
 #[djogi::djogi_test]

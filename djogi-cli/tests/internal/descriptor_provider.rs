@@ -134,7 +134,7 @@ fn fresh_empty_workspace(stub: &str) -> std::path::PathBuf {
         dir.display()
     );
     std::fs::create_dir_all(&dir).expect("create temp workspace");
-    dir
+    dir.canonicalize().expect("canonicalize temp workspace")
 }
 
 /// `migrations verify` refuses with exit 2 when there are NEITHER
@@ -180,5 +180,9 @@ fn verify_with_empty_provider_and_no_snapshots_refuses_exit_2() {
         "refusing to remove dir outside temp: {}",
         workspace.display()
     );
-    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(
+        workspace
+            .canonicalize()
+            .expect("canonicalize temp workspace for cleanup"),
+    );
 }

@@ -787,24 +787,47 @@ mod tests {
             .canonicalize()
             .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
+        let p_parent = p.parent().expect("workspace path parent");
+        let p_parent_canon = p_parent
+            .canonicalize()
+            .expect("canonicalize workspace parent");
+        let p = p_parent_canon.join(p.file_name().expect("workspace path filename"));
+        assert!(
+            p.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
         fs::create_dir_all(&p).unwrap();
-        if let Ok(p_canon) = std::fs::canonicalize(&p) {
-            assert!(
-                p_canon.starts_with(&temp_canon),
-                "workspace path escapes temp directory"
-            );
-        }
-        p
+        p.canonicalize().expect("canonicalize workspace")
     }
 
     fn safe_remove_workspace(path: &Path) {
-        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-            && let Ok(path_canon) = path.canonicalize()
-            && !path_canon.starts_with(&temp_canon)
-        {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let path_canon = path
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
+        if !path_canon.starts_with(&temp_canon) {
             panic!("remove_dir_all refused: workspace path escapes temp directory");
         }
-        let _ = fs::remove_dir_all(path);
+        let _ = fs::remove_dir_all(&path_canon);
+    }
+
+    fn safe_write_workspace_file(workspace: &Path, rel: &str, contents: &str) {
+        let workspace_canon = workspace
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        let candidate = workspace_canon.join(rel);
+        let parent = candidate.parent().expect("workspace file parent");
+        let parent_canon = parent
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+        let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
+        assert!(
+            vetted.starts_with(&workspace_canon),
+            "workspace file escapes workspace root"
+        );
+        fs::write(vetted, contents).unwrap();
     }
 
     /// `db reset` without node identity must refuse before any prompt,
@@ -816,7 +839,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             reset_cmd(
                 true,                   // yes
@@ -846,7 +869,7 @@ mod tests {
                     [database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             reset_cmd(
                 true,                   // yes
@@ -877,7 +900,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         // `--yes` set, `--allow-non-localhost` NOT set, `--dry-run`
         // NOT set — localhost gate must refuse first.
         let exit = without_database_url(|| {
@@ -907,7 +930,7 @@ mod tests {
                     [database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
@@ -930,7 +953,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
@@ -959,7 +982,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
