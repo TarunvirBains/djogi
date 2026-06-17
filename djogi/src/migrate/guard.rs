@@ -224,48 +224,34 @@ pub fn acquire(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardEr
 fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardError> {
     use std::os::unix::io::AsRawFd;
 
-    // Ensure the parent directory exists. Treat
-    // a missing parent as an I/O error rather than silently creating a
-    // workspace root — the caller (`compose` / runner) chose the
-    // workspace; we do not invent file layout.
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        return Err(GuardError::Io {
-            path: parent.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "workspace migration lock parent directory does not exist",
-            ),
-        });
-    }
+    // Extract path components before any file I/O. This ensures the
+    // caller-supplied `path` (which may be influenced by external input)
+    // is never used for file operations without first being resolved
+    // through canonicalization below.
+    let lock_file_name = path.file_name().ok_or_else(|| GuardError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "lock file path has no file name component",
+        ),
+    })?;
+    let parent = path.parent().ok_or_else(|| GuardError::Io {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "lock file path has no parent directory",
+        ),
+    })?;
 
     // Canonicalize the parent directory so the constructed lock path
     // cannot be influenced by symlinks or relative components in the
     // caller-supplied `path`. `canonicalize` resolves all symlinks and
     // produces an absolute path; the file-name component (from the same
     // caller) is appended to form the final target.
-    let parent = path.parent()
-        .ok_or_else(|| GuardError::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "lock file path has no parent directory",
-            ),
-        })?;
     let parent_canon = canonicalize(parent).map_err(|e| GuardError::Io {
         path: parent.to_path_buf(),
         source: e,
     })?;
-    let lock_file_name = path.file_name()
-        .ok_or_else(|| GuardError::Io {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "lock file path has no file name component",
-            ),
-        })?;
     let path_canon = parent_canon.join(lock_file_name);
 
     // Open / create the lock file. We do NOT truncate — the PID
@@ -359,7 +345,10 @@ fn write_pid(file: &mut File, path: &Path) -> Result<(), GuardError> {
 /// optionally followed by `\n`. No regex — byte-level
 /// `is_ascii_digit` walk per the Djogi-wide policy.
 fn read_pid(path: &Path) -> Result<i32, std::io::Error> {
-    let mut f = File::open(path)?;
+    // Canonicalize the path before opening so symlinks in the caller-
+    // supplied argument cannot redirect the read to an arbitrary file.
+    let path = canonicalize(path)?;
+    let mut f = File::open(&path)?;
     let mut buf = String::new();
     f.read_to_string(&mut buf)?;
     let trimmed = buf.trim_end_matches(['\n', '\r']);
