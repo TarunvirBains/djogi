@@ -48,7 +48,7 @@
 //! (`u8::is_ascii_digit`) per the Djogi-wide no-regex policy. Plain
 //! decimal ASCII, optionally followed by a trailing newline.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{canonicalize, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -241,6 +241,33 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
         });
     }
 
+    // Canonicalize the parent directory so the constructed lock path
+    // cannot be influenced by symlinks or relative components in the
+    // caller-supplied `path`. `canonicalize` resolves all symlinks and
+    // produces an absolute path; the file-name component (from the same
+    // caller) is appended to form the final target.
+    let parent = path.parent()
+        .ok_or_else(|| GuardError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "lock file path has no parent directory",
+            ),
+        })?;
+    let parent_canon = canonicalize(parent).map_err(|e| GuardError::Io {
+        path: parent.to_path_buf(),
+        source: e,
+    })?;
+    let lock_file_name = path.file_name()
+        .ok_or_else(|| GuardError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "lock file path has no file name component",
+            ),
+        })?;
+    let path_canon = parent_canon.join(lock_file_name);
+
     // Open / create the lock file. We do NOT truncate — the PID
     // contents from the previous holder are overwritten only after we
     // successfully acquire the lock, so a concurrent reader during
@@ -251,9 +278,9 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path)
+        .open(&path_canon)
         .map_err(|e| GuardError::Io {
-            path: path.to_path_buf(),
+            path: path_canon.clone(),
             source: e,
         })?;
 
@@ -271,10 +298,10 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
             // truncate inside the helper so a smaller PID does not
             // leave stale trailing bytes from a longer prior PID.
             let mut owned = file;
-            write_pid(&mut owned, path)?;
+            write_pid(&mut owned, &path_canon)?;
             return Ok(WorkspaceGuard {
                 file: Some(owned),
-                path: path.to_path_buf(),
+                path: path_canon.clone(),
             });
         }
         // SAFETY: `__errno_location` returns a thread-local pointer
@@ -283,7 +310,7 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         if errno != libc::EWOULDBLOCK && errno != libc::EAGAIN {
             return Err(GuardError::Flock {
-                path: path.to_path_buf(),
+                path: path_canon.clone(),
                 errno,
             });
         }
@@ -291,9 +318,9 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
             // Read the holder PID for diagnostics. Failures here are
             // non-fatal — surface `holder_pid: None` and let the
             // operator look at the file directly if curious.
-            let holder_pid = read_pid(path).ok();
+            let holder_pid = read_pid(&path_canon).ok();
             return Err(GuardError::Timeout {
-                path: path.to_path_buf(),
+                path: path_canon.clone(),
                 timeout,
                 holder_pid,
             });
