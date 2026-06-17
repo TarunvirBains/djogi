@@ -163,7 +163,7 @@ fn safe_remove_workspace(path: &Path) {
         "refusing to remove dir outside temp: {}",
         path_canon.display()
     );
-    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
+    let _ = fs::remove_dir_all(&path_canon);
 }
 
 fn diagnostic_texts(diagnostics: &[build_script::BuildDiagnostic]) -> Vec<&str> {
@@ -195,11 +195,10 @@ fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema
     let snapshot_path =
         vetted_child_path(&work.join("migrations/main/_global_/schema_snapshot.json"));
     safe_create_dir(snapshot_path.parent().unwrap());
-    fs::write(
+    safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(snapshot_schema).unwrap(),
-    )
-    .unwrap();
+    );
 }
 
 type InventoryWriter = fn(&std::path::Path);
@@ -304,11 +303,11 @@ fn malformed_inventory_writers() -> Vec<MalformedInventoryCase> {
     vec![
         ("non_json", |p: &std::path::Path| {
             let p = vetted_child_path(p);
-            fs::write(p, b"not json at all").unwrap();
+            safe_write_bytes(&p, b"not json at all");
         }),
         ("non_object_array", |p: &std::path::Path| {
             let p = vetted_child_path(p);
-            fs::write(p, b"[]").unwrap();
+            safe_write_bytes(&p, b"[]");
         }),
         // A directory at the inventory path makes `read_to_string`
         // return a non-`NotFound` I/O error — the load-bearing
@@ -444,19 +443,17 @@ fn build_collect_diagnostics_includes_hidden_phase_zero_pending() {
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), pending_schema.clone());
     safe_create_dir(&work.join("target"));
-    fs::write(
-        vetted_child_path(&work.join("target/djogi_models.json")),
+    safe_write_bytes(
+        &work.join("target/djogi_models.json"),
         serde_json::to_vec_pretty(&models).unwrap(),
-    )
-    .unwrap();
+    );
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
     safe_create_dir(snapshot_path.parent().unwrap());
-    fs::write(
+    safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(&snapshot_schema).unwrap(),
-    )
-    .unwrap();
+    );
 
     let pending_path = work
         .join("target/djogi_pending/main/.phase_zero/V00000000000000__phase_zero_bootstrap.json");
@@ -698,19 +695,17 @@ fn build_collect_diagnostics_hidden_phase_zero_coexists_with_valid_normal_global
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), hidden_schema.clone());
     safe_create_dir(&work.join("target"));
-    fs::write(
-        vetted_child_path(&work.join("target/djogi_models.json")),
+    safe_write_bytes(
+        &work.join("target/djogi_models.json"),
         serde_json::to_vec_pretty(&models).unwrap(),
-    )
-    .unwrap();
+    );
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
     safe_create_dir(snapshot_path.parent().unwrap());
-    fs::write(
+    safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(&snapshot_schema).unwrap(),
-    )
-    .unwrap();
+    );
 
     write_pending(
         &work.join(
