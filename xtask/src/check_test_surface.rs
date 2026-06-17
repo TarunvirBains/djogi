@@ -159,7 +159,23 @@ pub fn run(list_only: bool) -> ExitCode {
 }
 
 fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
+    let root_canon = root.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("canonicalize {}: {e}", root.display()),
+        )
+    })?;
+    let cwd = std::env::current_dir().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "cannot determine current directory")
+    })?;
+    if !root_canon.starts_with(&cwd) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path {} escapes workspace root", root.display()),
+        ));
+    }
+
+    for entry in fs::read_dir(&root_canon)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -189,8 +205,35 @@ fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-fn collect_active_rs_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+fn collect_active_rs_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+) -> io::Result<()> {
+    let root_canon = root.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("canonicalize {}: {e}", root.display()),
+        )
+    })?;
+    let dir_canon = dir.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("canonicalize {}: {e}", dir.display()),
+        )
+    })?;
+    if !dir_canon.starts_with(&root_canon) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "path {} escapes root {}",
+                dir.display(),
+                root.display()
+            ),
+        ));
+    }
+
+    for entry in fs::read_dir(&dir_canon)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -203,10 +246,10 @@ fn collect_active_rs_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) ->
             if name == "target" || name.starts_with('.') {
                 continue;
             }
-            collect_active_rs_files(root, &path, files)?;
+            collect_active_rs_files(&root_canon, &path, files)?;
         } else if file_type.is_file()
             && path.extension().is_some_and(|extension| extension == "rs")
-            && is_active_rust_surface(root, &path)
+            && is_active_rust_surface(&root_canon, &path)
         {
             files.push(path);
         }
@@ -229,7 +272,23 @@ fn is_active_rust_surface(root: &Path, path: &Path) -> bool {
 }
 
 fn collect_workflow_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
+    let root_canon = root.canonicalize().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("canonicalize {}: {e}", root.display()),
+        )
+    })?;
+    let cwd = std::env::current_dir().map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "cannot determine current directory")
+    })?;
+    if !root_canon.starts_with(&cwd) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path {} escapes workspace root", root.display()),
+        ));
+    }
+
+    for entry in fs::read_dir(&root_canon)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
