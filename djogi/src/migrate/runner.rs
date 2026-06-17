@@ -6665,7 +6665,12 @@ mod tests {
             );
         }
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize() {
+            if cleanup_path.starts_with(&temp_canon) {
+                let _ = std::fs::remove_file(&cleanup_path);
+            }
+        }
     }
 
     #[djogi_test]
@@ -6707,7 +6712,12 @@ mod tests {
             "audit_pool = None should not bootstrap or write the audit table"
         );
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize() {
+            if cleanup_path.starts_with(&temp_canon) {
+                let _ = std::fs::remove_file(&cleanup_path);
+            }
+        }
     }
 
     #[test]
@@ -6842,7 +6852,12 @@ mod tests {
             "app-side DDL should remain committed when the audit DB is unavailable"
         );
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize() {
+            if cleanup_path.starts_with(&temp_canon) {
+                let _ = std::fs::remove_file(&cleanup_path);
+            }
+        }
     }
 
     // ── RolledBack re-apply path ──────────────────────────────────────

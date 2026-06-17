@@ -83,7 +83,14 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-audit-replay-{label}-{stamp}"));
+    let temp_dir = std::env::temp_dir();
+    let path = temp_dir.join(format!("djogi-audit-replay-{label}-{stamp}"));
+    if let Ok(temp_canon) = temp_dir.canonicalize() {
+        assert!(
+            path.starts_with(&temp_canon),
+            "workspace path must stay within temp directory"
+        );
+    }
     fs::create_dir_all(&path).expect("create workspace root");
     path
 }
@@ -355,7 +362,11 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
 
     // 6. Cleanup.
     drop_virgin_db(&virgin_db).await;
-    let _ = fs::remove_dir_all(&work);
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if work.starts_with(&temp_canon) {
+            let _ = fs::remove_dir_all(&work);
+        }
+    }
 }
 
 /// Negative — `audit_pool: None` (the pre-fix shape, also the supported
@@ -413,6 +424,10 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     drop(client);
     let _ = driver.await;
     drop_virgin_db(&virgin_db).await;
-    let _ = fs::remove_dir_all(&work);
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if work.starts_with(&temp_canon) {
+            let _ = fs::remove_dir_all(&work);
+        }
+    }
 }
 

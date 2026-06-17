@@ -115,13 +115,34 @@ impl std::error::Error for SnapshotError {
 /// (BTreeMap keys, sorted Vec fields, alphabetical struct field
 /// declarations).
 pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), SnapshotError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
+    let parent = path.parent().ok_or_else(|| SnapshotError::Io {
+        path: Some(path.to_path_buf()),
+        source: io::Error::new(io::ErrorKind::InvalidInput, "snapshot path has no parent"),
+    })?;
+    if !parent.as_os_str().is_empty() {
         fs::create_dir_all(parent).map_err(|e| SnapshotError::Io {
             path: Some(parent.to_path_buf()),
             source: e,
         })?;
+    }
+
+    let parent_canon = fs::canonicalize(parent).map_err(|e| SnapshotError::Io {
+        path: Some(parent.to_path_buf()),
+        source: e,
+    })?;
+    let file_name = path.file_name().ok_or_else(|| SnapshotError::Io {
+        path: Some(path.to_path_buf()),
+        source: io::Error::new(io::ErrorKind::InvalidInput, "snapshot path has no file name"),
+    })?;
+    let path_canon = parent_canon.join(file_name);
+    if !path_canon.starts_with(&parent_canon) {
+        return Err(SnapshotError::Io {
+            path: Some(path.to_path_buf()),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resolved snapshot path escapes its parent directory",
+            ),
+        });
     }
 
     let mut bytes = serde_json::to_vec_pretty(snapshot).map_err(|e| SnapshotError::Parse {
@@ -133,7 +154,7 @@ pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), Snapsh
     // convention.
     bytes.push(b'\n');
 
-    let mut f = fs::File::create(path).map_err(|e| SnapshotError::Io {
+    let mut f = fs::File::create(&path_canon).map_err(|e| SnapshotError::Io {
         path: Some(path.to_path_buf()),
         source: e,
     })?;
@@ -160,7 +181,22 @@ pub fn serialize_snapshot(snapshot: &AppliedSchema) -> Result<Vec<u8>, SnapshotE
 /// Load a snapshot from disk. Performs the `format_version` check
 /// after parsing — see module docs.
 pub fn load_snapshot(path: &Path) -> Result<AppliedSchema, SnapshotError> {
-    let bytes = fs::read(path).map_err(|e| SnapshotError::Io {
+    let path_canon = path.canonicalize().map_err(|e| SnapshotError::Io {
+        path: Some(path.to_path_buf()),
+        source: e,
+    })?;
+    if let Some(parent) = path_canon.parent()
+        && !path_canon.starts_with(parent)
+    {
+        return Err(SnapshotError::Io {
+            path: Some(path.to_path_buf()),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "resolved snapshot path escapes its parent directory",
+            ),
+        });
+    }
+    let bytes = fs::read(&path_canon).map_err(|e| SnapshotError::Io {
         path: Some(path.to_path_buf()),
         source: e,
     })?;
@@ -395,13 +431,21 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let nested = tmp.join("a").join("b").join("schema_snapshot.json");
+        fs::create_dir_all(&tmp).expect("create temp dir for snapshot test");
+        let tmp_canon = tmp.canonicalize().expect("canonicalize temp dir");
+        let nested = tmp_canon.join("a").join("b").join("schema_snapshot.json");
+        assert!(
+            nested.starts_with(&tmp_canon),
+            "nested snapshot path must stay within temp directory"
+        );
         let snap = empty_snapshot();
         save_snapshot(&snap, &nested).expect("save");
         let loaded = load_snapshot(&nested).expect("load");
         assert_eq!(snap, loaded);
         // Cleanup.
-        let _ = fs::remove_dir_all(&tmp);
+        if tmp_canon.starts_with(std::env::temp_dir()) {
+            let _ = fs::remove_dir_all(&tmp_canon);
+        }
     }
 
     #[test]
