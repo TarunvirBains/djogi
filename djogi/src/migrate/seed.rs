@@ -371,7 +371,26 @@ pub fn discover_seeds(
     workspace_root: &Path,
     database: &str,
 ) -> Result<Vec<DiscoveredSeed>, SeedError> {
+    let ws_canon = workspace_root.canonicalize().map_err(|err| SeedError::Io {
+        path: workspace_root.to_path_buf(),
+        source: err,
+    })?;
     let dir = workspace_root.join(SEEDS_DIRNAME).join(database);
+    if let Ok(dir_canon) = dir.canonicalize()
+        && !dir_canon.starts_with(&ws_canon)
+    {
+        return Err(SeedError::Io {
+            path: dir.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "seed directory {} escapes workspace {}",
+                    dir.display(),
+                    ws_canon.display()
+                ),
+            ),
+        });
+    }
     let mut out: Vec<DiscoveredSeed> = Vec::new();
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -697,10 +716,29 @@ async fn run_seeds_inner(
     workspace_root: &Path,
     database: &str,
 ) -> Result<SeedReport, SeedError> {
+    let ws_canon = workspace_root.canonicalize().map_err(|err| SeedError::Io {
+        path: workspace_root.to_path_buf(),
+        source: err,
+    })?;
     let discovered = discover_seeds(workspace_root, database)?;
     let mut entries: Vec<SeedReportEntry> = Vec::with_capacity(discovered.len());
 
     for seed in discovered {
+        if let Ok(seed_canon) = seed.path.canonicalize()
+            && !seed_canon.starts_with(&ws_canon)
+        {
+            return Err(SeedError::Io {
+                path: seed.path.clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "seed file {} escapes workspace {}",
+                        seed.path.display(),
+                        ws_canon.display()
+                    ),
+                ),
+            });
+        }
         let body_bytes = fs::read(&seed.path).map_err(|err| SeedError::Io {
             path: seed.path.clone(),
             source: err,
@@ -834,9 +872,28 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-seed-{tag}-{nanos}-{n}"));
+        let temp_canon =
+            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-seed-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
+        if let Ok(p_canon) = std::fs::canonicalize(&p) {
+            assert!(
+                p_canon.starts_with(&temp_canon),
+                "workspace path escapes temp directory"
+            );
+        }
         p
+    }
+
+    fn safe_remove_workspace(path: &Path) {
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+            if let Ok(path_canon) = path.canonicalize() {
+                if !path_canon.starts_with(&temp_canon) {
+                    panic!("remove_dir_all refused: workspace path escapes temp directory");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]
@@ -844,7 +901,7 @@ mod tests {
         let root = temp_root("empty");
         let seeds = discover_seeds(&root, "main").expect("ok");
         assert!(seeds.is_empty());
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
@@ -865,7 +922,7 @@ mod tests {
         let seeds = discover_seeds(&root, "main").expect("ok");
         let names: Vec<&str> = seeds.iter().map(|s| s.seed_name.as_str()).collect();
         assert_eq!(names, vec!["01_init", "02_data"]);
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
@@ -879,7 +936,7 @@ mod tests {
         fs::write(dir.join(".sql"), "noop").unwrap();
         let seeds = discover_seeds(&root, "main").expect("ok");
         assert!(seeds.is_empty(), "got {seeds:?}");
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]

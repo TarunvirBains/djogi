@@ -783,9 +783,28 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
+        let temp_canon =
+            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
+        if let Ok(p_canon) = std::fs::canonicalize(&p) {
+            assert!(
+                p_canon.starts_with(&temp_canon),
+                "workspace path escapes temp directory"
+            );
+        }
         p
+    }
+
+    fn safe_remove_workspace(path: &Path) {
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+            if let Ok(path_canon) = path.canonicalize() {
+                if !path_canon.starts_with(&temp_canon) {
+                    panic!("remove_dir_all refused: workspace path escapes temp directory");
+                }
+            }
+        }
+        let _ = fs::remove_dir_all(path);
     }
 
     /// `db reset` without node identity must refuse before any prompt,
@@ -813,7 +832,7 @@ mod tests {
             ExitCode::from(2),
             "missing identity must refuse before localhost gating"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// `db reset --single-node-dev` against a production profile must
@@ -843,7 +862,7 @@ mod tests {
             ExitCode::from(2),
             "production profile must refuse single-node-dev during identity resolution"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── cleanup-test-dbs ────────────────────────────────────────────
@@ -875,7 +894,7 @@ mod tests {
             ExitCode::from(2),
             "non-localhost without override must refuse"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Production profile refuses (exit 2) even with localhost +
@@ -899,7 +918,7 @@ mod tests {
             )
         });
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Localhost + non-production + neither `--yes` nor `--dry-run`
@@ -926,7 +945,7 @@ mod tests {
             ExitCode::from(2),
             "missing --yes without --dry-run must refuse"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Invalid maintenance database name (e.g. SQL-injection
@@ -955,7 +974,7 @@ mod tests {
             ExitCode::from(1),
             "invalid maintenance DB name must reject"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// `is_valid_pg_identifier` accepts typical names and rejects
@@ -1007,6 +1026,6 @@ mod tests {
             !out.join("README.md").exists(),
             "refusal must not render docs"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 }
