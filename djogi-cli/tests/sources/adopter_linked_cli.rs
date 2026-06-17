@@ -427,6 +427,8 @@ fn build_cargo_djogi_binary() -> PathBuf {
     let output = Command::new(&cargo)
         .arg("build")
         .arg("-p")
+        .arg("djogi-cli")
+        .arg("--bin")
         .arg("cargo-djogi")
         .arg("--locked")
         .arg("--target-dir")
@@ -434,7 +436,7 @@ fn build_cargo_djogi_binary() -> PathBuf {
         .arg("--message-format")
         .arg("json")
         .output()
-        .expect("spawn cargo build -p cargo-djogi");
+        .expect("spawn cargo build -p djogi-cli --bin cargo-djogi");
     assert!(
         output.status.success(),
         "build cargo-djogi test binary failed: {}",
