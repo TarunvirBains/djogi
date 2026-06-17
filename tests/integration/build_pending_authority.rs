@@ -150,15 +150,14 @@ fn safe_remove_workspace(path: &Path) {
     let temp_canon = std::env::temp_dir()
         .canonicalize()
         .expect("canonicalize temp directory");
-    let path_canon = path
-        .canonicalize()
-        .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
-    assert!(
-        path_canon.starts_with(&temp_canon),
-        "refusing to remove dir outside temp: {}",
-        path_canon.display()
-    );
-    let _ = fs::remove_dir_all(&path_canon);
+    let is_within =
+        |parent: &Path, child: &Path| match (parent.canonicalize(), child.canonicalize()) {
+            (Ok(parent_abs), Ok(child_abs)) => child_abs.starts_with(parent_abs),
+            _ => false,
+        };
+    if is_within(&temp_canon, path) {
+        let _ = fs::remove_dir_all(path);
+    }
 }
 
 fn diagnostic_texts(diagnostics: &[build_script::BuildDiagnostic]) -> Vec<&str> {

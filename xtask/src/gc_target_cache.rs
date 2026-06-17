@@ -153,7 +153,7 @@ fn validate_cache_root_within_home(home: &Path, candidate: &Path) -> Result<Path
         ));
     }
 
-    Ok(candidate.to_path_buf())
+    Ok(canonical_candidate)
 }
 
 fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
