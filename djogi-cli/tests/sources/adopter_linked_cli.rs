@@ -1082,6 +1082,30 @@ fn elephant_tracker_cargo_djogi_compose_uses_adopter_descriptors() {
     }
 }
 
+#[test]
+fn djogi_cli_package_builds_both_djogi_and_cargo_djogi_bins() {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let root = workspace_root();
+    let target_dir = root.join("target").join("djogi-cli-bin-presence");
+    let output = std::process::Command::new(&cargo)
+        .args(["build", "-p", "djogi-cli", "--bins", "--locked", "--message-format", "json"])
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("spawn cargo build -p djogi-cli --bins");
+    assert!(
+        output.status.success(),
+        "djogi-cli --bins build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    discover_binary_path_str(&stdout, "djogi")
+        .expect("djogi-cli must produce a `djogi` binary");
+    discover_binary_path_str(&stdout, "cargo-djogi")
+        .expect("djogi-cli must produce a `cargo-djogi` binary");
+}
+
 // ── VERIFY-DEGRADE: zero-descriptor verify degrades to snapshot-only ───────
 
 /// The model whose live table the degrade test seeds via the typed
