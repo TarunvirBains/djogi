@@ -1994,12 +1994,10 @@ mod tests {
             .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-reset-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
-        if let Ok(p_canon) = std::fs::canonicalize(&p) {
-            assert!(
-                p_canon.starts_with(&temp_canon),
-                "workspace path escapes temp directory"
-            );
-        }
+        let p_canon = std::fs::canonicalize(&p).unwrap_or_else(|_| {
+            panic!("workspace {} must be canonicalizable", p.display())
+        });
+        assert!(p_canon.starts_with(&temp_canon), "workspace path escapes temp directory");
         p
     }
 
@@ -2394,12 +2392,14 @@ mod tests {
         // Lay down two buckets with two up files each.
         let main_global = work.join(format!("{MIGRATIONS_DIR}/main/{GLOBAL_BUCKET_DIRNAME}"));
         let main_billing = work.join(format!("{MIGRATIONS_DIR}/main/billing"));
-        if let Ok(mg_canon) = main_global.canonicalize() {
-            assert!(mg_canon.starts_with(&work_canon));
-        }
-        if let Ok(mb_canon) = main_billing.canonicalize() {
-            assert!(mb_canon.starts_with(&work_canon));
-        }
+        let mg_canon = main_global.canonicalize().unwrap_or_else(|_| {
+            panic!("main_global {} must be canonicalizable", main_global.display())
+        });
+        assert!(mg_canon.starts_with(&work_canon), "main_global escapes workspace");
+        let mb_canon = main_billing.canonicalize().unwrap_or_else(|_| {
+            panic!("main_billing {} must be canonicalizable", main_billing.display())
+        });
+        assert!(mb_canon.starts_with(&work_canon), "main_billing escapes workspace");
         fs::create_dir_all(&main_global).unwrap();
         fs::create_dir_all(&main_billing).unwrap();
         fs::write(
@@ -2488,9 +2488,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000000__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2544,9 +2545,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000001__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2636,9 +2638,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2670,9 +2673,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2738,9 +2742,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000012__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2777,9 +2782,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000013__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2826,9 +2832,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000004__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2873,9 +2880,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000005__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2910,9 +2918,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000016__phase_zero_like";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -2942,9 +2951,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000006__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3006,9 +3016,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000008__pk_flip_call";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3037,9 +3048,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000009__pk_flip_do";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3072,9 +3084,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000010__pk_flip_partitioned";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3112,9 +3125,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000011__pk_flip_call_invalid";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
         let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
         fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
@@ -3147,9 +3161,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000007__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
 
         let up_sql = "-- AddTable widgets\n\
@@ -3199,9 +3214,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000014__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
 
         fs::write(
@@ -3259,9 +3275,10 @@ mod tests {
         let bucket = bk("main", "");
         let version = "V20260301000015__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        if let Ok(bd_canon) = bucket_dir.canonicalize() {
-            assert!(bd_canon.starts_with(&work_canon));
-        }
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+        });
+        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
         fs::create_dir_all(&bucket_dir).unwrap();
 
         fs::write(
