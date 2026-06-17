@@ -233,14 +233,26 @@ pub fn create_workspace_parent_dirs<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<PathBuf> {
-    let candidate = resolve_workspace_path_with_mode(
-        workspace_root,
-        candidate.as_ref(),
-        CandidateResolutionMode::MayCreate,
-    )?;
+    let workspace_root = canonicalize_base(workspace_root)?;
+    let candidate = if candidate.as_ref().is_absolute() {
+        candidate.as_ref().to_path_buf()
+    } else {
+        workspace_root.join(candidate.as_ref())
+    };
     let parent = candidate
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-    Ok(parent.to_path_buf())
+    let parent = canonicalize_with_parent_fallback(parent)?;
+    if !parent.starts_with(&workspace_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "candidate parent {} is outside allowed base {}",
+                parent.display(),
+                workspace_root.display()
+            ),
+        ));
+    }
+    std::fs::create_dir_all(&parent)?;
+    Ok(parent)
 }

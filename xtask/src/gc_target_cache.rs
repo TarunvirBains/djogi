@@ -64,7 +64,14 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        let vetted = path.canonicalize().unwrap_or(path.clone());
+        let vetted = validate_cache_root_within_home(
+            &std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())
+                .unwrap_or_else(|e| panic!("{e}")),
+            &path,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
@@ -265,6 +272,12 @@ mod tests {
 
         let safe_create_dir = |rel: &str| {
             let candidate = tmp.join(rel);
+            let candidate = candidate
+                .parent()
+                .unwrap_or(&tmp)
+                .canonicalize()
+                .unwrap()
+                .join(candidate.file_name().unwrap());
             assert!(
                 candidate.starts_with(&tmp),
                 "refusing to create dir outside test root: {}",
@@ -291,6 +304,8 @@ mod tests {
         assert!(ids.contains("789abc012def"));
         assert!(!ids.contains("not-a-dir"));
 
-        fs::remove_dir_all(&tmp).ok();
+        if tmp.starts_with(std::env::temp_dir().canonicalize().unwrap()) {
+            fs::remove_dir_all(&tmp).ok();
+        }
     }
 }
