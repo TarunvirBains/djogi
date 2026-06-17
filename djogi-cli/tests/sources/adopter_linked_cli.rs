@@ -153,11 +153,10 @@ fn safe_copy_workspace_file(workspace: &Path, rel: &str, src: &Path) -> PathBuf 
         .unwrap_or_else(|err| panic!("canonicalize {}: {err}", src.display()));
     let target = djogi::migrate::resolve_write_workspace_path(&workspace_canon, rel)
         .unwrap_or_else(|err| panic!("resolve target {}: {err}", rel));
-    djogi::migrate::create_workspace_parent_dirs(&workspace_canon, &target)
-        .unwrap_or_else(|err| panic!("create parent {}: {err}", target.display()));
-    std::fs::copy(&src_canon, &target)
-        .unwrap_or_else(|err| panic!("copy {} -> {}: {err}", src_canon.display(), target.display()));
-    target
+    let bytes = std::fs::read(&src_canon)
+        .unwrap_or_else(|err| panic!("read {}: {err}", src_canon.display()));
+    djogi::migrate::write_workspace_file(&workspace_canon, &target, &bytes)
+        .unwrap_or_else(|err| panic!("write {}: {err}", target.display()))
 }
 
 /// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
@@ -1352,19 +1351,17 @@ fn nocargo_compose_without_cargo_or_source() {
 
     // Copy binary + config to an isolated temp dir (no source code there).
     let runtime_dir = safe_workspace(&temp_workspace("nocargo"));
-    let copied_bin = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
-
     // Compose needs no DB — a dummy URL is fine.
     write_minimal_djogi_toml(&runtime_dir, "postgres://localhost/none");
 
     // Run compose with a PATH that contains NO cargo/toolchain.
     let empty_path = temp_workspace("nocargo-path");
-    let out = Command::new(&copied_bin)
+    let out = Command::new(&bin)
         .args(["migrations", "compose", "--name", "init"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path) // no cargo/toolchain reachable
         .output()
-        .expect("run copied djogi compose");
+        .expect("run fixture djogi compose");
 
     assert!(
         out.status.success(),
@@ -1389,14 +1386,13 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
 
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let runtime_dir = safe_workspace(&temp_workspace("container-apply"));
-    let copied = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);
     let empty_path = temp_workspace("container-path");
 
     // Compose writes pending artifacts (including the Phase-0 bootstrap that
     // installs heerid_next()).
-    let compose_out = Command::new(&copied)
+    let compose_out = Command::new(&bin)
         .args(["migrations", "compose", "--name", "init"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
@@ -1411,7 +1407,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     // Apply with no cargo, no source — just binary + config + artifacts + DB.
     // Apply is descriptor-free here, but still identity-bearing; on a fresh
     // test database we use single-node-dev provisioning.
-    let apply_out = Command::new(&copied)
+    let apply_out = Command::new(&bin)
         .args(["migrations", "apply", "--single-node-dev"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
@@ -1426,7 +1422,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
 
     // Assert the migration landed via `migrations status` (typed CLI surface,
     // not raw SQL and not re-declaring models in this test crate).
-    let status_out = Command::new(&copied)
+    let status_out = Command::new(&bin)
         .args(["migrations", "status"])
         .current_dir(&runtime_dir)
         .env("PATH", &empty_path)
