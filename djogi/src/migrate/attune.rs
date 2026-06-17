@@ -1506,22 +1506,34 @@ async fn delete_subsumed(
     bucket: &BucketKey,
     entries: &mut Vec<AttuneEntry>,
 ) -> Result<(), AttuneError> {
+    let dir_canon = std::fs::canonicalize(dir).map_err(|e| AttuneError::FilesystemScanFailed {
+        source: e,
+    })?;
     for (version, path) in to_squash {
         if version.as_str() == from {
             continue;
+        }
+        if !path.starts_with(&dir_canon) {
+            return Err(AttuneError::SqlDeleteFailed {
+                path: (*path).clone(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "migration file outside migrations directory",
+                ),
+            });
         }
         std::fs::remove_file(path).map_err(|e| AttuneError::SqlDeleteFailed {
             path: (*path).clone(),
             source: e,
         })?;
-        let down = dir.join(down_filename(version));
+        let down = dir_canon.join(down_filename(version));
         if down.exists() {
             std::fs::remove_file(&down).map_err(|e| AttuneError::SqlDeleteFailed {
                 path: down.clone(),
                 source: e,
             })?;
         }
-        delete_replay_plan_sidecar_if_exists(dir, version)?;
+        delete_replay_plan_sidecar_if_exists(&dir_canon, version)?;
         ctx.execute(
             "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
             &[version, &bucket.app],
