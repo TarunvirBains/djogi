@@ -16,7 +16,7 @@ The `README.md` is the project overview. The full specification lives in `docs/s
 djogi/                  ← this repo — the framework implementation
   djogi/                ← framework library crate
   djogi-macros/         ← proc macro crate (separate crate — required by Rust)
-  djogi-cli/            ← djogi binary
+  djogi-cli/            ← CLI package: ships `djogi` + `cargo-djogi` executables (no separate cargo-djogi crate; #417)
   djogi-shell/          ← Rhai engine + model bindings (Phase 9 target)
   djogi-maahi/          ← planned admin console crate (Dioxus full-stack); not present as shipped component in this worktree
 
@@ -142,7 +142,7 @@ artifacts. After `git worktree remove`, prune orphaned caches with
 |---|---|
 | `djogi` | Public API: `prelude`, `Model` trait, `QuerySet`, `ForeignKey`, `Jsonb<T>`, `ManyToMany`, app registration |
 | `djogi-macros` | `#[derive(Model)]` proc macro — field injection, trait impls, `ModelDescriptor` emission via `inventory` |
-| `djogi-cli` | Standalone `djogi` binary and subcommands via `clap` |
+| `djogi-cli` | CLI package — ships `djogi` (canonical operator command) and `cargo-djogi` (dev wrapper) executables via `clap` |
 | `djogi-shell` | Rhai REPL, model bindings, transaction control |
 
 ### What Djogi Owns vs Delegates

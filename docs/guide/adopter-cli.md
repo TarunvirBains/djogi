@@ -18,6 +18,14 @@ The solution is minimal: add one dependency line and a tiny binary file to your 
 
 ## 2. Minimal Adopter Setup
 
+### Install the CLI
+
+```bash
+cargo install djogi-cli
+```
+
+This installs two executables: `djogi` (the canonical command) and `cargo-djogi` (which enables the `cargo djogi <subcommand>` dev workflow used in §3 below). Run this once per machine.
+
 ### Add Dependencies
 
 ```toml
@@ -126,6 +134,15 @@ myapp/
 ## 3. Invocation Models
 
 ### Development: `cargo djogi`
+
+> `cargo djogi` is the **dev-wrapper** invocation (concept 2 of 3): a local
+> convenience that builds and forwards to your adopter-linked `djogi` binary.
+> It is **not** for production. Production and CI run the **prebuilt
+> adopter-linked `djogi` binary directly** (concept 3 — see "CI / Container:
+> Prebuilt Binary" and "Production Apply" below). The canonical command
+> language is `djogi <subcommand>` (concept 1); `cargo djogi <subcommand>`
+> just routes that same command through Cargo during development. Requires
+> `cargo install djogi-cli` (see §2).
 
 Run descriptor-dependent commands from your workspace root:
 

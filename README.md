@@ -154,8 +154,33 @@ my-app/
 
 djogi/                      # core data library crate
 djogi-macros/               # proc macro crate
-djogi-cli/                  # standalone `djogi` binary
+djogi-cli/                  # CLI package — ships `djogi` + `cargo-djogi` executables
 ```
+
+### CLI install
+
+The entire CLI ships from one package:
+
+```bash
+cargo install djogi-cli
+```
+
+This installs two executables:
+
+- **`djogi`** — the canonical operator and runtime command language
+  (`djogi migrations apply`, `djogi shell`, …). This is what you run.
+- **`cargo-djogi`** — a developer convenience enabling `cargo djogi
+  <subcommand>`, which builds and forwards to your workspace's
+  adopter-linked `djogi` binary. It is a local-development wrapper only.
+
+> **Production and CI:** run the prebuilt adopter-linked `djogi` binary
+> directly (for example, `djogi migrations apply` inside your migration
+> image). Do **not** run `cargo djogi` in production — it shells out to
+> Cargo and requires a buildable workspace and toolchain.
+
+> **Note:** the previously-published `cargo-djogi` crate is superseded.
+> Both executables now come from `djogi-cli`; there is no separate
+> `cargo-djogi` package to install.
 
 ## Local Development
 

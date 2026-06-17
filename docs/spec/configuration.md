@@ -91,6 +91,13 @@ The explicit `crud_delivery` and `event_delivery` keys are escape hatches, not t
 - `[cli].bin` defaults to `djogi` when omitted.
 - `cargo djogi` loads this file from the workspace root, builds the configured package/bin with Cargo, then executes the resulting binary with your CLI args.
 
+The `cargo djogi` invocation is provided by the `cargo-djogi` executable,
+which ships from the **`djogi-cli`** package — not a separate `cargo-djogi`
+crate. Installing `djogi-cli` installs both the `djogi` and `cargo-djogi`
+executables. `cargo djogi` is a local-development wrapper: production and CI
+must run the prebuilt adopter-linked `djogi` binary directly, because the
+wrapper shells out to Cargo and requires a buildable workspace.
+
 Installed once, used everywhere:
 ```bash
 cargo install djogi-cli
