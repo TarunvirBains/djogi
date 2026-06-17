@@ -29,7 +29,12 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
-    fs::create_dir_all(&canon).unwrap();
+    let anchor = if canon.starts_with(&temp) {
+        &temp
+    } else {
+        &cwd
+    };
+    djogi::migrate::create_workspace_dir_all(anchor, &canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
@@ -53,7 +58,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
 
 fn vetted_child_path(path: &Path) -> PathBuf {
     let parent = path.parent().expect("path parent");
-    fs::create_dir_all(parent).unwrap();
+    let _ = safe_workspace(parent);
     let parent = safe_workspace(parent);
     parent.join(path.file_name().expect("path filename"))
 }

@@ -178,7 +178,10 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     // Walk migrations/<database>/<app>/schema_snapshot.json files.
     let mut snapshots: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
     let mut filesystem: Vec<(String, String)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&migrations_root) {
+    if let Ok(migrations_root) = std::fs::canonicalize(&migrations_root)
+        && migrations_root.starts_with(&ws_canon)
+        && let Ok(entries) = std::fs::read_dir(&migrations_root)
+    {
         for db_entry in entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -233,7 +236,10 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     // plan, so future-version pending JSON surfaces a version-mismatch
     // warning instead of falling through to garbage outcome classification.
     let mut pendings: BTreeMap<(String, String), PendingArtifacts> = BTreeMap::new();
-    if let Ok(db_entries) = std::fs::read_dir(&pending_root) {
+    if let Ok(pending_root) = std::fs::canonicalize(&pending_root)
+        && pending_root.starts_with(&ws_canon)
+        && let Ok(db_entries) = std::fs::read_dir(&pending_root)
+    {
         for db_entry in db_entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;

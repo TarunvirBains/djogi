@@ -725,7 +725,6 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
             .unwrap_or_else(|| Path::new(".")),
         path,
     )
-    .or_else(|_| fs::read(path))
     .map_err(|e| PendingLoadError::Parse {
         path: Some(path.to_path_buf()),
         source: serde_json::Error::io(e),

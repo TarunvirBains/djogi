@@ -161,11 +161,8 @@ pub fn render_inventory(
     // influenced by symlinks or relative components in the caller-
     // supplied `output_root`. The canonicalized path is used for all
     // subsequent file operations.
-    let output_root_canon = if output_root.exists() {
-        canonicalize(output_root).map_err(|e| DocsError::Io {
-            path: output_root.to_path_buf(),
-            source: e,
-        })?
+    let output_root_canon = if let Ok(path) = canonicalize(output_root) {
+        path
     } else {
         // The directory doesn't exist yet (will be created below).
         // Canonicalize the parent and rejoin the final component so
@@ -683,7 +680,7 @@ mod tests {
         let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
         let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve temp docs root");
-        fs::create_dir_all(&p).unwrap();
+        crate::migrate::common::create_workspace_dir_all(&temp_canon, &p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
             assert!(
                 p_canon.starts_with(&temp_canon),

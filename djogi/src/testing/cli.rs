@@ -23,7 +23,6 @@
 
 #![allow(clippy::disallowed_methods)]
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::__bypass::RawAccessExt as _;
@@ -99,7 +98,8 @@ pub fn temp_workspace(tag: &str) -> PathBuf {
         "refusing to create dir outside temp: {}",
         p.display()
     );
-    fs::create_dir_all(&p).expect("create_dir_all temp workspace");
+    crate::migrate::create_workspace_dir_all(&temp_canonical, &p)
+        .expect("create_dir_all temp workspace");
     p
 }
 
@@ -129,5 +129,6 @@ port = 0
         "refusing to write config outside workspace: {}",
         config_path.display()
     );
-    fs::write(config_path, toml).expect("write Djogi.toml");
+    crate::migrate::write_workspace_file(&workspace_canonical, &config_path, toml.as_bytes())
+        .expect("write Djogi.toml");
 }

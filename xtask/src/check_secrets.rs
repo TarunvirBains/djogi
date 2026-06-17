@@ -1344,8 +1344,10 @@ mod tests {
 
     #[test]
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
-        let root = env::temp_dir().join(format!("djogi-check-secrets-fs-{}", std::process::id()));
+        let temp_canon = env::temp_dir().canonicalize().unwrap();
+        let root = temp_canon.join(format!("djogi-check-secrets-fs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        assert!(root.starts_with(&temp_canon));
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
         fs::create_dir_all(root.join(".github/workflows")).unwrap();
@@ -1362,7 +1364,7 @@ mod tests {
                     candidate.display()
                 );
             }
-            fs::write(candidate, contents).unwrap();
+            fs::write(&candidate, contents).unwrap();
         };
 
         safe_write(".github/workflows/ci.yml", "name: CI");
