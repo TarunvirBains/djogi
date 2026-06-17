@@ -153,18 +153,10 @@ fn safe_copy_workspace_file(workspace: &Path, rel: &str, src: &Path) -> PathBuf 
         .unwrap_or_else(|err| panic!("canonicalize {}: {err}", src.display()));
     let target = djogi::migrate::resolve_write_workspace_path(&workspace_canon, rel)
         .unwrap_or_else(|err| panic!("resolve target {}: {err}", rel));
-    let bytes = std::fs::read(&src_canon)
-        .unwrap_or_else(|err| panic!("read {}: {err}", src_canon.display()));
-    let target = djogi::migrate::write_workspace_file(&workspace_canon, &target, &bytes)
-        .unwrap_or_else(|err| panic!("write {}: {err}", target.display()));
-    #[cfg(unix)]
-    {
-        let src_permissions = std::fs::metadata(&src_canon)
-            .unwrap_or_else(|err| panic!("metadata {}: {err}", src_canon.display()))
-            .permissions();
-        std::fs::set_permissions(&target, src_permissions)
-            .unwrap_or_else(|err| panic!("chmod {}: {err}", target.display()));
-    }
+    djogi::migrate::create_workspace_parent_dirs(&workspace_canon, &target)
+        .unwrap_or_else(|err| panic!("create parent {}: {err}", target.display()));
+    std::fs::copy(&src_canon, &target)
+        .unwrap_or_else(|err| panic!("copy {} -> {}: {err}", src_canon.display(), target.display()));
     target
 }
 
