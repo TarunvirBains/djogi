@@ -105,6 +105,28 @@ fn discover_binary_path_str(
 
 // ── Path resolution ─────────────────────────────────────────────────────────
 
+/// Canonicalize a workspace path and verify it stays within a safe anchor
+/// (temp directory or current working directory). This prevents symlink-based
+/// path escape in test fixtures. Panics on containment violation.
+fn safe_workspace(workspace: &Path) -> PathBuf {
+    let canon = workspace.canonicalize().unwrap_or_else(|_| {
+        // Path doesn't exist yet (will be created by the caller).
+        // Canonicalize the parent and rejoin the final component.
+        let parent = workspace.parent().expect("workspace path has a parent");
+        let parent_canon = parent.canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+        parent_canon.join(workspace.file_name().expect("workspace path has a file name"))
+    });
+    let temp = std::env::temp_dir();
+    let cwd = std::env::current_dir().expect("current directory exists");
+    assert!(
+        canon.starts_with(&temp) || canon.starts_with(&cwd),
+        "workspace path {} is outside temp directory and current directory",
+        canon.display()
+    );
+    canon
+}
+
 /// The `djogi-cli` crate root. `CARGO_MANIFEST_DIR` resolves to the
 /// `djogi-cli/` crate directory when this integration test runs (cargo's
 /// standard convention).
@@ -128,6 +150,7 @@ fn write_minimal_djogi_toml_with_cli(
     cli_package: &str,
     cli_bin: &str,
 ) {
+    let ws = safe_workspace(workspace);
     let toml = format!(
         r#"profile = "development"
 
@@ -143,12 +166,13 @@ package = "{cli_package}"
 bin = "{cli_bin}"
 "#,
     );
-    std::fs::write(workspace.join("Djogi.toml"), toml).expect("write Djogi.toml");
+    std::fs::write(ws.join("Djogi.toml"), toml).expect("write Djogi.toml");
 }
 
 fn copy_elephant_tracker_workspace() -> PathBuf {
     let src = workspace_root().join("examples/elephant-tracker");
-    let dst = temp_workspace("elephant-tracker-cargo-djogi");
+    let dst_raw = temp_workspace("elephant-tracker-cargo-djogi");
+    let dst = safe_workspace(&dst_raw);
 
     copy_dir_recursive(&src.join("src"), &dst.join("src"));
     copy_dir_recursive(&src.join("seeds"), &dst.join("seeds"));
@@ -285,7 +309,8 @@ fn rebind_fixture_workspace_paths(workspace: &Path, repo_root: &Path) {
 
 fn copy_fixture_to_temp(fixture: &str) -> PathBuf {
     let src = cli_crate_dir().join("tests/fixtures").join(fixture);
-    let dst = temp_workspace(&format!("adopter-fixture-{fixture}"));
+    let dst_raw = temp_workspace(&format!("adopter-fixture-{fixture}"));
+    let dst = safe_workspace(&dst_raw);
     copy_dir_recursive(&src, &dst);
     rebind_fixture_workspace_paths(&dst, &workspace_root());
     dst
@@ -422,7 +447,7 @@ fn build_fixture_djogi(fixture: &str, target_subdir: &str) -> PathBuf {
 /// `schema` / `compose` (no DB) a dummy URL suffices — neither opens a
 /// Postgres connection.
 fn tempdir_with_djogi_toml() -> PathBuf {
-    let dir = temp_workspace("adopter-fixture");
+    let dir = safe_workspace(&temp_workspace("adopter-fixture"));
     write_minimal_djogi_toml(&dir, "postgres://localhost/none");
     dir
 }
@@ -575,6 +600,7 @@ fn splice_database_name(base_url: &str, db_name: &str) -> String {
 /// the live snapshot format (a hand-written JSON blob would silently rot
 /// when the schema structs evolve).
 fn write_billing_snapshot_with_table(work: &Path) {
+    let _ = safe_workspace(work);
     use djogi::migrate::{
         AppliedSchema, BucketKey, ColumnSchema, PkKindSchema, PrimaryKeySchema,
         SNAPSHOT_FORMAT_VERSION, TableSchema,
@@ -1032,6 +1058,7 @@ use degrade_model::DegradeInvoice;
 /// transparent to the comparison while exercising the NAMED-bucket
 /// standalone path (the global bucket is unaffected by the #370 bug).
 fn write_billing_snapshot_projected_from_model(work: &Path) {
+    let _ = safe_workspace(work);
     use djogi::migrate::{
         AppliedSchema, BucketKey, DescriptorProvider, project_from_provider, save_snapshot,
         snapshot_path,
@@ -1110,7 +1137,7 @@ async fn verify_degrade_snapshot_only_against_valid_db(mut ctx: djogi::DjogiCont
     let _ = &mut ctx; // sync_models already ran via the macro; ctx kept for the URL splice below.
 
     let bin = djogi_binary_path();
-    let work = temp_workspace("verify-degrade");
+    let work = safe_workspace(&temp_workspace("verify-degrade"));
 
     // Per-test DB URL: splice the provisioned DB NAME into the harness
     // DATABASE_URL (current_database returns a bare name, not a URL). This
@@ -1258,7 +1285,7 @@ fn nocargo_compose_without_cargo_or_source() {
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
 
     // Copy binary + config to an isolated temp dir (no source code there).
-    let runtime_dir = temp_workspace("nocargo");
+    let runtime_dir = safe_workspace(&temp_workspace("nocargo"));
     let copied_bin = runtime_dir.join("djogi");
     std::fs::copy(&bin, &copied_bin).expect("copy djogi binary");
     #[cfg(unix)]
@@ -1303,7 +1330,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
 
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
-    let runtime_dir = temp_workspace("container-apply");
+    let runtime_dir = safe_workspace(&temp_workspace("container-apply"));
     let copied = runtime_dir.join("djogi");
     std::fs::copy(&bin, &copied).unwrap();
 
@@ -1381,7 +1408,7 @@ async fn apply_with_pending_artifacts(mut ctx: djogi::DjogiContext) {
     let adopter = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let standalone = djogi_binary_path();
 
-    let runtime_dir = temp_workspace("standalone-apply");
+    let runtime_dir = safe_workspace(&temp_workspace("standalone-apply"));
     let db_url = splice_database_name(&database_url(), &current_database(&mut ctx).await);
     write_minimal_djogi_toml(&runtime_dir, &db_url);
 

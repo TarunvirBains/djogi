@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use djogi::migrate::{AppliedSchema, PENDING_FORMAT_VERSION, PendingPlan, SNAPSHOT_FORMAT_VERSION};
@@ -8,6 +8,25 @@ use djogi::migrate::{AppliedSchema, PENDING_FORMAT_VERSION, PendingPlan, SNAPSHO
 #[allow(dead_code)]
 #[path = "../../djogi/build.rs"]
 mod build_script;
+
+/// Canonicalize a workspace path and verify it stays within a safe anchor
+/// (temp directory or current working directory). Panics on containment violation.
+fn safe_workspace(workspace: &Path) -> PathBuf {
+    let canon = workspace.canonicalize().unwrap_or_else(|_| {
+        let parent = workspace.parent().expect("workspace path has a parent");
+        let parent_canon = parent.canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
+        parent_canon.join(workspace.file_name().expect("workspace path has a file name"))
+    });
+    let temp = std::env::temp_dir();
+    let cwd = std::env::current_dir().expect("current directory exists");
+    assert!(
+        canon.starts_with(&temp) || canon.starts_with(&cwd),
+        "workspace path {} is outside temp directory and current directory",
+        canon.display()
+    );
+    canon
+}
 
 fn temp_workspace(tag: &str) -> PathBuf {
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -18,7 +37,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .as_nanos();
     let p = std::env::temp_dir().join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
     fs::create_dir_all(&p).unwrap();
-    p
+    safe_workspace(&p)
 }
 
 fn schema(tag: &str) -> AppliedSchema {
@@ -58,6 +77,7 @@ fn write_pending_with_format_version(
     snapshot: &AppliedSchema,
     format_version: &str,
 ) {
+    let _ = safe_workspace(path.parent().expect("pending path has a parent"));
     let pending = PendingPlan {
         format_version: format_version.to_string(),
         bucket_database: database.to_string(),
@@ -87,6 +107,7 @@ fn diagnostic_texts(diagnostics: &[build_script::BuildDiagnostic]) -> Vec<&str> 
 /// (present / missing / malformed), so the shared scaffolding stops
 /// short of writing it.
 fn write_hidden_phase_zero_pending(work: &std::path::Path, pending_schema: &AppliedSchema) {
+    let work = safe_workspace(work);
     fs::create_dir_all(work.join("target")).unwrap();
     let pending_path = work
         .join("target/djogi_pending/main/.phase_zero/V00000000000000__phase_zero_bootstrap.json");
@@ -101,6 +122,7 @@ fn write_hidden_phase_zero_pending(work: &std::path::Path, pending_schema: &Appl
 
 /// Write a committed snapshot for the synthetic global bucket.
 fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema) {
+    let work = safe_workspace(work);
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
     fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
     fs::write(
