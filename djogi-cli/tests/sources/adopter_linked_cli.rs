@@ -323,13 +323,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
                     .unwrap_or_else(|err| panic!("resolve dst {}: {err}", dst_path.display()));
                 djogi::migrate::create_workspace_parent_dirs(&dst_root, &vetted_dst)
                     .unwrap_or_else(|err| panic!("create dst parent {}: {err}", vetted_dst.display()));
-                if let Err(err) = std::fs::copy(&src_file_canon, &vetted_dst) {
-                    panic!(
-                        "copy {} -> {}: {err}",
-                        src_file_canon.display(),
-                        vetted_dst.display()
-                    );
-                }
+                let bytes = std::fs::read(&src_file_canon).unwrap_or_else(|err| {
+                    panic!("read {}: {err}", src_file_canon.display())
+                });
+                djogi::migrate::write_workspace_file(&dst_root, &vetted_dst, &bytes)
+                    .unwrap_or_else(|err| panic!("write {}: {err}", vetted_dst.display()));
             }
         }
     }
@@ -1364,7 +1362,7 @@ fn nocargo_compose_without_cargo_or_source() {
         assert!(copied_bin.starts_with(&runtime_dir));
         let mut perms = std::fs::metadata(&copied_bin).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&copied_bin, perms).unwrap();
+        std::fs::set_permissions(copied_bin, perms).unwrap();
     }
 
     // Compose needs no DB — a dummy URL is fine.
@@ -1413,7 +1411,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         assert!(copied.starts_with(&runtime_dir));
         let mut perms = std::fs::metadata(&copied).unwrap().permissions();
         perms.set_mode(0o755);
-        std::fs::set_permissions(&copied, perms).unwrap();
+        std::fs::set_permissions(copied, perms).unwrap();
     }
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);

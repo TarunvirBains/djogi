@@ -1346,16 +1346,26 @@ mod tests {
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
         let temp_canon = env::temp_dir().canonicalize().unwrap();
         let root = temp_canon.join(format!("djogi-check-secrets-fs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        assert!(root.starts_with(&temp_canon));
+        if root.starts_with(&temp_canon) {
+            let _ = fs::remove_dir_all(&root);
+        }
         assert!(root.starts_with(&temp_canon));
         fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        fs::create_dir_all(root.join(".github/workflows")).unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::create_dir_all(root.join(".git/objects")).unwrap();
-        fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
+        let safe_create_dir = |rel: &str| {
+            let candidate = root.join(rel);
+            assert!(
+                candidate.starts_with(&root),
+                "refusing to create dir outside test root: {}",
+                candidate.display()
+            );
+            fs::create_dir_all(&candidate).unwrap();
+        };
+        safe_create_dir(".github/workflows");
+        safe_create_dir("src");
+        safe_create_dir("target/debug");
+        safe_create_dir(".git/objects");
+        safe_create_dir(".worktrees/issue");
 
         let safe_write = |rel: &str, contents: &str| {
             let candidate = root.join(rel);
@@ -1389,7 +1399,9 @@ mod tests {
         assert!(!as_strings.contains(".git/config"));
         assert!(!as_strings.contains(".worktrees/issue/file.rs"));
 
-        fs::remove_dir_all(root).unwrap();
+        if root.starts_with(&temp_canon) {
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     // ---- URL detection ----

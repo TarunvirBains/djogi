@@ -426,7 +426,9 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     if !phase_zero_path.canonicalize().unwrap_or(phase_zero_path.clone()).starts_with(&work_canon) {
         panic!("phase_zero_path escapes workspace");
     }
-    let original_sql = fs::read_to_string(&phase_zero_path).expect("read bootstrap SQL");
+    let original_sql =
+        djogi::migrate::read_workspace_file_to_string(&work_canon, &phase_zero_path)
+            .expect("read bootstrap SQL");
     fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))
         .expect("mutate bootstrap SQL");
 

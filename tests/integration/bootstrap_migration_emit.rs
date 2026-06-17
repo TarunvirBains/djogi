@@ -191,7 +191,8 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     {
         panic!("up SQL path escapes workspace");
     }
-    let up_sql = fs::read_to_string(&up_path).expect("read up");
+    let up_sql =
+        djogi::migrate::read_workspace_file_to_string(&work_canon, &up_path).expect("read up");
     assert!(
         up_sql.contains("HeeRanjID base schema"),
         "up SQL must include HeeRanjID install"
@@ -229,7 +230,8 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     {
         panic!("down SQL path escapes workspace");
     }
-    let down_sql = fs::read_to_string(&down_path).expect("read down");
+    let down_sql =
+        djogi::migrate::read_workspace_file_to_string(&work_canon, &down_path).expect("read down");
     assert!(
         down_sql.contains("bootstrap migration — down"),
         "down SQL must carry the no-op marker"

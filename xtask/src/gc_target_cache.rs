@@ -25,7 +25,11 @@ pub fn run(dry_run: bool) -> ExitCode {
     let cache_root =
         validate_cache_root_within_home(&home, &cache_root).unwrap_or_else(|e| panic!("{e}"));
 
-    if fs::metadata(&cache_root).is_err() {
+    if !cache_root
+        .canonicalize()
+        .map(|path| path.starts_with(&home))
+        .unwrap_or(false)
+    {
         println!(
             "gc-target-cache: cache root {} does not exist; nothing to do",
             cache_root.display()
@@ -70,9 +74,7 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        let parent = path.parent().expect("cache entry parent");
-        let parent_canon = fs::canonicalize(parent).unwrap_or_else(|e| panic!("{e}"));
-        let vetted = parent_canon.join(path.file_name().expect("cache entry name"));
+        let vetted = fs::canonicalize(&path).unwrap_or_else(|e| panic!("{e}"));
         assert!(vetted.starts_with(&cache_root));
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
