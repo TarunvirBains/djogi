@@ -112,7 +112,18 @@ pub(crate) fn load_committed_replay_plan(
     checksum_up: &str,
     checksum_down: Option<&str>,
 ) -> ReplayPlanLoadStatus {
-    let path = committed_replay_plan_path(workspace_root, bucket, version);
+    let workspace_root = match workspace_root.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            return ReplayPlanLoadStatus::Invalid(ReplayPlanInvalidReason::Io(e.to_string()));
+        }
+    };
+    let path = committed_replay_plan_path(&workspace_root, bucket, version);
+    if !path.starts_with(&workspace_root) {
+        return ReplayPlanLoadStatus::Invalid(ReplayPlanInvalidReason::Io(
+            "resolved plan path resolves outside the workspace root directory".to_owned(),
+        ));
+    }
     let bytes = match fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ReplayPlanLoadStatus::Missing,

@@ -265,10 +265,16 @@ async fn rls_with_fk_tenant_key_filters_correctly(mut ctx: djogi::DjogiContext) 
 #[djogi::djogi_test]
 async fn rls_policy_ddl_uses_bigint_cast(_ctx: djogi::DjogiContext) {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set");
-    let path = std::path::Path::new(&manifest_dir)
+    let manifest_dir =
+        std::path::Path::new(&manifest_dir).canonicalize().expect("canonicalize CARGO_MANIFEST_DIR");
+    let path = manifest_dir
         .join("target")
         .join("djogi_rls")
         .join("documents_rls.sql");
+    assert!(
+        path.starts_with(&manifest_dir),
+        "RLS side-channel path should stay within manifest dir"
+    );
     let contents = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read RLS side-channel at {}: {e}", path.display()));
     assert!(

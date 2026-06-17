@@ -69,17 +69,39 @@ fn parse_justification_line(line: &str, pin_allowed: bool) -> Result<Justificati
 
 pub fn run() -> ExitCode {
     let mut files = Vec::new();
+    let mut canonical_roots = Vec::new();
 
     for root in [Path::new("tests"), Path::new("djogi-cli/tests")] {
-        if root.exists()
-            && let Err(error) = collect_rs_files(root, &mut files)
-        {
+        if !root.exists() {
+            continue;
+        }
+        let canon_root = match root.canonicalize() {
+            Ok(p) => p,
+            Err(error) => {
+                eprintln!("{}: failed to canonicalize root: {error}", display_path(root));
+                continue;
+            }
+        };
+        canonical_roots.push(canon_root);
+
+        if let Err(error) = collect_rs_files(root, &mut files) {
             eprintln!("{}: failed to walk: {error}", display_path(root));
             return ExitCode::FAILURE;
         }
     }
 
-    files.sort();
+    // Filter out any files outside the canonicalized roots (e.g., via symlinks).
+    let mut dominated_files: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|f| {
+            if let Ok(canon) = f.canonicalize() {
+                canonical_roots.iter().any(|r| canon.starts_with(r))
+            } else {
+                true
+            }
+        })
+        .collect();
+    dominated_files.sort();
 
     let mut stats = Stats {
         decorated_items: 0,
@@ -87,7 +109,7 @@ pub fn run() -> ExitCode {
     };
     let mut violations = Vec::new();
 
-    for path in &files {
+    for path in &dominated_files {
         scan_file(path, &mut stats, &mut violations);
     }
 
