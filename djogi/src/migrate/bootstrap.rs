@@ -1448,6 +1448,15 @@ mod tests {
         (root, guard)
     }
 
+    fn safe_remove_workspace(work: &Path) {
+        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, work)
+        {
+            let _ = std::fs::remove_dir_all(&vetted);
+        }
+    }
+
     fn fixed_now() -> OffsetDateTime {
         let date = time::Date::from_calendar_date(2026, time::Month::May, 4).unwrap();
         let t = time::Time::from_hms(12, 0, 0).unwrap();
@@ -1494,12 +1503,7 @@ mod tests {
         assert_eq!(pending.bucket_database, "main");
         assert_eq!(pending.bucket_app, "");
         assert!(pending.checksum_up.starts_with("V1:"));
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if let Ok(vetted) =
-            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
-        {
-            let _ = std::fs::remove_dir_all(&vetted);
-        }
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1521,12 +1525,7 @@ mod tests {
             second.is_empty(),
             "second run must be a no-op once the bootstrap migration exists"
         );
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if let Ok(vetted) =
-            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
-        {
-            let _ = std::fs::remove_dir_all(&vetted);
-        }
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1642,12 +1641,7 @@ mod tests {
             !crud_up.contains("\"postgis\""),
             "cross-database extension bled into crud_log"
         );
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if let Ok(vetted) =
-            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
-        {
-            let _ = std::fs::remove_dir_all(&vetted);
-        }
+        safe_remove_workspace(&work);
     }
 
     /// End-to-end: a model that declares
@@ -1690,12 +1684,7 @@ mod tests {
             up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
             "bootstrap-migration up SQL must auto-install btree_gist: {up}",
         );
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if let Ok(vetted) =
-            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
-        {
-            let _ = std::fs::remove_dir_all(&vetted);
-        }
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1774,12 +1763,7 @@ mod tests {
         let content =
             crate::migrate::common::read_workspace_file_to_string(&work, &up_check_path).unwrap();
         assert_eq!(content, "-- existing bootstrap-migration up");
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if let Ok(vetted) =
-            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &work)
-        {
-            let _ = std::fs::remove_dir_all(&vetted);
-        }
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1849,9 +1833,6 @@ mod tests {
         );
         assert_eq!(emitted[0].pending_json_path, hidden_path);
 
-        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
-        if work.starts_with(&temp_canon) {
-            let _ = std::fs::remove_dir_all(&work);
-        }
+        safe_remove_workspace(&work);
     }
 }
