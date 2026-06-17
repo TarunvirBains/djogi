@@ -305,11 +305,20 @@ const PEM_KEY_LABEL_NEEDLE: &str = "PRIVATE KEY";
 fn scan_repo() -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
     let files = list_repo_files()?;
+    let cwd = env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .map_err(|error| format!("cannot resolve current directory: {error}"))?;
     for path in files {
         if should_skip_file(&path) {
             continue;
         }
-        let Some(content) = read_text_file(&path) else {
+        let canonical = path.canonicalize().map_err(|error| {
+            format!("cannot resolve {}: {error}", path.display())
+        })?;
+        if !canonical.starts_with(&cwd) {
+            continue;
+        }
+        let Some(content) = read_text_file(&canonical) else {
             continue;
         };
         scan_text(&content, Some(&path), &mut findings);
@@ -440,21 +449,29 @@ fn should_use_act_filesystem_fallback(error: &str) -> bool {
 }
 
 fn list_filesystem_repo_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let canonical_root = root.canonicalize()
+        .map_err(|error| format!("cannot resolve root path {}: {error}", root.display()))?;
     let mut paths = Vec::new();
-    collect_filesystem_repo_files(root, root, &mut paths)
+    collect_filesystem_repo_files(&canonical_root, &canonical_root, &mut paths)
         .map_err(|error| format!("filesystem sweep failed: {error}"))?;
     paths.sort();
     Ok(paths)
 }
 
 fn collect_filesystem_repo_files(
-    root: &Path,
+    canonical_root: &Path,
     dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+
+        // Validate containment before following symlinks or processing entries.
+        if !path.starts_with(canonical_root) {
+            continue;
+        }
+
         let file_type = entry.file_type()?;
         let name = path
             .file_name()
@@ -465,9 +482,9 @@ fn collect_filesystem_repo_files(
             if matches!(name, ".git" | ".worktrees" | "node_modules" | "target") {
                 continue;
             }
-            collect_filesystem_repo_files(root, &path, paths)?;
+            collect_filesystem_repo_files(canonical_root, &path, paths)?;
         } else if file_type.is_file() {
-            paths.push(path.strip_prefix(root).unwrap_or(&path).to_owned());
+            paths.push(path.strip_prefix(canonical_root).unwrap_or(&path).to_owned());
         }
     }
 
