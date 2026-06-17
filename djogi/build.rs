@@ -44,7 +44,22 @@ fn main() {
     // parent. Tests / integrators that want to point build.rs at a
     // different root set `DJOGI_WORKSPACE_ROOT` directly.
     let workspace_root = match std::env::var_os("DJOGI_WORKSPACE_ROOT") {
-        Some(root) => PathBuf::from(root),
+        Some(root) => {
+            let candidate = PathBuf::from(root);
+            match std::fs::canonicalize(&candidate) {
+                Ok(p) => p,
+                Err(_) => {
+                    let manifest_dir = match std::env::var_os("CARGO_MANIFEST_DIR") {
+                        Some(s) => PathBuf::from(s),
+                        None => return, // out-of-cargo build context; nothing to do.
+                    };
+                    manifest_dir
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or(manifest_dir)
+                }
+            }
+        }
         None => {
             let manifest_dir = match std::env::var_os("CARGO_MANIFEST_DIR") {
                 Some(s) => PathBuf::from(s),
@@ -93,8 +108,17 @@ pub(crate) struct BuildDiagnostic {
 ///
 /// No regex — byte-level scanning only.
 fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
+    let Ok(root_canon) = std::fs::canonicalize(workspace_root) else {
+        return false;
+    };
     let path = workspace_root.join("Djogi.toml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(path_canon) = std::fs::canonicalize(&path) else {
+        return false;
+    };
+    if !path_canon.starts_with(&root_canon) {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&path_canon) else {
         return false;
     };
     let mut in_build_section = false;
