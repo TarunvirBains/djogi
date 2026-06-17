@@ -1358,44 +1358,21 @@ mod tests {
             fs::create_dir_all(&root).unwrap();
         }
         let root = root.canonicalize().unwrap();
-        let safe_create_dir = |rel: &str| {
-            let candidate = root.join(rel);
-            if !candidate.starts_with(&root) {
-                panic!(
-                    "refusing to create dir outside test root: {}",
-                    candidate.display()
-                );
-            }
-            if let Some(parent) = candidate.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::create_dir_all(&candidate).unwrap();
-        };
-        safe_create_dir(".github/workflows");
-        safe_create_dir("src");
-        safe_create_dir("target/debug");
-        safe_create_dir(".git/objects");
-        safe_create_dir(".worktrees/issue");
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
 
-        let safe_write = |rel: &str, contents: &str| {
-            let candidate = root.join(rel);
-            if !candidate.starts_with(&root) {
-                panic!(
-                    "refusing to write outside test root: {}",
-                    candidate.display()
-                );
-            }
-            fs::write(&candidate, contents).unwrap();
-        };
-
-        safe_write(".github/workflows/ci.yml", "name: CI");
-        safe_write("src/lib.rs", "pub fn ok() {}");
-        safe_write(
-            "target/debug/build.log",
+        fs::write(root.join(".github/workflows/ci.yml"), "name: CI").unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn ok() {}").unwrap();
+        fs::write(
+            root.join("target/debug/build.log"),
             "DATABASE_URL=postgres://real:secret@db/app",
-        );
-        safe_write(".git/config", "ignored");
-        safe_write(".worktrees/issue/file.rs", "ignored");
+        )
+        .unwrap();
+        fs::write(root.join(".git/config"), "ignored").unwrap();
+        fs::write(root.join(".worktrees/issue/file.rs"), "ignored").unwrap();
 
         let files = list_filesystem_repo_files(&root).unwrap();
         let as_strings: BTreeSet<_> = files

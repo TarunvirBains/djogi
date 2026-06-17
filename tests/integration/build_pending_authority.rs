@@ -30,7 +30,6 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
             canon.display()
         );
     }
-    fs::create_dir_all(&canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
     if !canon.starts_with(&temp) && !canon.starts_with(&cwd) {
         panic!(
@@ -48,6 +47,9 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    if tag.contains('/') || tag.contains('\\') || tag.contains("..") {
+        panic!("workspace tag must be a single safe path component: {tag}");
+    }
     let temp_canon = std::env::temp_dir()
         .canonicalize()
         .expect("canonicalize temp directory");
@@ -62,7 +64,14 @@ fn temp_workspace(tag: &str) -> PathBuf {
 fn safe_create_dir(path: &Path) {
     let parent = path.parent().expect("path parent");
     let parent = safe_workspace(parent);
-    let candidate = parent.join(path.file_name().expect("path filename"));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("path filename");
+    if file_name.contains('/') || file_name.contains('\\') || file_name.contains("..") {
+        panic!("path filename must be a single safe component: {file_name}");
+    }
+    let candidate = parent.join(file_name);
     if !candidate.starts_with(&parent) {
         panic!(
             "refusing to create dir outside safe parent: {}",
@@ -160,13 +169,12 @@ fn safe_remove_workspace(path: &Path) {
     let temp_canon = std::env::temp_dir()
         .canonicalize()
         .expect("canonicalize temp directory");
-    let is_within =
-        |parent: &Path, child: &Path| match (parent.canonicalize(), child.canonicalize()) {
-            (Ok(parent_abs), Ok(child_abs)) => child_abs.starts_with(parent_abs),
-            _ => false,
-        };
-    if is_within(&temp_canon, path) {
-        let _ = fs::remove_dir_all(path);
+    let path_canon = match path.canonicalize() {
+        Ok(path_canon) => path_canon,
+        Err(_) => return,
+    };
+    if path_canon.starts_with(&temp_canon) {
+        let _ = fs::remove_dir_all(path_canon);
     }
 }
 

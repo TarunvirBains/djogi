@@ -1356,13 +1356,16 @@ fn nocargo_compose_without_cargo_or_source() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
+        let runtime_dir_canon = runtime_dir
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
         let copied_bin = copied_bin
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
-        if !copied_bin.starts_with(&runtime_dir) {
+        if !copied_bin.starts_with(&runtime_dir_canon) || !copied_bin.is_file() {
             panic!("copied binary escapes runtime dir: {}", copied_bin.display());
         }
-        std::fs::set_permissions(copied_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&copied_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // Compose needs no DB — a dummy URL is fine.
@@ -1405,13 +1408,16 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
+        let runtime_dir_canon = runtime_dir
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
         let copied = copied
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
-        if !copied.starts_with(&runtime_dir) {
+        if !copied.starts_with(&runtime_dir_canon) || !copied.is_file() {
             panic!("copied binary escapes runtime dir: {}", copied.display());
         }
-        std::fs::set_permissions(copied, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&copied, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);
