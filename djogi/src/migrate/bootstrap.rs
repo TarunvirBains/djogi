@@ -670,6 +670,10 @@ pub fn ensure_phase_zero_emitted(
     now: OffsetDateTime,
     _guard: &WorkspaceGuard,
 ) -> Result<Vec<EmittedPhaseZero>, AutoEmitError> {
+    let workspace_root_canon = workspace_root.canonicalize().map_err(|e| {
+        AutoEmitError::Io { path: workspace_root.to_path_buf(), source: e }
+    })?;
+
     // 1. Collect the distinct database set from inputs.
     // Sources:
     // - Every bucket in `models` carries a `database`.
@@ -698,6 +702,16 @@ pub fn ensure_phase_zero_emitted(
         let pending_path =
             phase_zero_pending_json_path(workspace_root, database, PHASE_ZERO_VERSION);
         let legacy_pending_path = pending_json_path(workspace_root, &bucket);
+
+        // Validate constructed paths stay within the canonicalized workspace root
+        // to prevent path-injection via symlinks or relative components.
+        if !dir.starts_with(&workspace_root_canon)
+            || !pending_path.starts_with(&workspace_root_canon)
+            || !legacy_pending_path.starts_with(&workspace_root_canon)
+        {
+            continue;
+        }
+
         let hidden_pending_exists = pending_path.exists();
 
         // All three artifacts must be present and the pending JSON must
