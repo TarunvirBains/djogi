@@ -1324,21 +1324,30 @@ mod tests {
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
         let root = env::temp_dir().join(format!("djogi-check-secrets-fs-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         fs::create_dir_all(root.join(".github/workflows")).unwrap();
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("target/debug")).unwrap();
         fs::create_dir_all(root.join(".git/objects")).unwrap();
         fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
 
-        fs::write(root.join(".github/workflows/ci.yml"), "name: CI").unwrap();
-        fs::write(root.join("src/lib.rs"), "pub fn ok() {}").unwrap();
-        fs::write(
-            root.join("target/debug/build.log"),
+        let safe_write = |rel: &str, contents: &str| {
+            let candidate = root.join(rel);
+            if !candidate.starts_with(&root) {
+                panic!("refusing to write outside test root: {}", candidate.display());
+            }
+            fs::write(candidate, contents).unwrap();
+        };
+
+        safe_write(".github/workflows/ci.yml", "name: CI");
+        safe_write("src/lib.rs", "pub fn ok() {}");
+        safe_write(
+            "target/debug/build.log",
             "DATABASE_URL=postgres://real:secret@db/app",
-        )
-        .unwrap();
-        fs::write(root.join(".git/config"), "ignored").unwrap();
-        fs::write(root.join(".worktrees/issue/file.rs"), "ignored").unwrap();
+        );
+        safe_write(".git/config", "ignored");
+        safe_write(".worktrees/issue/file.rs", "ignored");
 
         let files = list_filesystem_repo_files(&root).unwrap();
         let as_strings: BTreeSet<_> = files
