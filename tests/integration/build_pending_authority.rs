@@ -29,12 +29,7 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
-    let anchor = if canon.starts_with(&temp) {
-        &temp
-    } else {
-        &cwd
-    };
-    djogi::migrate::create_workspace_dir_all(anchor, &canon).unwrap();
+    fs::create_dir_all(&canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
@@ -56,7 +51,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .expect("canonicalize temp directory");
     let p = temp_canon.join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
     assert!(p.starts_with(&temp_canon));
-    djogi::migrate::create_workspace_dir_all(&temp_canon, &p).unwrap();
+    fs::create_dir_all(&p).unwrap();
     safe_workspace(&p)
 }
 
@@ -69,7 +64,7 @@ fn safe_create_dir(path: &Path) {
         "refusing to create dir outside safe parent: {}",
         candidate.display()
     );
-    djogi::migrate::create_workspace_dir_all(&parent, &candidate).unwrap();
+    fs::create_dir_all(&candidate).unwrap();
 }
 
 fn safe_write_bytes(path: &Path, bytes: impl AsRef<[u8]>) {
@@ -195,10 +190,11 @@ fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema
     let snapshot_path =
         vetted_child_path(&work.join("migrations/main/_global_/schema_snapshot.json"));
     safe_create_dir(snapshot_path.parent().unwrap());
-    safe_write_bytes(
+    fs::write(
         &snapshot_path,
         serde_json::to_vec_pretty(snapshot_schema).unwrap(),
-    );
+    )
+    .unwrap();
 }
 
 type InventoryWriter = fn(&std::path::Path);
@@ -443,10 +439,11 @@ fn build_collect_diagnostics_includes_hidden_phase_zero_pending() {
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), pending_schema.clone());
     safe_create_dir(&work.join("target"));
-    safe_write_bytes(
-        &work.join("target/djogi_models.json"),
+    fs::write(
+        vetted_child_path(&work.join("target/djogi_models.json")),
         serde_json::to_vec_pretty(&models).unwrap(),
-    );
+    )
+    .unwrap();
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
     safe_create_dir(snapshot_path.parent().unwrap());

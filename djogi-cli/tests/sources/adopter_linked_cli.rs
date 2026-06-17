@@ -1360,9 +1360,7 @@ fn nocargo_compose_without_cargo_or_source() {
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
         assert!(copied_bin.starts_with(&runtime_dir));
-        let mut perms = std::fs::metadata(&copied_bin).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(copied_bin, perms).unwrap();
+        std::fs::set_permissions(copied_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     // Compose needs no DB — a dummy URL is fine.
@@ -1409,9 +1407,7 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
         assert!(copied.starts_with(&runtime_dir));
-        let mut perms = std::fs::metadata(&copied).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(copied, perms).unwrap();
+        std::fs::set_permissions(copied, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);
