@@ -510,7 +510,10 @@ mod tests {
             root_canon.starts_with(&temp_canon),
             "remove_dir_all refused: workspace path escapes temp directory"
         );
-        let _ = fs::remove_dir_all(&root_canon);
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &root_canon);
     }
 
     #[test]

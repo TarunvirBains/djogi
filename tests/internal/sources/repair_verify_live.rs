@@ -89,7 +89,7 @@ fn safe_remove_workspace(path: &std::path::Path) {
                 path.display()
             );
         }
-        let _ = std::fs::remove_dir_all(path_canon);
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
     }
 }
 
@@ -105,7 +105,7 @@ fn safe_remove_file(path: &std::path::Path) {
             path.display()
         );
     }
-    let _ = std::fs::remove_file(vetted);
+    let _ = djogi::migrate::remove_workspace_file(&temp_canon, &vetted);
 }
 
 fn safe_read(path: &std::path::Path) -> Vec<u8> {

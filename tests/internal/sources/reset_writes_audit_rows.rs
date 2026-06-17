@@ -65,7 +65,6 @@
 // - v3 plan §453 (audit table schema), §469.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use djogi::config::MigrateConfig;
@@ -364,7 +363,7 @@ async fn db_reset_with_audit_pool_writes_djogi_ddl_audit_rows() {
     if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
         && let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, &work)
     {
-        let _ = fs::remove_dir_all(vetted);
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &vetted);
     }
 }
 
@@ -426,6 +425,6 @@ async fn db_reset_without_audit_pool_leaves_audit_table_absent() {
     if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
         && let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, &work)
     {
-        let _ = fs::remove_dir_all(vetted);
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &vetted);
     }
 }

@@ -6671,7 +6671,7 @@ mod tests {
             && let Ok(vetted) =
                 crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&vetted);
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
         }
     }
 
@@ -6720,7 +6720,7 @@ mod tests {
             && let Ok(vetted) =
                 crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&vetted);
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
         }
     }
 
@@ -6862,7 +6862,7 @@ mod tests {
             && let Ok(vetted) =
                 crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
         {
-            let _ = std::fs::remove_file(&vetted);
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
         }
     }
 

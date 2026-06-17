@@ -148,12 +148,20 @@ fn safe_write_workspace_file(workspace: &Path, rel: &str, contents: &str) {
 
 fn safe_copy_workspace_file(workspace: &Path, rel: &str, src: &Path) -> PathBuf {
     let workspace_canon = safe_workspace(workspace);
+    let src_canon = src
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize {}: {err}", src.display()));
     let target = djogi::migrate::resolve_write_workspace_path(&workspace_canon, rel)
         .unwrap_or_else(|err| panic!("resolve target {}: {err}", rel));
     djogi::migrate::create_workspace_parent_dirs(&workspace_canon, &target)
         .unwrap_or_else(|err| panic!("create parent for {}: {err}", target.display()));
-    std::fs::copy(src, &target)
-        .unwrap_or_else(|err| panic!("copy {} -> {}: {err}", src.display(), target.display()));
+    std::fs::copy(&src_canon, &target).unwrap_or_else(|err| {
+        panic!(
+            "copy {} -> {}: {err}",
+            src_canon.display(),
+            target.display()
+        )
+    });
     target
 }
 
@@ -342,7 +350,7 @@ fn rebind_fixture_workspace_paths(workspace: &Path, repo_root: &Path) {
 
     for rel in ["tracker/Cargo.toml", "billing/Cargo.toml", "bin/Cargo.toml"] {
         let manifest = workspace.join(rel);
-        if !manifest.exists() {
+        if !djogi::migrate::workspace_path_exists(&workspace_canon, &manifest) {
             continue;
         }
         let manifest_canon = manifest
@@ -1355,6 +1363,9 @@ fn nocargo_compose_without_cargo_or_source() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
+        let copied_bin = copied_bin
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
         let mut perms = std::fs::metadata(&copied_bin).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&copied_bin, perms).unwrap();
@@ -1400,6 +1411,9 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
+        let copied = copied
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
         let mut perms = std::fs::metadata(&copied).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&copied, perms).unwrap();

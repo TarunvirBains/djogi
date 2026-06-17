@@ -133,7 +133,7 @@ fn fresh_empty_workspace(stub: &str) -> std::path::PathBuf {
         "refusing to create dir outside temp: {}",
         dir.display()
     );
-    std::fs::create_dir_all(&dir).expect("create temp workspace");
+    djogi::migrate::create_workspace_dir_all(&temp_canonical, &dir).expect("create temp workspace");
     dir.canonicalize().expect("canonicalize temp workspace")
 }
 
@@ -180,9 +180,8 @@ fn verify_with_empty_provider_and_no_snapshots_refuses_exit_2() {
         "refusing to remove dir outside temp: {}",
         workspace.display()
     );
-    let _ = std::fs::remove_dir_all(
-        workspace
-            .canonicalize()
-            .expect("canonicalize temp workspace for cleanup"),
-    );
+    let workspace = workspace
+        .canonicalize()
+        .expect("canonicalize temp workspace for cleanup");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canonical, &workspace);
 }

@@ -1733,7 +1733,7 @@ mod tests {
             if !path_canon.starts_with(&temp_canon) {
                 panic!("remove_dir_all refused: path escapes temp directory");
             }
-            let _ = fs::remove_dir_all(path_canon);
+            let _ = super::common::remove_workspace_dir_all(&temp_canon, &path_canon);
         }
     }
 

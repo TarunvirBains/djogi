@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -92,7 +91,7 @@ fn write_committed_sql(
     let dir = bucket_dir(&workspace_canon, bucket);
     let dir = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &dir)
         .expect("resolve bucket dir");
-    fs::create_dir_all(&dir).expect("create bucket dir");
+    djogi::migrate::create_workspace_dir_all(&workspace_canon, &dir).expect("create bucket dir");
     let dir = dir.canonicalize().expect("canonicalize bucket dir");
     assert!(dir.starts_with(&workspace_canon), "bucket dir escapes workspace");
     let up_path = dir.join(up_filename(version));
@@ -114,7 +113,10 @@ fn safe_remove_workspace(workspace: &Path) {
         workspace_canon.starts_with(&temp_canon),
         "workspace cleanup escapes temp dir"
     );
-    let _ = fs::remove_dir_all(&workspace_canon);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &workspace_canon);
 }
 
 fn snapshot_path(workspace: &Path, bucket: &BucketKey) -> PathBuf {

@@ -112,7 +112,7 @@ fn temp_workspace_root() -> PathBuf {
 fn safe_remove_snapshot(path: &Path) {
     let temp_root = test_temp_root();
     if is_within(&temp_root, path) {
-        let _ = std::fs::remove_file(path);
+        let _ = djogi::migrate::remove_workspace_file(&temp_root, path);
     }
 }
 
@@ -121,7 +121,7 @@ fn safe_remove_workspace(path: &Path) {
         .canonicalize()
         .expect("canonicalize temp dir");
     if let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
-        let _ = std::fs::remove_dir_all(vetted);
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &vetted);
     }
 }
 

@@ -716,20 +716,21 @@ pub fn ensure_phase_zero_emitted(
             continue;
         }
 
-        let hidden_pending_exists = pending_path.exists();
+        let hidden_pending_exists =
+            common::workspace_path_exists(&workspace_root_canon, &pending_path);
 
         // All three artifacts must be present and the pending JSON must
         // parse as a Phase 0 witness before the emit is considered
         // complete. Checking only path existence would let partial or
         // foreign pending files suppress re-emission forever.
-        let phase_zero_complete = up_path.exists()
-            && down_path.exists()
+        let phase_zero_complete = common::workspace_path_exists(&workspace_root_canon, &up_path)
+            && common::workspace_path_exists(&workspace_root_canon, &down_path)
             && load_pending(&pending_path)
                 .ok()
                 .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
         let legacy_phase_zero_complete = !hidden_pending_exists
-            && up_path.exists()
-            && down_path.exists()
+            && common::workspace_path_exists(&workspace_root_canon, &up_path)
+            && common::workspace_path_exists(&workspace_root_canon, &down_path)
             && load_pending(&legacy_pending_path)
                 .ok()
                 .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
@@ -1453,7 +1454,7 @@ mod tests {
         if let Ok(vetted) =
             crate::migrate::common::resolve_existing_workspace_path(&temp_canon, work)
         {
-            let _ = std::fs::remove_dir_all(&vetted);
+            let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &vetted);
         }
     }
 

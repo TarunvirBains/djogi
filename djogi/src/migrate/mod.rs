@@ -96,9 +96,11 @@ pub use build_match::{
     format_warning_inventory_malformed,
 };
 pub use common::{
-    create_workspace_parent_dirs, read_workspace_file, read_workspace_file_to_string,
-    resolve_existing_workspace_path, resolve_maybe_missing_workspace_path,
-    resolve_read_workspace_path, resolve_write_workspace_path, write_workspace_file,
+    create_workspace_dir_all, create_workspace_parent_dirs, read_workspace_dir,
+    read_workspace_file, read_workspace_file_to_string, remove_workspace_dir_all,
+    remove_workspace_file, resolve_existing_workspace_path, resolve_maybe_missing_workspace_path,
+    resolve_read_workspace_path, resolve_write_workspace_path, workspace_path_exists,
+    write_workspace_file,
 };
 pub use compose::{
     AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,

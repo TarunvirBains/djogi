@@ -18,6 +18,12 @@ pub fn run(dry_run: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let cache_root =
+        validate_cache_root_within_home(&home, &cache_root).unwrap_or_else(|e| panic!("{e}"));
 
     if !cache_root.exists() {
         println!(
@@ -64,14 +70,8 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        let vetted = validate_cache_root_within_home(
-            &std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())
-                .unwrap_or_else(|e| panic!("{e}")),
-            &path,
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
+        let vetted =
+            validate_cache_root_within_home(&home, &path).unwrap_or_else(|e| panic!("{e}"));
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
@@ -186,7 +186,11 @@ fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
 
 fn read_cache_ids(root: &Path) -> io::Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
-    for entry in fs::read_dir(root)? {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.to_path_buf());
+    let root = validate_cache_root_within_home(&home, root).map_err(io::Error::other)?;
+    for entry in fs::read_dir(&root)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if !file_type.is_dir() {

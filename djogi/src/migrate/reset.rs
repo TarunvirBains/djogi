@@ -1982,7 +1982,7 @@ mod tests {
             if !path_canon.starts_with(&temp_canon) {
                 panic!("remove_dir_all refused: workspace path escapes temp directory");
             }
-            let _ = fs::remove_dir_all(&path_canon);
+            let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &path_canon);
         }
     }
 
@@ -3788,8 +3788,13 @@ mod tests {
             "bucket escapes workspace"
         );
 
-        fs::write(
+        let legacy_path = crate::migrate::common::resolve_write_workspace_path(
+            &root_canon,
             bucket.join("V20260301000000__legacy.sql"),
+        )
+        .expect("resolve legacy sql path");
+        fs::write(
+            &legacy_path,
             "-- Djogi composed migration — up\n-- Version: V20260301000000__legacy\n\
              CREATE TABLE users (id bigint PRIMARY KEY);\n",
         )
@@ -3806,6 +3811,6 @@ mod tests {
             "error must mention the legacy file: {err}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        let _ = crate::migrate::common::remove_workspace_dir_all(&root_canon, &root_canon);
     }
 }

@@ -122,7 +122,7 @@ fn load_replay_plan_from_disk(
         });
     }
 
-    let sidecar_bytes = match std::fs::read(&replay_plan_path) {
+    let sidecar_bytes = match djogi::migrate::read_workspace_file(&ws_canon, &replay_plan_path) {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
@@ -206,12 +206,15 @@ fn load_replay_plan_from_disk(
         });
     }
 
-    let up_sql = std::fs::read_to_string(&up_path).map_err(|e| ApplyReplayPlanError::SqlRead {
-        path: up_path.clone(),
-        source: e.to_string(),
-    })?;
+    let up_sql =
+        djogi::migrate::read_workspace_file_to_string(&ws_canon, &up_path).map_err(|e| {
+            ApplyReplayPlanError::SqlRead {
+                path: up_path.clone(),
+                source: e.to_string(),
+            }
+        })?;
 
-    let down_sql = match std::fs::read_to_string(&down_path) {
+    let down_sql = match djogi::migrate::read_workspace_file_to_string(&ws_canon, &down_path) {
         Ok(sql) => sql,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
@@ -389,7 +392,7 @@ fn classify_phase_zero_for_cleanup(
         ));
     }
 
-    if let Ok(bytes) = std::fs::read(&replay_plan_path) {
+    if let Ok(bytes) = djogi::migrate::read_workspace_file(&ws_canon, &replay_plan_path) {
         let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
             Ok(s) => s,
             Err(e) => {
@@ -435,7 +438,7 @@ fn classify_phase_zero_for_cleanup(
             ws_canon.display()
         ));
     }
-    match std::fs::read_to_string(&up_path) {
+    match djogi::migrate::read_workspace_file_to_string(&ws_canon, &up_path) {
         Ok(up_sql) => classify_phase_zero_bytes(up_sql.as_bytes()),
         Err(e) => Some(format!("read up SQL file {}: {e}", up_path.display())),
     }
@@ -528,7 +531,7 @@ fn discover_snapshot_buckets_on_disk(
     {
         return out;
     }
-    let Ok(db_entries) = std::fs::read_dir(&migrations_root) else {
+    let Ok(db_entries) = djogi::migrate::read_workspace_dir(&ws_canon, &migrations_root) else {
         return out;
     };
     for db_entry in db_entries.flatten() {
@@ -547,7 +550,7 @@ fn discover_snapshot_buckets_on_disk(
         {
             continue;
         }
-        let Ok(app_entries) = std::fs::read_dir(&db_path) else {
+        let Ok(app_entries) = djogi::migrate::read_workspace_dir(&ws_canon, &db_path) else {
             continue;
         };
         for app_entry in app_entries.flatten() {
@@ -1495,7 +1498,7 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
         ));
     }
 
-    let Ok(db_entries) = std::fs::read_dir(&pending_root) else {
+    let Ok(db_entries) = djogi::migrate::read_workspace_dir(&ws_canon, &pending_root) else {
         return Ok(out);
     };
 
@@ -1518,7 +1521,7 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
             continue;
         }
 
-        let Ok(app_entries) = std::fs::read_dir(&db_dir) else {
+        let Ok(app_entries) = djogi::migrate::read_workspace_dir(&ws_canon, &db_dir) else {
             continue;
         };
 
@@ -1535,7 +1538,9 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
             };
             if file_type.is_dir() {
                 if app_entry.file_name().to_str() == Some(".phase_zero") {
-                    let Ok(phase_zero_entries) = std::fs::read_dir(&path) else {
+                    let Ok(phase_zero_entries) =
+                        djogi::migrate::read_workspace_dir(&ws_canon, &path)
+                    else {
                         continue;
                     };
                     for phase_zero_entry in phase_zero_entries.flatten() {
@@ -4493,7 +4498,7 @@ mod tests {
             .canonicalize()
             .expect("canonicalize temp dir");
         if let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
-            let _ = fs::remove_dir_all(&path_canon);
+            let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
         }
     }
 
@@ -4502,7 +4507,7 @@ mod tests {
             .canonicalize()
             .expect("canonicalize temp dir");
         if let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
-            let _ = fs::remove_file(&path_canon);
+            let _ = djogi::migrate::remove_workspace_file(&temp_canon, &path_canon);
         }
     }
 
@@ -4860,7 +4865,7 @@ mod tests {
             &ws_canon,
         );
         djogi::migrate::create_workspace_parent_dirs(&ws_canon, &plan_path).unwrap();
-        std::fs::create_dir(&plan_path).unwrap();
+        djogi::migrate::create_workspace_dir_all(&ws_canon, &plan_path).unwrap();
         let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
         load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
             .expect_err("non-NotFound sidecar read errors must surface");
@@ -6886,7 +6891,10 @@ mod tests {
         // widgets — that is the whole point. Find the file and check.
         let billing_dir = djogi::migrate::bucket_dir(&work, &billing_bucket);
         let mut up_path: Option<PathBuf> = None;
-        for entry in fs::read_dir(&billing_dir).unwrap().flatten() {
+        for entry in djogi::migrate::read_workspace_dir(&work, &billing_dir)
+            .unwrap()
+            .flatten()
+        {
             let n = entry.file_name().to_string_lossy().to_string();
             // Up file pattern: starts with "V", ends with ".sdjql", does
             // NOT contain ".down.".

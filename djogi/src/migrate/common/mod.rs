@@ -199,8 +199,24 @@ pub fn read_workspace_file<P: AsRef<Path>>(
     workspace_root: &Path,
     candidate: P,
 ) -> io::Result<Vec<u8>> {
-    let candidate = resolve_read_workspace_path(workspace_root, candidate)?;
-    std::fs::read(candidate)
+    let workspace_root = canonicalize_base(workspace_root)?;
+    let candidate = if candidate.as_ref().is_absolute() {
+        candidate.as_ref().to_path_buf()
+    } else {
+        workspace_root.join(candidate.as_ref())
+    };
+    let candidate = candidate.canonicalize()?;
+    if !candidate.starts_with(&workspace_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "candidate path {} is outside allowed base {}",
+                candidate.display(),
+                workspace_root.display()
+            ),
+        ));
+    }
+    std::fs::read(&candidate)
 }
 
 #[allow(dead_code)]
@@ -221,8 +237,26 @@ pub fn write_workspace_file<P: AsRef<Path>>(
     candidate: P,
     bytes: &[u8],
 ) -> io::Result<PathBuf> {
-    let _ = create_workspace_parent_dirs(workspace_root, candidate.as_ref())?;
-    let candidate = resolve_write_workspace_path(workspace_root, candidate)?;
+    let workspace_root = canonicalize_base(workspace_root)?;
+    let candidate = if candidate.as_ref().is_absolute() {
+        candidate.as_ref().to_path_buf()
+    } else {
+        workspace_root.join(candidate.as_ref())
+    };
+    let candidate = canonicalize_with_parent_fallback(&candidate)?;
+    if !candidate.starts_with(&workspace_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "candidate path {} is outside allowed base {}",
+                candidate.display(),
+                workspace_root.display()
+            ),
+        ));
+    }
+    if let Some(parent) = candidate.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&candidate, bytes)?;
     Ok(candidate)
 }
@@ -239,10 +273,10 @@ pub fn create_workspace_parent_dirs<P: AsRef<Path>>(
     } else {
         workspace_root.join(candidate.as_ref())
     };
+    let candidate = canonicalize_with_parent_fallback(&candidate)?;
     let parent = candidate
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    let parent = canonicalize_with_parent_fallback(parent)?;
     if !parent.starts_with(&workspace_root) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -253,6 +287,84 @@ pub fn create_workspace_parent_dirs<P: AsRef<Path>>(
             ),
         ));
     }
-    std::fs::create_dir_all(&parent)?;
-    Ok(parent)
+    std::fs::create_dir_all(parent)?;
+    Ok(parent.to_path_buf())
+}
+
+#[allow(dead_code)]
+pub fn create_workspace_dir_all<P: AsRef<Path>>(
+    workspace_root: &Path,
+    candidate: P,
+) -> io::Result<PathBuf> {
+    let workspace_root = canonicalize_base(workspace_root)?;
+    let candidate = if candidate.as_ref().is_absolute() {
+        candidate.as_ref().to_path_buf()
+    } else {
+        workspace_root.join(candidate.as_ref())
+    };
+    let candidate = canonicalize_with_parent_fallback(&candidate)?;
+    if !candidate.starts_with(&workspace_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "candidate path {} is outside allowed base {}",
+                candidate.display(),
+                workspace_root.display()
+            ),
+        ));
+    }
+    std::fs::create_dir_all(&candidate)?;
+    Ok(candidate)
+}
+
+#[allow(dead_code)]
+pub fn read_workspace_dir<P: AsRef<Path>>(
+    workspace_root: &Path,
+    candidate: P,
+) -> io::Result<std::fs::ReadDir> {
+    let workspace_root = canonicalize_base(workspace_root)?;
+    let candidate = if candidate.as_ref().is_absolute() {
+        candidate.as_ref().to_path_buf()
+    } else {
+        workspace_root.join(candidate.as_ref())
+    };
+    let candidate = candidate.canonicalize()?;
+    if !candidate.starts_with(&workspace_root) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "candidate path {} is outside allowed base {}",
+                candidate.display(),
+                workspace_root.display()
+            ),
+        ));
+    }
+    std::fs::read_dir(&candidate)
+}
+
+#[allow(dead_code)]
+pub fn remove_workspace_dir_all<P: AsRef<Path>>(
+    workspace_root: &Path,
+    candidate: P,
+) -> io::Result<PathBuf> {
+    let candidate = resolve_existing_workspace_path(workspace_root, candidate)?;
+    std::fs::remove_dir_all(&candidate)?;
+    Ok(candidate)
+}
+
+#[allow(dead_code)]
+pub fn remove_workspace_file<P: AsRef<Path>>(
+    workspace_root: &Path,
+    candidate: P,
+) -> io::Result<PathBuf> {
+    let candidate = resolve_existing_workspace_path(workspace_root, candidate)?;
+    std::fs::remove_file(&candidate)?;
+    Ok(candidate)
+}
+
+#[allow(dead_code)]
+pub fn workspace_path_exists<P: AsRef<Path>>(workspace_root: &Path, candidate: P) -> bool {
+    resolve_existing_workspace_path(workspace_root, candidate)
+        .map(|candidate| candidate.exists())
+        .unwrap_or(false)
 }

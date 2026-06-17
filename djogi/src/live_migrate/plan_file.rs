@@ -400,7 +400,7 @@ mod tests {
                     .unwrap_or_else(|_| temp_root.join(&dir_name));
             let path = common::resolve_write_workspace_path(&temp_root, &path)
                 .expect("resolve tempdir path");
-            std::fs::create_dir_all(&path).expect("create tempdir");
+            common::create_workspace_dir_all(&temp_root, &path).expect("create tempdir");
             TempDir(path)
         }
 
@@ -411,7 +411,8 @@ mod tests {
 
     impl Drop for TempDir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let temp_root = std::env::temp_dir();
+            let _ = common::remove_workspace_dir_all(&temp_root, &self.0);
         }
     }
 

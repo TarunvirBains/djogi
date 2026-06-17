@@ -41,7 +41,6 @@
 // - Plan specs for verify CLI semantics.
 // - `djogi-cli/src/verify.rs` — the implementation under test.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -84,7 +83,8 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
     let dir = workspace_canon.join("migrations").join(database).join(app_dir);
     let dir = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &dir)
         .expect("resolve migrations subtree");
-    fs::create_dir_all(&dir).expect("create migrations subtree");
+    djogi::migrate::create_workspace_dir_all(&workspace_canon, &dir)
+        .expect("create migrations subtree");
     let dir = dir.canonicalize().expect("canonicalize migrations subtree");
     if !dir.starts_with(&workspace_canon) {
         panic!("migrations dir escapes workspace");
@@ -200,7 +200,7 @@ fn safe_remove_workspace(path: &Path) {
     if !path_canon.starts_with(&temp_canon) {
         panic!("remove workspace refused: path escapes temp directory");
     }
-    let _ = fs::remove_dir_all(&path_canon);
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
 }
 
 #[djogi::djogi_test]

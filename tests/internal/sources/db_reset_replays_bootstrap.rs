@@ -55,12 +55,10 @@ fn temp_workspace(label: &str) -> PathBuf {
 
 fn safe_remove_workspace(path: &Path) {
     if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-        && !path_canon.starts_with(&temp_canon)
+        && let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
     {
-        panic!("remove_dir_all refused: workspace path escapes temp directory");
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
     }
-    let _ = fs::remove_dir_all(path);
 }
 
 fn lock_for(workspace: &Path) -> WorkspaceGuard {
