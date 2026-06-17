@@ -116,38 +116,21 @@ impl std::error::Error for SnapshotError {
 /// (BTreeMap keys, sorted Vec fields, alphabetical struct field
 /// declarations).
 pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), SnapshotError> {
-    let parent = path.parent().ok_or_else(|| SnapshotError::Io {
+    let path_canon =
+        common::canonicalize_with_parent_fallback(path).map_err(|e| SnapshotError::Io {
+            path: Some(path.to_path_buf()),
+            source: e,
+        })?;
+    let parent = path_canon.parent().ok_or_else(|| SnapshotError::Io {
         path: Some(path.to_path_buf()),
         source: io::Error::new(io::ErrorKind::InvalidInput, "snapshot path has no parent"),
     })?;
     if !parent.as_os_str().is_empty() {
-        super::common::create_workspace_parent_dirs(
-            parent.parent().unwrap_or_else(|| Path::new(".")),
-            path,
-        )
-        .map_err(|e| SnapshotError::Io {
-            path: Some(parent.to_path_buf()),
-            source: e,
-        })?;
-        super::common::create_workspace_parent_dirs(
-            parent.parent().unwrap_or_else(|| Path::new(".")),
-            path,
-        )
-        .map_err(|e| SnapshotError::Io {
+        fs::create_dir_all(parent).map_err(|e| SnapshotError::Io {
             path: Some(parent.to_path_buf()),
             source: e,
         })?;
     }
-
-    let parent_canon = fs::canonicalize(parent).map_err(|e| SnapshotError::Io {
-        path: Some(parent.to_path_buf()),
-        source: e,
-    })?;
-    let path_canon =
-        common::ensure_within_base(&parent_canon, path).map_err(|err| SnapshotError::Io {
-            path: Some(path.to_path_buf()),
-            source: err,
-        })?;
 
     let mut bytes = serde_json::to_vec_pretty(snapshot).map_err(|e| SnapshotError::Parse {
         path: Some(path.to_path_buf()),

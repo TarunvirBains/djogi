@@ -155,8 +155,16 @@ fn safe_copy_workspace_file(workspace: &Path, rel: &str, src: &Path) -> PathBuf 
         .unwrap_or_else(|err| panic!("resolve target {}: {err}", rel));
     let bytes = std::fs::read(&src_canon)
         .unwrap_or_else(|err| panic!("read {}: {err}", src_canon.display()));
-    djogi::migrate::write_workspace_file(&workspace_canon, &target, &bytes)
+    let target = djogi::migrate::write_workspace_file(&workspace_canon, &target, &bytes)
         .unwrap_or_else(|err| panic!("write {}: {err}", target.display()));
+    #[cfg(unix)]
+    {
+        let src_permissions = std::fs::metadata(&src_canon)
+            .unwrap_or_else(|err| panic!("metadata {}: {err}", src_canon.display()))
+            .permissions();
+        std::fs::set_permissions(&target, src_permissions)
+            .unwrap_or_else(|err| panic!("chmod {}: {err}", target.display()));
+    }
     target
 }
 
@@ -1353,20 +1361,6 @@ fn nocargo_compose_without_cargo_or_source() {
     // Copy binary + config to an isolated temp dir (no source code there).
     let runtime_dir = safe_workspace(&temp_workspace("nocargo"));
     let copied_bin = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let runtime_dir_canon = runtime_dir
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied_bin = djogi::migrate::resolve_read_workspace_path(&runtime_dir_canon, "djogi")
-            .and_then(std::fs::canonicalize)
-            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
-        if !copied_bin.starts_with(&runtime_dir_canon) || !copied_bin.is_file() {
-            panic!("copied binary escapes runtime dir: {}", copied_bin.display());
-        }
-        std::fs::set_permissions(&copied_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
 
     // Compose needs no DB — a dummy URL is fine.
     write_minimal_djogi_toml(&runtime_dir, "postgres://localhost/none");
@@ -1404,21 +1398,6 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
     let bin = build_fixture_djogi("adopter_app", "adopter_app_fixture");
     let runtime_dir = safe_workspace(&temp_workspace("container-apply"));
     let copied = safe_copy_workspace_file(&runtime_dir, "djogi", &bin);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let runtime_dir_canon = runtime_dir
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied = djogi::migrate::resolve_read_workspace_path(&runtime_dir_canon, "djogi")
-            .and_then(std::fs::canonicalize)
-            .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
-        if !copied.starts_with(&runtime_dir_canon) || !copied.is_file() {
-            panic!("copied binary escapes runtime dir: {}", copied.display());
-        }
-        std::fs::set_permissions(&copied, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
 
     write_minimal_djogi_toml(&runtime_dir, &db_url);
     let empty_path = temp_workspace("container-path");

@@ -894,16 +894,6 @@ fn collect_checksum_parity_issues(
                 source: err,
             })?;
     let scan_dir = migrations_root(workspace_root).join(database);
-    let scan_dir = match common::resolve_existing_workspace_path(&ws_canon, &scan_dir) {
-        Ok(scan_dir) => scan_dir,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => {
-            return Err(ResetError::MigrationScanFailed {
-                path: scan_dir,
-                source,
-            });
-        }
-    };
     let on_disk = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
             path: scan_dir,
