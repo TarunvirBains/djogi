@@ -94,9 +94,33 @@ fn load_replay_plan_from_disk(
     pending_checksum_up: &str,
     pending_checksum_down: Option<&str>,
 ) -> Result<(djogi::migrate::MigrationPlan, String, Option<String>), ApplyReplayPlanError> {
+    let ws_canon = workspace.canonicalize().map_err(|_| {
+        ApplyReplayPlanError::PathEscape {
+            path: workspace.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+        }
+    })?;
+
     // Try to load the committed replay plan JSON first.
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    if let Ok(bd_canon) = bucket_dir.canonicalize()
+        && !bd_canon.starts_with(&ws_canon)
+    {
+        return Err(ApplyReplayPlanError::PathEscape {
+            path: bucket_dir.clone(),
+            workspace: ws_canon.clone(),
+        });
+    }
     let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
+
+    if let Ok(rp_canon) = replay_plan_path.canonicalize()
+        && !rp_canon.starts_with(&ws_canon)
+    {
+        return Err(ApplyReplayPlanError::PathEscape {
+            path: replay_plan_path.clone(),
+            workspace: ws_canon.clone(),
+        });
+    }
 
     let sidecar_bytes = match std::fs::read(&replay_plan_path) {
         Ok(bytes) => Some(bytes),
@@ -164,7 +188,23 @@ fn load_replay_plan_from_disk(
     let up_filename = djogi::migrate::up_filename(version);
     let down_filename = djogi::migrate::down_filename(version);
     let up_path = bucket_dir.join(&up_filename);
+    if let Ok(up_canon) = up_path.canonicalize()
+        && !up_canon.starts_with(&ws_canon)
+    {
+        return Err(ApplyReplayPlanError::PathEscape {
+            path: up_path.clone(),
+            workspace: ws_canon.clone(),
+        });
+    }
     let down_path = bucket_dir.join(&down_filename);
+    if let Ok(down_canon) = down_path.canonicalize()
+        && !down_canon.starts_with(&ws_canon)
+    {
+        return Err(ApplyReplayPlanError::PathEscape {
+            path: down_path.clone(),
+            workspace: ws_canon.clone(),
+        });
+    }
 
     let up_sql = std::fs::read_to_string(&up_path).map_err(|e| ApplyReplayPlanError::SqlRead {
         path: up_path.clone(),
@@ -249,6 +289,10 @@ enum ApplyReplayPlanError {
         computed: String,
         pending: String,
     },
+    PathEscape {
+        path: PathBuf,
+        workspace: PathBuf,
+    },
 }
 
 impl std::fmt::Display for ApplyReplayPlanError {
@@ -290,6 +334,12 @@ impl std::fmt::Display for ApplyReplayPlanError {
                  plan's {pending}; the file changed after compose — re-run \
                  `djogi migrations compose` (or restore the committed file)"
             ),
+            Self::PathEscape { path, workspace } => write!(
+                f,
+                "path {} escapes workspace {}",
+                path.display(),
+                workspace.display()
+            ),
         }
     }
 }
@@ -309,9 +359,38 @@ fn classify_phase_zero_for_cleanup(
     pending_checksum_up: &str,
     pending_checksum_down: Option<&str>,
 ) -> Option<String> {
+    let ws_canon = match workspace.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            return Some(format!(
+                "workspace {} not accessible",
+                workspace.display()
+            ));
+        }
+    };
+
     // Try to load the committed replay plan JSON first.
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    if let Ok(bd_canon) = bucket_dir.canonicalize()
+        && !bd_canon.starts_with(&ws_canon)
+    {
+        return Some(format!(
+            "path {} escapes workspace {}",
+            bucket_dir.display(),
+            ws_canon.display()
+        ));
+    }
     let replay_plan_path = bucket_dir.join(format!("{version}.plan.json"));
+
+    if let Ok(rp_canon) = replay_plan_path.canonicalize()
+        && !rp_canon.starts_with(&ws_canon)
+    {
+        return Some(format!(
+            "path {} escapes workspace {}",
+            replay_plan_path.display(),
+            ws_canon.display()
+        ));
+    }
 
     if let Ok(bytes) = std::fs::read(&replay_plan_path) {
         let stored: CliReplayPlan = match serde_json::from_slice(&bytes) {
@@ -350,6 +429,15 @@ fn classify_phase_zero_for_cleanup(
     // Fallback: read the up SQL file directly.
     let up_filename = djogi::migrate::up_filename(version);
     let up_path = bucket_dir.join(&up_filename);
+    if let Ok(up_canon) = up_path.canonicalize()
+        && !up_canon.starts_with(&ws_canon)
+    {
+        return Some(format!(
+            "path {} escapes workspace {}",
+            up_path.display(),
+            ws_canon.display()
+        ));
+    }
     match std::fs::read_to_string(&up_path) {
         Ok(up_sql) => classify_phase_zero_bytes(up_sql.as_bytes()),
         Err(e) => Some(format!("read up SQL file {}: {e}", up_path.display())),
@@ -435,6 +523,14 @@ fn discover_snapshot_buckets_on_disk(
 ) -> Vec<djogi::migrate::projection::BucketKey> {
     let mut out = Vec::new();
     let migrations_root = djogi::migrate::migrations_root(workspace);
+    let Ok(ws_canon) = workspace.canonicalize() else {
+        return out;
+    };
+    if let Ok(mr_canon) = migrations_root.canonicalize()
+        && !mr_canon.starts_with(&ws_canon)
+    {
+        return out;
+    }
     let Ok(db_entries) = std::fs::read_dir(&migrations_root) else {
         return out;
     };
@@ -448,7 +544,13 @@ fn discover_snapshot_buckets_on_disk(
         let Some(database) = db_entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        let Ok(app_entries) = std::fs::read_dir(db_entry.path()) else {
+        let db_path = db_entry.path();
+        if let Ok(db_canon) = db_path.canonicalize()
+            && !db_canon.starts_with(&ws_canon)
+        {
+            continue;
+        }
+        let Ok(app_entries) = std::fs::read_dir(&db_path) else {
             continue;
         };
         for app_entry in app_entries.flatten() {
@@ -461,7 +563,13 @@ fn discover_snapshot_buckets_on_disk(
             let Some(dirname) = app_entry.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            let snap_path = app_entry.path().join("schema_snapshot.json");
+            let app_path = app_entry.path();
+            if let Ok(ap_canon) = app_path.canonicalize()
+                && !ap_canon.starts_with(&ws_canon)
+            {
+                continue;
+            }
+            let snap_path = app_path.join("schema_snapshot.json");
             if !snap_path.exists() {
                 continue;
             }
@@ -1376,6 +1484,20 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
     let mut out = Vec::new();
     let mut seen_identities = std::collections::BTreeSet::new();
 
+    let ws_canon = match workspace.canonicalize() {
+        Ok(c) => c,
+        Err(e) => return Err(format!("canonicalize workspace: {e}")),
+    };
+    if let Ok(pr_canon) = pending_root.canonicalize()
+        && !pr_canon.starts_with(&ws_canon)
+    {
+        return Err(format!(
+            "pending directory {} escapes workspace {}",
+            pending_root.display(),
+            ws_canon.display()
+        ));
+    }
+
     let Ok(db_entries) = std::fs::read_dir(&pending_root) else {
         return Ok(out);
     };
@@ -1393,6 +1515,11 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
         if !db_dir.is_dir() {
             continue;
         }
+        if let Ok(dd_canon) = db_dir.canonicalize()
+            && !dd_canon.starts_with(&ws_canon)
+        {
+            continue;
+        }
 
         let Ok(app_entries) = std::fs::read_dir(&db_dir) else {
             continue;
@@ -1400,6 +1527,11 @@ fn discover_pending_plans(workspace: &Path) -> Result<Vec<DiscoveredPendingPlan>
 
         for app_entry in app_entries.flatten() {
             let path = app_entry.path();
+            if let Ok(p_canon) = path.canonicalize()
+                && !p_canon.starts_with(&ws_canon)
+            {
+                continue;
+            }
             let file_type = match app_entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(_) => continue,
@@ -1608,8 +1740,20 @@ fn order_pending_groups_by_dependencies(
 }
 
 fn load_verified_pending_for_apply(
+    workspace: &Path,
     pending_file: &DiscoveredPendingPlan,
 ) -> Result<PendingPlan, String> {
+    let ws_canon = workspace.canonicalize()
+        .map_err(|e| format!("canonicalize workspace: {e}"))?;
+    if let Ok(p_canon) = pending_file.path.canonicalize()
+        && !p_canon.starts_with(&ws_canon)
+    {
+        return Err(format!(
+            "pending file {} escapes workspace {}",
+            pending_file.path.display(),
+            ws_canon.display()
+        ));
+    }
     let pending_bytes =
         std::fs::read(&pending_file.path).map_err(|e| format!("read pending JSON: {e}"))?;
     let pending: PendingPlan =
@@ -1691,7 +1835,7 @@ async fn apply_one_pending(
     runner_identity: Option<djogi::migrate::RunnerIdentity>,
 ) -> ApplyResult {
     // 1. Parse pending JSON to get bucket + version + checksums.
-    let pending = match load_verified_pending_for_apply(pending_file) {
+    let pending = match load_verified_pending_for_apply(workspace, pending_file) {
         Ok(pending) => pending,
         Err(e) => return ApplyResult::Refused(e),
     };
@@ -3215,11 +3359,32 @@ fn gate_rollback_targets<'a>(
     bucket: &BucketKey,
     rows: &[&'a djogi::migrate::LedgerSummaryRow],
 ) -> Result<Vec<GatedRollbackTarget<'a>>, RollbackCliGateError> {
+    let ws_canon = workspace.canonicalize().map_err(|e| {
+        RollbackCliGateError::Io(format!("canonicalize workspace: {e}"))
+    })?;
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    if let Ok(bd_canon) = bucket_dir.canonicalize()
+        && !bd_canon.starts_with(&ws_canon)
+    {
+        return Err(RollbackCliGateError::Refusal(format!(
+            "bucket directory {} escapes workspace {}",
+            bucket_dir.display(),
+            ws_canon.display()
+        )));
+    }
     let mut gated = Vec::with_capacity(rows.len());
 
     for row in rows {
         let down_path = bucket_dir.join(djogi::migrate::down_filename(&row.version));
+        if let Ok(dp_canon) = down_path.canonicalize()
+            && !dp_canon.starts_with(&ws_canon)
+        {
+            return Err(RollbackCliGateError::Refusal(format!(
+                "migration file {} escapes workspace {}",
+                down_path.display(),
+                ws_canon.display()
+            )));
+        }
         let down_sql = match std::fs::read_to_string(&down_path) {
             Ok(sql) => sql,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -3250,6 +3415,15 @@ fn gate_rollback_targets<'a>(
         }
 
         let up_path = bucket_dir.join(djogi::migrate::up_filename(&row.version));
+        if let Ok(up_canon) = up_path.canonicalize()
+            && !up_canon.starts_with(&ws_canon)
+        {
+            return Err(RollbackCliGateError::Refusal(format!(
+                "migration file {} escapes workspace {}",
+                up_path.display(),
+                ws_canon.display()
+            )));
+        }
         let up_sql = std::fs::read_to_string(&up_path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 RollbackCliGateError::Refusal(format!(
@@ -3330,8 +3504,21 @@ fn compute_checksum_up_from_disk(
     bucket: &djogi::migrate::BucketKey,
     version: &str,
 ) -> std::io::Result<String> {
+    let ws_canon = workspace.canonicalize()?;
     let path =
         djogi::migrate::bucket_dir(workspace, bucket).join(djogi::migrate::up_filename(version));
+    if let Ok(p_canon) = path.canonicalize()
+        && !p_canon.starts_with(&ws_canon)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "migration file {} escapes workspace {}",
+                path.display(),
+                ws_canon.display()
+            ),
+        ));
+    }
     let sql = std::fs::read_to_string(&path)?;
     Ok(djogi::migrate::compute_committed_sql_checksum(
         &sql,
@@ -3353,8 +3540,21 @@ fn compute_checksum_down_from_disk(
     bucket: &djogi::migrate::BucketKey,
     version: &str,
 ) -> std::io::Result<Option<String>> {
+    let ws_canon = workspace.canonicalize()?;
     let path =
         djogi::migrate::bucket_dir(workspace, bucket).join(djogi::migrate::down_filename(version));
+    if let Ok(p_canon) = path.canonicalize()
+        && !p_canon.starts_with(&ws_canon)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "migration file {} escapes workspace {}",
+                path.display(),
+                ws_canon.display()
+            ),
+        ));
+    }
     let sql = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -3793,8 +3993,28 @@ fn load_committed_plan_for_resume(
     bucket: &djogi::migrate::BucketKey,
     version: &str,
 ) -> Result<djogi::migrate::MigrationPlan, String> {
+    let ws_canon = workspace.canonicalize()
+        .map_err(|e| format!("canonicalize workspace: {e}"))?;
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
+    if let Ok(bd_canon) = bucket_dir.canonicalize()
+        && !bd_canon.starts_with(&ws_canon)
+    {
+        return Err(format!(
+            "bucket directory {} escapes workspace {}",
+            bucket_dir.display(),
+            ws_canon.display()
+        ));
+    }
     let plan_path = bucket_dir.join(format!("{version}.plan.json"));
+    if let Ok(pp_canon) = plan_path.canonicalize()
+        && !pp_canon.starts_with(&ws_canon)
+    {
+        return Err(format!(
+            "plan file {} escapes workspace {}",
+            plan_path.display(),
+            ws_canon.display()
+        ));
+    }
     let bytes = std::fs::read(&plan_path).map_err(|e| format!("{}: {e}", plan_path.display()))?;
     let stored: CliReplayPlan = serde_json::from_slice(&bytes)
         .map_err(|e| format!("{}: parse: {e}", plan_path.display()))?;
@@ -6297,7 +6517,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = load_verified_pending_for_apply(&discovered[0])
+        let err = load_verified_pending_for_apply(&work, &discovered[0])
             .expect_err("apply must refuse a changed pending artifact");
         assert!(
             err.contains("changed after discovery"),
