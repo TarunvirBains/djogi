@@ -125,12 +125,26 @@ pub fn plan_path(
 /// existing file (immutability contract). Creates parent directories
 /// as needed (`migrations/<target>/live/`).
 pub fn write_plan(migrations_root: &Path, plan: &LivePlan) -> Result<PathBuf, PlanFileError> {
+    let migrations_root = migrations_root.canonicalize().map_err(|source| {
+        PlanFileError::Io {
+            path: migrations_root.to_path_buf(),
+            source,
+        }
+    })?;
     let path = plan_path(
-        migrations_root,
+        &migrations_root,
         &plan.header.target_database,
         plan.header.plan_id,
         &plan.header.slug,
     );
+    if !path.starts_with(&migrations_root) {
+        return Err(PlanFileError::Io {
+            path: path.clone(),
+            source: std::io::Error::other(
+                "resolved plan path resolves outside the migrations root directory",
+            ),
+        });
+    }
     plan.validate()
         .map_err(|source| PlanFileError::Validation {
             path: path.clone(),
@@ -430,9 +444,15 @@ mod tests {
         let path = write_plan(tmp.path(), &plan).expect("write plan");
         let cs = compute_checksum(&path).expect("compute");
         // Append a stray byte to simulate an edit.
+        let tmp_canonical = tmp.path().canonicalize().expect("canonicalize temp dir");
+        let path_canonical = path.canonicalize().expect("canonicalize plan path");
+        assert!(
+            path_canonical.starts_with(&tmp_canonical),
+            "plan path should be within temp dir"
+        );
         let mut f = OpenOptions::new()
             .append(true)
-            .open(&path)
+            .open(&path_canonical)
             .expect("open append");
         f.write_all(b"\n").expect("append byte");
         drop(f);
