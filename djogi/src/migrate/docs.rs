@@ -38,7 +38,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs;
+use std::fs::{self, canonicalize};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -156,8 +156,63 @@ pub fn render_inventory(
     output_root: &Path,
     intent: Option<&crate::intent::IntentFile>,
 ) -> Result<DocsReport, DocsError> {
-    fs::create_dir_all(output_root).map_err(|e| DocsError::Io {
+    // Canonicalize the output root so the resolved path cannot be
+    // influenced by symlinks or relative components in the caller-
+    // supplied `output_root`. The canonicalized path is used for all
+    // subsequent file operations.
+    let output_root_canon = if output_root.exists() {
+        canonicalize(output_root).map_err(|e| DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: e,
+        })?
+    } else {
+        // The directory doesn't exist yet (will be created below).
+        // Canonicalize the parent and rejoin the final component so
+        // the resulting root is fully resolved.
+        let parent = output_root.parent().ok_or_else(|| DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no parent"),
+        })?;
+        let parent_canon = canonicalize(parent).map_err(|e| DocsError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+        let name = output_root
+            .file_name()
+            .ok_or_else(|| DocsError::Io {
+                path: output_root.to_path_buf(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no file name"),
+            })?;
+        parent_canon.join(name)
+    };
+
+    // Containment check: the resolved output root must reside under
+    // the current working directory (or temp dir for tests). This
+    // prevents a symlinked `output_root` from redirecting writes to
+    // an arbitrary location.
+    let cwd = std::env::current_dir().map_err(|_| DocsError::Io {
         path: output_root.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot determine current directory",
+        ),
+    })?;
+    let temp = std::env::temp_dir();
+    if !output_root_canon.starts_with(&cwd) && !output_root_canon.starts_with(&temp) {
+        return Err(DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "output path {} is outside current directory and temp directory",
+                    output_root.display()
+                ),
+            ),
+        });
+    }
+
+    fs::create_dir_all(&output_root_canon).map_err(|e| DocsError::Io {
+        path: output_root_canon.clone(),
         source: e,
     })?;
 
@@ -174,7 +229,7 @@ pub fn render_inventory(
     let mut total = 0usize;
 
     for (app_dir, models) in &by_app {
-        let app_path = output_root.join(app_dir);
+        let app_path = output_root_canon.join(app_dir);
         fs::create_dir_all(&app_path).map_err(|e| DocsError::Io {
             path: app_path.clone(),
             source: e,
@@ -193,7 +248,7 @@ pub fn render_inventory(
 
     // Top-level README index — one bullet per model, grouped by app.
     let readme_body = render_readme(&by_app);
-    let readme_path = output_root.join("README.md");
+    let readme_path = output_root_canon.join("README.md");
     fs::write(&readme_path, readme_body.as_bytes()).map_err(|e| DocsError::Io {
         path: readme_path.clone(),
         source: e,
@@ -209,7 +264,7 @@ pub fn render_inventory(
     // inventory is accurately reflected.
     let written_set: std::collections::BTreeSet<&std::path::Path> =
         written.iter().map(PathBuf::as_path).collect();
-    if let Ok(walk) = fs::read_dir(output_root) {
+    if let Ok(walk) = fs::read_dir(&output_root_canon) {
         for entry in walk.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -222,7 +277,7 @@ pub fn render_inventory(
     }
     // Recurse into per-app subdirectories for stale model pages.
     for app_dir_name in by_app.keys() {
-        let app_path = output_root.join(app_dir_name);
+        let app_path = output_root_canon.join(app_dir_name);
         if let Ok(walk) = fs::read_dir(&app_path) {
             for entry in walk.flatten() {
                 let path = entry.path();
@@ -238,7 +293,7 @@ pub fn render_inventory(
 
     Ok(DocsReport {
         models_rendered: total,
-        output_root: output_root.to_path_buf(),
+        output_root: output_root_canon.clone(),
         written_files: written,
     })
 }
@@ -613,8 +668,16 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-docs-{tag}-{nanos}-{n}"));
+        let temp_canon =
+            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
+        if let Ok(p_canon) = std::fs::canonicalize(&p) {
+            assert!(
+                p_canon.starts_with(&temp_canon),
+                "workspace path escapes temp directory"
+            );
+        }
         p
     }
 
@@ -945,7 +1008,9 @@ mod tests {
                 Vec::new()
             }
         }
-        let dir = std::env::temp_dir().join(format!(
+        let temp_canon =
+            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let dir = temp_canon.join(format!(
             "djogi-docs-provider-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -955,6 +1020,10 @@ mod tests {
         let report = generate_docs_with_provider(&EmptyProvider, &dir, None)
             .expect("empty provider renders README only");
         assert_eq!(report.models_rendered, 0);
-        let _ = std::fs::remove_dir_all(&dir);
+        if let Ok(dir_canon) = std::fs::canonicalize(&dir) {
+            if dir_canon.starts_with(&temp_canon) {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
     }
 }

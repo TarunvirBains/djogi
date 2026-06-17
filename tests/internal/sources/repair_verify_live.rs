@@ -63,9 +63,89 @@ fn temp_workspace_root(stub: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-{stub}-{stamp}"));
+    let temp_canon =
+        std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+    let path = temp_canon.join(format!("djogi-{stub}-{stamp}"));
     std::fs::create_dir_all(&path).expect("create temp workspace root");
+    if let Ok(path_canon) = std::fs::canonicalize(&path) {
+        assert!(
+            path_canon.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
+    }
     path
+}
+
+fn safe_remove_workspace(path: &std::path::Path) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!(
+                    "remove_dir_all refused: workspace path {} escapes temp directory",
+                    path.display()
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(path);
+}
+
+fn safe_remove_file(path: &std::path::Path) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!(
+                    "remove_file refused: path {} escapes temp directory",
+                    path.display()
+                );
+            }
+        }
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+fn safe_read(path: &std::path::Path) -> Vec<u8> {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            assert!(
+                path_canon.starts_with(&temp_canon),
+                "read refused: path {} escapes temp directory",
+                path.display()
+            );
+        }
+    }
+    std::fs::read(path).expect(&format!("read {}", path.display()))
+}
+
+fn safe_create_bucket_dir(
+    path: &std::path::Path,
+) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            assert!(
+                path_canon.starts_with(&temp_canon),
+                "create_dir_all refused: bucket path {} escapes temp directory",
+                path.display()
+            );
+        }
+    }
+    std::fs::create_dir_all(path).expect(&format!("create bucket dir {}", path.display()));
+}
+
+fn safe_write(
+    path: &std::path::Path,
+    contents: impl AsRef<[u8]>,
+) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize() {
+        if let Ok(path_canon) = path.canonicalize() {
+            assert!(
+                path_canon.starts_with(&temp_canon),
+                "write refused: path {} escapes temp directory",
+                path.display()
+            );
+        }
+    }
+    std::fs::write(path, contents).expect(&format!("write {}", path.display()));
 }
 
 fn temp_lock() -> PathBuf {
@@ -815,7 +895,7 @@ async fn rollback_snapshot_persist_failure_reports_committed(mut ctx: djogi::Djo
         .await
         .expect("status");
     assert_eq!(status, "rolled_back");
-    let _ = std::fs::remove_dir_all(&bad_snapshot_path);
+    safe_remove_workspace(&bad_snapshot_path);
 }
 
 // Rollback walks Phase-a (non-transactional segments, auto-committed) before
@@ -980,7 +1060,7 @@ async fn rollback_reverts_snapshot_when_prior_supplied(mut ctx: djogi::DjogiCont
     .expect("rollback ok");
     assert!(report.snapshot_reverted);
     assert!(snapshot_path.exists(), "prior snapshot must be on disk");
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 // ── Fake-apply ────────────────────────────────────────────────────────────
@@ -1055,7 +1135,7 @@ async fn fake_apply_persists_snapshot(mut ctx: djogi::DjogiContext) {
         .await
         .expect("fake-apply ok");
     assert!(snapshot_path.exists(), "snapshot must be persisted");
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
@@ -1494,7 +1574,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         snapshot_path.exists(),
         "seed snapshot must exist before apply"
     );
-    let snapshot_bytes_before = std::fs::read(&snapshot_path).expect("read snapshot before");
+    let snapshot_bytes_before = safe_read(&snapshot_path);
     let marker_path = std::path::Path::new("migrations/.migration_failure.json");
     assert!(
         !marker_path.exists(),
@@ -1611,7 +1691,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
     );
 
     let snapshot_bytes_after_failure =
-        std::fs::read(&snapshot_path).expect("read snapshot after failure");
+        safe_read(&snapshot_path);
     assert_eq!(
         snapshot_bytes_after_failure, snapshot_bytes_before,
         "snapshot must remain unchanged after partial apply failure"
@@ -1650,7 +1730,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
     assert_eq!(status, "rolled_back");
 
     let snapshot_bytes_after_repair =
-        std::fs::read(&snapshot_path).expect("read snapshot after repair");
+        safe_read(&snapshot_path);
     assert_eq!(
         snapshot_bytes_after_repair, snapshot_bytes_before,
         "repair must not rewrite the snapshot"
@@ -1660,7 +1740,7 @@ async fn repair_partial_apply_marks_rolled_back(mut ctx: djogi::DjogiContext) {
         "repair must not create or consult a migration failure marker"
     );
 
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
@@ -1885,7 +1965,7 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     // Step 2: simulate the failure mode — snapshot file missing.
     // (`repair_snapshot_rebuild` writes to this path; the rebuild
     // does not require the file to exist beforehand.)
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
     assert!(
         !snapshot_path.exists(),
         "snapshot file should be missing before rebuild"
@@ -1915,7 +1995,7 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     // calls re-project from live, so the two AppliedSchemas must
     // agree byte-for-byte modulo the always-empty `generated_at`.
     let snapshot_path_b = temp_path("rebuild-b");
-    let _ = std::fs::remove_file(&snapshot_path_b);
+    safe_remove_file(&snapshot_path_b);
     let _ = repair_snapshot_rebuild(
         &mut ctx,
         &_guard,
@@ -2109,8 +2189,8 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         }
     }
 
-    let _ = std::fs::remove_file(&snapshot_path);
-    let _ = std::fs::remove_file(&snapshot_path_b);
+    safe_remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path_b);
 }
 
 // ── Repair: confirmation witness can't be bypassed ────────────────────────
@@ -2370,7 +2450,7 @@ async fn rollback_prior_snapshot_missing_does_not_mutate(mut ctx: djogi::DjogiCo
     let _ = ctx
         .raw_ddl("DROP TABLE IF EXISTS b3_prior_missing")
         .await;
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
@@ -3023,13 +3103,17 @@ async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::
         app: "".to_string(),
     };
     let bucket_directory = bucket_dir(&workspace, &bucket);
-    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    safe_create_bucket_dir(&bucket_directory);
     let version = "V20260612000000__add_widgets";
 
-    std::fs::write(bucket_directory.join(up_filename(version)), COMPOSED_WIDGETS_UP_FIXTURE)
-        .expect("write canonical up fixture");
-    std::fs::write(bucket_directory.join(down_filename(version)), COMPOSED_WIDGETS_DOWN_FIXTURE)
-        .expect("write canonical down fixture");
+    safe_write(
+        bucket_directory.join(up_filename(version)),
+        COMPOSED_WIDGETS_UP_FIXTURE,
+    );
+    safe_write(
+        bucket_directory.join(down_filename(version)),
+        COMPOSED_WIDGETS_DOWN_FIXTURE,
+    );
 
     let built = canonical_fallback_replay_plan(
         &bucket,
@@ -3096,7 +3180,7 @@ async fn fallback_applied_row_passes_canonical_parity_recompute(mut ctx: djogi::
     assert_eq!(down_change.before, expected_down.clone().unwrap_or_else(|| "<none>".to_string()));
     assert_eq!(down_change.after, expected_down.unwrap_or_else(|| "<none>".to_string()));
 
-    let _ = std::fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -3108,15 +3192,13 @@ async fn repair_checksum_drift_reconciles_legacy_fallback_row(mut ctx: djogi::Dj
         app: "".to_string(),
     };
     let bucket_directory = bucket_dir(&workspace, &bucket);
-    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    safe_create_bucket_dir(&bucket_directory);
     let version = "V20260612000001__legacy_fallback";
 
     let up_sql = COMPOSED_WIDGETS_UP_FIXTURE;
     let down_sql = COMPOSED_WIDGETS_DOWN_FIXTURE;
-    std::fs::write(bucket_directory.join(up_filename(version)), up_sql)
-        .expect("write legacy up fixture");
-    std::fs::write(bucket_directory.join(down_filename(version)), down_sql)
-        .expect("write legacy down fixture");
+    safe_write(bucket_directory.join(up_filename(version)), up_sql);
+    safe_write(bucket_directory.join(down_filename(version)), down_sql);
 
     let plan = transactional_plan(vec![op("Legacy fallback path", up_sql, down_sql)]);
     let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
@@ -3180,7 +3262,7 @@ async fn repair_checksum_drift_reconciles_legacy_fallback_row(mut ctx: djogi::Dj
     assert_eq!(repaired_up, canonical_up);
     assert_eq!(repaired_down, canonical_down);
 
-    let _ = std::fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -3194,14 +3276,12 @@ async fn repair_checksum_drift_reconciles_non_composed_legacy_down_only_row(
         app: "".to_string(),
     };
     let bucket_directory = bucket_dir(&workspace, &bucket);
-    std::fs::create_dir_all(&bucket_directory).expect("create bucket dir");
+    safe_create_bucket_dir(&bucket_directory);
     let version = "V20260612000002__non_composed_legacy";
     let up_sql = "CREATE TABLE \"widgets\" (\"id\" BIGINT PRIMARY KEY);\n";
     let down_sql = "DROP TABLE \"widgets\";\n";
-    std::fs::write(bucket_directory.join(up_filename(version)), up_sql)
-        .expect("write legacy noncomposed up");
-    std::fs::write(bucket_directory.join(down_filename(version)), down_sql)
-        .expect("write legacy noncomposed down");
+    safe_write(bucket_directory.join(up_filename(version)), up_sql);
+    safe_write(bucket_directory.join(down_filename(version)), down_sql);
 
     let plan = transactional_plan(vec![op("Legacy non-composed fallback path", up_sql, down_sql)]);
     let mut runner_ctx = make_runner_ctx(&plan, version, None, None);
@@ -3263,7 +3343,7 @@ async fn repair_checksum_drift_reconciles_non_composed_legacy_down_only_row(
     assert_eq!(repaired_up, canonical_up);
     assert_eq!(repaired_down, canonical_down);
 
-    let _ = std::fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -3530,15 +3610,14 @@ async fn repair_resume_phase_zero_refuses_seed_capable_materialized_stream_even_
         app: "".to_string(),
     };
     let bucket_directory = bucket_dir(&workspace, &bucket);
-    std::fs::create_dir_all(&bucket_directory).expect("create Phase 0 bucket dir");
+    safe_create_bucket_dir(&bucket_directory);
 
     let identity_free_sql =
         djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
-    std::fs::write(
+    safe_write(
         bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
         &identity_free_sql,
-    )
-    .expect("write identity-free Phase 0 disk file");
+    );
 
     let sentinel = "djogi_p0_resume_seed_refusal_sentinel";
     ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}"))
@@ -3633,7 +3712,7 @@ async fn repair_resume_phase_zero_refuses_seed_capable_materialized_stream_even_
     );
 
     let _ = ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}")).await;
-    let _ = std::fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -3647,15 +3726,14 @@ async fn repair_resume_phase_zero_allows_identity_free_materialized_stream(
         app: "".to_string(),
     };
     let bucket_directory = bucket_dir(&workspace, &bucket);
-    std::fs::create_dir_all(&bucket_directory).expect("create Phase 0 bucket dir");
+    safe_create_bucket_dir(&bucket_directory);
 
     let identity_free_sql =
         djogi::testing::phase_zero_sql_for_testing("main", false).expect("identity-free Phase 0");
-    std::fs::write(
+    safe_write(
         bucket_directory.join(up_filename(PHASE_ZERO_VERSION)),
         &identity_free_sql,
-    )
-    .expect("write identity-free Phase 0 disk file");
+    );
 
     let sentinel = "djogi_p0_resume_identity_free_sentinel";
     ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}"))
@@ -3756,7 +3834,7 @@ async fn repair_resume_phase_zero_allows_identity_free_materialized_stream(
     assert_eq!(note, None);
 
     let _ = ctx.raw_ddl(&format!("DROP TABLE IF EXISTS {sentinel}")).await;
-    let _ = std::fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }
 
 #[djogi::djogi_test]
@@ -3765,7 +3843,7 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
     let snapshot_path = temp_path("resume-ack");
     let initial_snapshot = empty_snapshot();
     djogi::migrate::save_snapshot(&initial_snapshot, &snapshot_path).expect("seed snapshot");
-    let snapshot_bytes_before = std::fs::read(&snapshot_path).expect("read seeded snapshot");
+    let snapshot_bytes_before = safe_read(&snapshot_path);
 
     let plan = MigrationPlan {
         bucket: BucketKey {
@@ -3894,12 +3972,12 @@ async fn repair_resume_progress_ack_failure_blocks_duplicate_rerun(mut ctx: djog
         "resume must not silently rerun an already-committed step"
     );
     let snapshot_bytes_after =
-        std::fs::read(&snapshot_path).expect("read snapshot after ambiguous resume");
+        safe_read(&snapshot_path);
     assert_eq!(
         snapshot_bytes_after, snapshot_bytes_before,
         "snapshot bytes must not move forward while the row is ambiguous"
     );
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
@@ -4015,7 +4093,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
     let _ = ctx
         .raw_ddl("DROP TABLE IF EXISTS b11_legacy_users")
         .await;
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_file(&snapshot_path);
 }
 
 #[djogi::djogi_test]
@@ -4206,8 +4284,8 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
     // Cleanup.
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS a1_alpha_table").await;
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS a1_beta_table").await;
-    let _ = std::fs::remove_file(&global_path);
-    let _ = std::fs::remove_file(&named_path);
+    safe_remove_file(&global_path);
+    safe_remove_file(&named_path);
 }
 
 // ── Round-3 A-2: verify does not exclude adopter `heer_orders` table ──
