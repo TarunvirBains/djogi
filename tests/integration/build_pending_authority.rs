@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -50,11 +49,12 @@ fn temp_workspace(_tag: &str) -> PathBuf {
     let temp_canon = std::env::temp_dir()
         .canonicalize()
         .expect("canonicalize temp directory");
-    let p = temp_canon.join(format!("djogi-build-pending-{nanos}-{n}"));
-    if !p.starts_with(&temp_canon) {
-        panic!("workspace path {} is outside temp directory", p.display());
-    }
-    fs::create_dir_all(&p).unwrap();
+    let p = djogi::migrate::resolve_write_workspace_path(
+        &temp_canon,
+        format!("djogi-build-pending-{nanos}-{n}"),
+    )
+    .expect("resolve temp workspace");
+    djogi::migrate::create_workspace_dir_all(&temp_canon, &p).unwrap();
     safe_workspace(&p)
 }
 
@@ -62,7 +62,11 @@ fn safe_write_bytes(path: &Path, bytes: impl AsRef<[u8]>) {
     let path = vetted_child_path(path);
     let parent = path.parent().expect("path parent").to_path_buf();
     let parent = safe_workspace(&parent);
-    let candidate = parent.join(path.file_name().expect("path filename"));
+    let candidate = djogi::migrate::resolve_write_workspace_path(
+        &parent,
+        path.file_name().expect("path filename"),
+    )
+    .expect("resolve child path");
     djogi::migrate::write_workspace_file(&parent, &candidate, bytes.as_ref()).unwrap();
 }
 
@@ -138,7 +142,11 @@ fn write_pending_with_format_version(
     };
     if let Some(parent) = path.parent() {
         let parent = vetted_child_path(parent);
-        fs::create_dir_all(&parent).unwrap();
+        djogi::migrate::create_workspace_dir_all(
+            &safe_workspace(parent.parent().expect("path grandparent")),
+            &parent,
+        )
+        .unwrap();
     }
     safe_write_bytes(&path, serde_json::to_vec_pretty(&pending).unwrap());
 }
@@ -154,7 +162,7 @@ fn diagnostic_texts(diagnostics: &[build_script::BuildDiagnostic]) -> Vec<&str> 
 /// short of writing it.
 fn write_hidden_phase_zero_pending(work: &std::path::Path, pending_schema: &AppliedSchema) {
     let work = safe_workspace(work);
-    fs::create_dir_all(work.join("target")).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, work.join("target")).unwrap();
     let pending_path = work
         .join("target/djogi_pending/main/.phase_zero/V00000000000000__phase_zero_bootstrap.json");
     write_pending(
@@ -171,7 +179,7 @@ fn write_global_snapshot(work: &std::path::Path, snapshot_schema: &AppliedSchema
     let work = safe_workspace(work);
     let snapshot_path =
         vetted_child_path(&work.join("migrations/main/_global_/schema_snapshot.json"));
-    fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, snapshot_path.parent().unwrap()).unwrap();
     safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(snapshot_schema).unwrap(),
@@ -241,7 +249,10 @@ fn build_collect_diagnostics_hidden_phase_zero_without_model_inventory() {
         "absent inventory must not misreport the pending as stale (Outcome 4): {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 /// RED-A1b — the fresh-adoption variant: no inventory AND no snapshot.
@@ -270,7 +281,10 @@ fn build_collect_diagnostics_hidden_phase_zero_without_model_inventory_or_snapsh
         "fresh adoption must not misreport Outcome 4: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 /// The malformed-inventory fixtures: each writes a different broken
@@ -291,7 +305,11 @@ fn malformed_inventory_writers() -> Vec<MalformedInventoryCase> {
         // distinction from a legitimately-missing file.
         ("unreadable_directory", |p: &std::path::Path| {
             let p = vetted_child_path(p);
-            fs::create_dir_all(&p).unwrap();
+            djogi::migrate::create_workspace_dir_all(
+                &safe_workspace(p.parent().expect("inventory parent")),
+                &p,
+            )
+            .unwrap();
         }),
     ]
 }
@@ -337,7 +355,10 @@ fn build_collect_diagnostics_hidden_phase_zero_with_malformed_model_inventory() 
             "[{label}] malformed inventory must not misreport Outcome 4: {texts:?}"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp directory");
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
     }
 }
 
@@ -361,7 +382,10 @@ fn build_collect_diagnostics_missing_inventory_emits_no_malformed_warning() {
         "a missing inventory (NotFound) must stay silent — no malformed warning: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 /// RED-A6 — a parsed object carrying a non-`<database>/<app>` bucket
@@ -408,7 +432,10 @@ fn build_collect_diagnostics_hidden_phase_zero_with_malformed_bucket_key_invento
         "malformed-key inventory must not misreport Outcome 4: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -419,14 +446,14 @@ fn build_collect_diagnostics_includes_hidden_phase_zero_pending() {
 
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), pending_schema.clone());
-    fs::create_dir_all(work.join("target")).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, work.join("target")).unwrap();
     safe_write_bytes(
         &work.join("target/djogi_models.json"),
         serde_json::to_vec_pretty(&models).unwrap(),
     );
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
-    fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, snapshot_path.parent().unwrap()).unwrap();
     safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(&snapshot_schema).unwrap(),
@@ -455,7 +482,10 @@ fn build_collect_diagnostics_includes_hidden_phase_zero_pending() {
             .collect::<Vec<_>>()
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -482,7 +512,10 @@ fn build_collect_diagnostics_reports_pending_authority_mismatch() {
             .collect::<Vec<_>>()
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -515,7 +548,10 @@ fn build_collect_diagnostics_reports_hidden_phase_zero_format_version_identity()
         "hidden Phase 0 format mismatch must not collapse to normal _global_: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -547,7 +583,10 @@ fn build_collect_diagnostics_reports_hidden_phase_zero_authority_identity() {
         "hidden Phase 0 authority mismatch must not collapse to normal _global_: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -572,7 +611,10 @@ fn build_collect_diagnostics_reports_normal_global_format_version_identity() {
         "normal global format mismatch must keep the normal _global_ identity: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 /// A stale (`found < expected`) pending file must make the build
@@ -602,7 +644,10 @@ fn build_collect_diagnostics_stale_format_version_says_recompose() {
         }),
         "stale build diagnostic must end with '; <recompose phrase>': {texts:?}"
     );
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 /// A future (`found > expected`) pending file must make the build
@@ -632,7 +677,10 @@ fn build_collect_diagnostics_future_format_version_says_upgrade() {
         }),
         "future build diagnostic must end with '; <upgrade phrase>': {texts:?}"
     );
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -659,7 +707,10 @@ fn build_collect_diagnostics_rejects_normal_global_phase_zero_pending() {
             .collect::<Vec<_>>()
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }
 
 #[test]
@@ -671,14 +722,14 @@ fn build_collect_diagnostics_hidden_phase_zero_coexists_with_valid_normal_global
 
     let mut models = BTreeMap::new();
     models.insert("main/_global_".to_string(), hidden_schema.clone());
-    fs::create_dir_all(work.join("target")).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, work.join("target")).unwrap();
     safe_write_bytes(
         &work.join("target/djogi_models.json"),
         serde_json::to_vec_pretty(&models).unwrap(),
     );
 
     let snapshot_path = work.join("migrations/main/_global_/schema_snapshot.json");
-    fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
+    djogi::migrate::create_workspace_dir_all(&work, snapshot_path.parent().unwrap()).unwrap();
     safe_write_bytes(
         &snapshot_path,
         serde_json::to_vec_pretty(&snapshot_schema).unwrap(),
@@ -717,5 +768,8 @@ fn build_collect_diagnostics_hidden_phase_zero_coexists_with_valid_normal_global
         "valid hidden and normal global pending artifacts must coexist without validation collisions: {texts:?}"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp directory");
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &work);
 }

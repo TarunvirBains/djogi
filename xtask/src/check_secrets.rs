@@ -1346,55 +1346,43 @@ mod tests {
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
         let temp_canon = env::temp_dir().canonicalize().unwrap();
         let root_name = format!("djogi-check-secrets-fs-{}", std::process::id());
-        if root_name.contains('/') || root_name.contains('\\') || root_name.contains("..") {
-            panic!("unsafe temp root name: {root_name}");
-        }
-        let root = temp_canon.join(&root_name);
-        if root.starts_with(&temp_canon) {
-            let _ = fs::remove_dir_all(&root);
-        }
-        if !root.starts_with(&temp_canon) {
-            panic!("refusing to create dir outside temp: {}", root.display());
-        }
-        fs::create_dir_all(&root).unwrap();
+        let root = djogi::migrate::resolve_write_workspace_path(&temp_canon, &root_name)
+            .expect("resolve temp root");
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &root);
+        djogi::migrate::create_workspace_dir_all(&temp_canon, &root).unwrap();
         let root = root.canonicalize().unwrap();
-        let github_dir = root.join(".github");
-        fs::create_dir_all(&github_dir).unwrap();
-        let github_dir = github_dir.canonicalize().unwrap();
-        let github_workflows = github_dir.join("workflows");
-        fs::create_dir_all(&github_workflows).unwrap();
 
-        let src_dir = root.join("src");
-        fs::create_dir_all(&src_dir).unwrap();
-        let src_dir = src_dir.canonicalize().unwrap();
+        let github_workflows =
+            djogi::migrate::resolve_write_workspace_path(&root, ".github/workflows")
+                .expect("resolve .github/workflows");
+        djogi::migrate::create_workspace_dir_all(&root, &github_workflows).unwrap();
+        let src_dir =
+            djogi::migrate::resolve_write_workspace_path(&root, "src").expect("resolve src");
+        djogi::migrate::create_workspace_dir_all(&root, &src_dir).unwrap();
+        let target_debug = djogi::migrate::resolve_write_workspace_path(&root, "target/debug")
+            .expect("resolve target/debug");
+        djogi::migrate::create_workspace_dir_all(&root, &target_debug).unwrap();
+        let git_objects = djogi::migrate::resolve_write_workspace_path(&root, ".git/objects")
+            .expect("resolve .git/objects");
+        djogi::migrate::create_workspace_dir_all(&root, &git_objects).unwrap();
+        let worktrees_issue =
+            djogi::migrate::resolve_write_workspace_path(&root, ".worktrees/issue")
+                .expect("resolve .worktrees/issue");
+        djogi::migrate::create_workspace_dir_all(&root, &worktrees_issue).unwrap();
 
-        let target_dir = root.join("target");
-        fs::create_dir_all(&target_dir).unwrap();
-        let target_dir = target_dir.canonicalize().unwrap();
-        let target_debug = target_dir.join("debug");
-        fs::create_dir_all(&target_debug).unwrap();
-
-        let git_dir = root.join(".git");
-        fs::create_dir_all(&git_dir).unwrap();
-        let git_dir = git_dir.canonicalize().unwrap();
-        let git_objects = git_dir.join("objects");
-        fs::create_dir_all(&git_objects).unwrap();
-
-        let worktrees_dir = root.join(".worktrees");
-        fs::create_dir_all(&worktrees_dir).unwrap();
-        let worktrees_dir = worktrees_dir.canonicalize().unwrap();
-        let worktrees_issue = worktrees_dir.join("issue");
-        fs::create_dir_all(&worktrees_issue).unwrap();
-
-        fs::write(github_workflows.join("ci.yml"), "name: CI").unwrap();
-        fs::write(src_dir.join("lib.rs"), "pub fn ok() {}").unwrap();
-        fs::write(
+        djogi::migrate::write_workspace_file(&root, github_workflows.join("ci.yml"), b"name: CI")
+            .unwrap();
+        djogi::migrate::write_workspace_file(&root, src_dir.join("lib.rs"), b"pub fn ok() {}")
+            .unwrap();
+        djogi::migrate::write_workspace_file(
+            &root,
             target_debug.join("build.log"),
-            "DATABASE_URL=postgres://real:secret@db/app",
+            b"DATABASE_URL=postgres://real:secret@db/app",
         )
         .unwrap();
-        fs::write(git_dir.join("config"), "ignored").unwrap();
-        fs::write(worktrees_issue.join("file.rs"), "ignored").unwrap();
+        djogi::migrate::write_workspace_file(&root, root.join(".git/config"), b"ignored").unwrap();
+        djogi::migrate::write_workspace_file(&root, worktrees_issue.join("file.rs"), b"ignored")
+            .unwrap();
 
         let files = list_filesystem_repo_files(&root).unwrap();
         let as_strings: BTreeSet<_> = files
@@ -1408,9 +1396,7 @@ mod tests {
         assert!(!as_strings.contains(".git/config"));
         assert!(!as_strings.contains(".worktrees/issue/file.rs"));
 
-        if root.starts_with(&temp_canon) {
-            fs::remove_dir_all(root).unwrap();
-        }
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &root);
     }
 
     // ---- URL detection ----

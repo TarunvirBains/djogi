@@ -230,8 +230,6 @@ fn worktree_id(absolute_path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{read_cache_ids, worktree_id};
-    use std::fs;
-
     #[test]
     fn worktree_id_is_stable_12_hex_chars() {
         let id = worktree_id("/home/dev/projects/djogi/.worktrees/c1");
@@ -283,25 +281,26 @@ mod tests {
         if tmp_name.contains('/') || tmp_name.contains('\\') || tmp_name.contains("..") {
             panic!("unsafe temp path component: {tmp_name}");
         }
-        let tmp = std::env::temp_dir().join(tmp_name);
         let temp_canon = std::env::temp_dir().canonicalize().unwrap();
-        if !tmp.starts_with(&temp_canon) {
-            panic!("refusing to create tmp outside temp: {}", tmp.display());
-        }
-        fs::create_dir_all(&tmp).unwrap();
+        let tmp = super::validate_cache_root_within_home(&temp_canon, &temp_canon.join(tmp_name))
+            .expect("resolve tmp");
+        djogi::migrate::create_workspace_dir_all(&temp_canon, &tmp).unwrap();
         let tmp = tmp.canonicalize().unwrap();
 
-        fs::create_dir_all(tmp.join("abc123def456")).unwrap();
-        fs::create_dir_all(tmp.join("789abc012def")).unwrap();
-        fs::write(tmp.join("not-a-dir"), b"ignored").unwrap();
+        let abc = djogi::migrate::resolve_write_workspace_path(&tmp, "abc123def456").unwrap();
+        let def = djogi::migrate::resolve_write_workspace_path(&tmp, "789abc012def").unwrap();
+        djogi::migrate::create_workspace_dir_all(&tmp, &abc).unwrap();
+        djogi::migrate::create_workspace_dir_all(&tmp, &def).unwrap();
+        djogi::migrate::write_workspace_file(&tmp, tmp.join("not-a-dir"), b"ignored").unwrap();
 
         let ids = read_cache_ids(&tmp).expect("read");
         assert!(ids.contains("abc123def456"));
         assert!(ids.contains("789abc012def"));
         assert!(!ids.contains("not-a-dir"));
 
-        if tmp.starts_with(std::env::temp_dir().canonicalize().unwrap()) {
-            fs::remove_dir_all(&tmp).ok();
-        }
+        let _ = djogi::migrate::remove_workspace_dir_all(
+            &std::env::temp_dir().canonicalize().unwrap(),
+            &tmp,
+        );
     }
 }

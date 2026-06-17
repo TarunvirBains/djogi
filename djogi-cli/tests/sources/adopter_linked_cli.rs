@@ -1359,9 +1359,8 @@ fn nocargo_compose_without_cargo_or_source() {
         let runtime_dir_canon = runtime_dir
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied_bin = runtime_dir_canon
-            .join("djogi")
-            .canonicalize()
+        let copied_bin = djogi::migrate::resolve_read_workspace_path(&runtime_dir_canon, "djogi")
+            .and_then(std::fs::canonicalize)
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied_bin.display()));
         if !copied_bin.starts_with(&runtime_dir_canon) || !copied_bin.is_file() {
             panic!("copied binary escapes runtime dir: {}", copied_bin.display());
@@ -1412,9 +1411,8 @@ async fn container_apply_from_prebuilt_binary(mut ctx: djogi::DjogiContext) {
         let runtime_dir_canon = runtime_dir
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", runtime_dir.display()));
-        let copied = runtime_dir_canon
-            .join("djogi")
-            .canonicalize()
+        let copied = djogi::migrate::resolve_read_workspace_path(&runtime_dir_canon, "djogi")
+            .and_then(std::fs::canonicalize)
             .unwrap_or_else(|err| panic!("canonicalize {}: {err}", copied.display()));
         if !copied.starts_with(&runtime_dir_canon) || !copied.is_file() {
             panic!("copied binary escapes runtime dir: {}", copied.display());
