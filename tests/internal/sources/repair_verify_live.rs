@@ -66,6 +66,8 @@ fn temp_workspace_root(stub: &str) -> PathBuf {
     let temp_canon =
         std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
     let path = temp_canon.join(format!("djogi-{stub}-{stamp}"));
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_canon, &path)
+        .expect("resolve temp workspace root");
     std::fs::create_dir_all(&path).expect("create temp workspace root");
     if let Ok(path_canon) = std::fs::canonicalize(&path) {
         assert!(
@@ -90,44 +92,37 @@ fn safe_remove_workspace(path: &std::path::Path) {
 }
 
 fn safe_remove_file(path: &std::path::Path) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-        && !path_canon.starts_with(&temp_canon)
-    {
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let vetted = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
+        .unwrap_or_else(|_| path.to_path_buf());
+    if vetted.exists() && !vetted.starts_with(&temp_canon) {
         panic!(
             "remove_file refused: path {} escapes temp directory",
             path.display()
         );
     }
-    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(vetted);
 }
 
 fn safe_read(path: &std::path::Path) -> Vec<u8> {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-    {
-        assert!(
-            path_canon.starts_with(&temp_canon),
-            "read refused: path {} escapes temp directory",
-            path.display()
-        );
-    }
-    std::fs::read(path).unwrap_or_else(|_| panic!("read {}", path.display()))
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    djogi::migrate::read_workspace_file(&temp_canon, path)
+        .unwrap_or_else(|_| panic!("read {}", path.display()))
 }
 
 fn safe_create_bucket_dir(
     path: &std::path::Path,
 ) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-    {
-        assert!(
-            path_canon.starts_with(&temp_canon),
-            "create_dir_all refused: bucket path {} escapes temp directory",
-            path.display()
-        );
-    }
-    std::fs::create_dir_all(path)
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_canon, path)
+        .expect("resolve bucket dir");
+    std::fs::create_dir_all(&path)
         .unwrap_or_else(|_| panic!("create bucket dir {}", path.display()));
 }
 
@@ -135,16 +130,11 @@ fn safe_write(
     path: &std::path::Path,
     contents: impl AsRef<[u8]>,
 ) {
-    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
-        && let Ok(path_canon) = path.canonicalize()
-    {
-        assert!(
-            path_canon.starts_with(&temp_canon),
-            "write refused: path {} escapes temp directory",
-            path.display()
-        );
-    }
-    std::fs::write(path, contents).unwrap_or_else(|_| panic!("write {}", path.display()));
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    djogi::migrate::write_workspace_file(&temp_canon, path, contents.as_ref())
+        .unwrap_or_else(|_| panic!("write {}", path.display()));
 }
 
 fn temp_lock() -> PathBuf {

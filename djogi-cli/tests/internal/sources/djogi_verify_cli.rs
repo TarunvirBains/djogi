@@ -82,6 +82,8 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
     let workspace_canon = workspace.canonicalize().expect("canonicalize workspace");
     let app_dir = if app.is_empty() { "_global_" } else { app };
     let dir = workspace_canon.join("migrations").join(database).join(app_dir);
+    let dir = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &dir)
+        .expect("resolve migrations subtree");
     fs::create_dir_all(&dir).expect("create migrations subtree");
     let dir = dir.canonicalize().expect("canonicalize migrations subtree");
     if !dir.starts_with(&workspace_canon) {
@@ -99,7 +101,8 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
 "#
     .to_vec();
     let path = dir.join("schema_snapshot.json");
-    fs::write(&path, &payload).expect("write schema_snapshot.json");
+    djogi::migrate::write_workspace_file(&workspace_canon, &path, &payload)
+        .expect("write schema_snapshot.json");
     (path, payload)
 }
 
@@ -250,7 +253,8 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     if !sp_canon.starts_with(&workspace_canon) {
         panic!("snapshot path escapes workspace");
     }
-    fs::write(&sp_canon, &tampered).expect("re-write tampered snapshot");
+    djogi::migrate::write_workspace_file(&workspace_canon, &sp_canon, &tampered)
+        .expect("re-write tampered snapshot");
 
     // Step 3 — run `djogi verify` and assert exit 1 +
     // `MISMATCH <path>` on stderr.

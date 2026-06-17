@@ -40,6 +40,8 @@ fn temp_workspace(label: &str) -> PathBuf {
         .as_nanos();
     let temp_dir_canon = std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
     let path = temp_dir_canon.join(format!("djogi-bootstrap-replay-{label}-{stamp}"));
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_dir_canon, &path)
+        .expect("resolve workspace root");
     fs::create_dir_all(&path).expect("create workspace root");
     if let Ok(path_canon) = std::fs::canonicalize(&path) {
         assert!(

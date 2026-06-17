@@ -90,13 +90,17 @@ fn write_committed_sql(
         .canonicalize()
         .expect("canonicalize workspace");
     let dir = bucket_dir(&workspace_canon, bucket);
+    let dir = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &dir)
+        .expect("resolve bucket dir");
     fs::create_dir_all(&dir).expect("create bucket dir");
     let dir = dir.canonicalize().expect("canonicalize bucket dir");
     assert!(dir.starts_with(&workspace_canon), "bucket dir escapes workspace");
     let up_path = dir.join(up_filename(version));
     let down_path = dir.join(down_filename(version));
-    fs::write(up_path, up_sql).expect("write up sql");
-    fs::write(down_path, down_sql).expect("write down sql");
+    djogi::migrate::write_workspace_file(&workspace_canon, &up_path, up_sql.as_bytes())
+        .expect("write up sql");
+    djogi::migrate::write_workspace_file(&workspace_canon, &down_path, down_sql.as_bytes())
+        .expect("write down sql");
 }
 
 fn safe_remove_workspace(workspace: &Path) {
@@ -356,7 +360,15 @@ async fn rollback_checksum_drift_refuses_and_executes_nothing(mut ctx: djogi::Dj
         .canonicalize()
         .expect("canonicalize down path parent");
     let down_path = down_parent_canon.join(down_path.file_name().expect("down path file name"));
-    fs::write(&down_path, format!("{down_sql}\nSELECT 1;\n")).expect("tamper down file");
+    let workspace_canon = workspace
+        .canonicalize()
+        .expect("canonicalize workspace for tamper");
+    djogi::migrate::write_workspace_file(
+        &workspace_canon,
+        &down_path,
+        format!("{down_sql}\nSELECT 1;\n").as_bytes(),
+    )
+    .expect("tamper down file");
 
     let output = spawn_rollback(&workspace, &database_url, &["--single-node-dev"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

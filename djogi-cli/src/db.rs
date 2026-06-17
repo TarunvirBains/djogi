@@ -796,6 +796,8 @@ mod tests {
             p.starts_with(&temp_canon),
             "workspace path escapes temp directory"
         );
+        let p = djogi::migrate::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve workspace path");
         fs::create_dir_all(&p).unwrap();
         p.canonicalize().expect("canonicalize workspace")
     }
@@ -818,16 +820,13 @@ mod tests {
             .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
         let candidate = workspace_canon.join(rel);
-        let parent = candidate.parent().expect("workspace file parent");
-        let parent_canon = parent
-            .canonicalize()
-            .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        let vetted = parent_canon.join(candidate.file_name().expect("workspace file name"));
+        let vetted = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &candidate)
+            .expect("resolve workspace file");
         assert!(
             vetted.starts_with(&workspace_canon),
             "workspace file escapes workspace root"
         );
-        fs::write(vetted, contents).unwrap();
+        djogi::migrate::write_workspace_file(workspace, &vetted, contents.as_bytes()).unwrap();
     }
 
     /// `db reset` without node identity must refuse before any prompt,
