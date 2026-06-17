@@ -90,7 +90,15 @@ pub fn temp_workspace(tag: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let p = std::env::temp_dir().join(format!("djogi-{tag}-{stamp}-{n}"));
+    let temp_canonical = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp_dir");
+    let p = temp_canonical.join(format!("djogi-{tag}-{stamp}-{n}"));
+    assert!(
+        p.starts_with(&temp_canonical),
+        "refusing to create dir outside temp: {}",
+        p.display()
+    );
     fs::create_dir_all(&p).expect("create_dir_all temp workspace");
     p
 }
@@ -114,5 +122,12 @@ host = "127.0.0.1"
 port = 0
 "#,
     );
-    fs::write(workspace.join("Djogi.toml"), toml).expect("write Djogi.toml");
+    let workspace_canonical = workspace.canonicalize().expect("canonicalize workspace");
+    let config_path = workspace_canonical.join("Djogi.toml");
+    assert!(
+        config_path.starts_with(&workspace_canonical),
+        "refusing to write config outside workspace: {}",
+        config_path.display()
+    );
+    fs::write(config_path, toml).expect("write Djogi.toml");
 }
