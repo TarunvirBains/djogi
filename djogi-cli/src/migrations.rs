@@ -4443,13 +4443,29 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost:1/djogi_unreachable\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let config_path = work.join("Djogi.toml");
+        guard_contained(&config_path, work);
+        fs::write(config_path, toml).unwrap();
     }
 
     fn without_database_url<T>(f: impl FnOnce() -> T) -> T {
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.remove();
         f()
+    }
+
+    /// Guard: verify a path (if it exists on disk) is contained within the
+    /// workspace. Used in test code to satisfy rust/path-injection containment
+    /// requirements before file operations.
+    fn guard_contained(path: &std::path::Path, workspace: &std::path::Path) {
+        if let Ok(p_canon) = path.canonicalize() {
+            assert!(
+                p_canon.starts_with(workspace),
+                "path {} escapes workspace {}",
+                path.display(),
+                workspace.display()
+            );
+        }
     }
 
     #[serial_test::serial]
@@ -4760,12 +4776,14 @@ mod tests {
     #[test]
     fn fallback_unreadable_replay_plan_sidecar_is_an_error_not_a_silent_fallback() {
         let work = temp_workspace("fallback-badplan");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let version = "V20260612000005__badplan";
         let bucket =
             write_fallback_migration_files(&work, version, "CREATE TABLE t (id BIGINT);\n", None);
         let plan_path =
             djogi::migrate::bucket_dir(&work, &bucket).join(format!("{version}.plan.json"));
         fs::create_dir_all(&plan_path).unwrap();
+        guard_contained(&plan_path, &ws_canon);
         let pending_up = djogi::migrate::compute_checksum(["CREATE TABLE t (id BIGINT);\n"]);
         load_replay_plan_from_disk(&work, &bucket, version, &pending_up, None)
             .expect_err("non-NotFound sidecar read errors must surface");
@@ -4777,23 +4795,27 @@ mod tests {
     #[test]
     fn b1_discover_snapshot_buckets_picks_up_renamed_from_app() {
         let work = temp_workspace("b1_discover");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         // Lay down a `migrations/main/billing/schema_snapshot.json`
         // the OLD app's snapshot. The current model inventory
         // would NOT have this bucket because the app moved to
         // `invoicing` via `#[app(renamed_from = "billing")]`.
         let billing_dir = work.join("migrations/main/billing");
         fs::create_dir_all(&billing_dir).unwrap();
+        guard_contained(&billing_dir, &ws_canon);
         fs::write(billing_dir.join("schema_snapshot.json"), "{}").unwrap();
         // A second bucket — the global one for the same database
         // exists too. Exercise the multi-bucket walk.
         let global_dir = work.join("migrations/main/_global_");
         fs::create_dir_all(&global_dir).unwrap();
+        guard_contained(&global_dir, &ws_canon);
         fs::write(global_dir.join("schema_snapshot.json"), "{}").unwrap();
         // A third on-disk directory WITHOUT a snapshot file — must
         // not be reported (we only union buckets that actually
         // shipped a snapshot).
         let no_snap_dir = work.join("migrations/main/empty_app");
         fs::create_dir_all(&no_snap_dir).unwrap();
+        guard_contained(&no_snap_dir, &ws_canon);
 
         let buckets = discover_snapshot_buckets_on_disk(&work);
         let labels: std::collections::BTreeSet<&str> =
@@ -4821,10 +4843,13 @@ mod tests {
     #[test]
     fn a1_load_from_workspace_reads_path_specific_djogi_toml() {
         let work = temp_workspace("a1_workspace_config");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let toml = "[database]\nurl = \"postgres://discovered-by-workspace-flag/test\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let config_path = work.join("Djogi.toml");
+        guard_contained(&config_path, &ws_canon);
+        fs::write(config_path, toml).unwrap();
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.remove();
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
@@ -4844,10 +4869,13 @@ mod tests {
     #[test]
     fn a1_round2_env_override_beats_workspace_toml() {
         let work = temp_workspace("a1r2_env_override");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let toml = "[database]\nurl = \"postgres://from-toml/test\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let config_path = work.join("Djogi.toml");
+        guard_contained(&config_path, &ws_canon);
+        fs::write(config_path, toml).unwrap();
         let env_guard = DatabaseUrlEnvGuard::new();
         env_guard.set("postgres://from-env/test");
         let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
@@ -4882,6 +4910,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_orders_phase_zero_before_normal_global() {
         let work = temp_workspace("discover_pending_phase_zero_first");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         write_pending_json(
             &djogi::migrate::pending_json_path(
                 &work,
@@ -4924,6 +4953,7 @@ mod tests {
     #[test]
     fn discover_orders_same_version_buckets_by_depends_on() {
         let work = temp_workspace("discover_pending_depends_on");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         write_pending_json(
             &djogi::migrate::pending_json_path(
                 &work,
@@ -4962,6 +4992,7 @@ mod tests {
     #[test]
     fn discover_orders_no_dependency_buckets_alphabetically() {
         let work = temp_workspace("discover_pending_alpha_tiebreak");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         // Three buckets, same version, no dependencies — should emit alpha, bravo, charlie
         for app in &["charlie", "bravo", "alpha"] {
             write_pending_json(
@@ -4990,6 +5021,7 @@ mod tests {
     #[test]
     fn discover_depends_on_missing_bucket_is_ignored() {
         let work = temp_workspace("discover_pending_deps_missing");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         // system depends on billing, but billing has no pending file
         write_pending_json(
             &djogi::migrate::pending_json_path(
@@ -5017,6 +5049,7 @@ mod tests {
     #[test]
     fn discover_depends_on_cycle_is_refused() {
         let work = temp_workspace("discover_pending_deps_cycle");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         write_pending_json(
             &djogi::migrate::pending_json_path(
                 &work,
@@ -5122,6 +5155,7 @@ mod tests {
         let event_log_table = format!("e2e_event_log_{n}");
 
         let work = temp_workspace("cross-bucket-fk-e2e");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let guard = djogi::migrate::acquire_workspace_lock(
             &work.join(LOCK_FILE_NAME),
             std::time::Duration::from_secs(5),
@@ -5306,14 +5340,13 @@ mod tests {
             .expect("construct per-test database URL from DATABASE_URL");
 
         // Write minimal workspace config for run_apply.
-        fs::write(
-            work.join("Djogi.toml"),
-            format!(
-                "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
-        )
+        let config_path = work.join("Djogi.toml");
+        guard_contained(&config_path, &ws_canon);
+        fs::write(config_path, format!(
+            "[database]\nurl = \"{test_db_url}\"\n\
+             max_connections = 1\ndev_mode = false\n\
+             [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+        ))
         .unwrap();
 
         // Override DATABASE_URL to the per-test database for the duration of
@@ -5439,6 +5472,7 @@ mod tests {
         let comments_table = format!("e2e_comments_{n}");
 
         let work = temp_workspace("shared-enum-e2e");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let guard = djogi::migrate::acquire_workspace_lock(
             &work.join(LOCK_FILE_NAME),
             std::time::Duration::from_secs(5),
@@ -5640,14 +5674,13 @@ mod tests {
             .expect("construct per-test database URL from DATABASE_URL");
 
         // Write minimal workspace config for run_apply.
-        fs::write(
-            work.join("Djogi.toml"),
-            format!(
-                "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
-        )
+        let config_path = work.join("Djogi.toml");
+        guard_contained(&config_path, &ws_canon);
+        fs::write(config_path, format!(
+            "[database]\nurl = \"{test_db_url}\"\n\
+             max_connections = 1\ndev_mode = false\n\
+             [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+        ))
         .unwrap();
 
         let db_url_guard = DatabaseUrlEnvGuard::new();
@@ -5840,14 +5873,15 @@ mod tests {
         let test_db_url = replace_db_in_url(&admin_url, &test_db)
             .expect("construct per-test database URL from DATABASE_URL");
 
-        fs::write(
-            work.join("Djogi.toml"),
-            format!(
-                "[database]\nurl = \"{test_db_url}\"\n\
-                 max_connections = 1\ndev_mode = false\n\
-                 [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-            ),
-        )
+        let config_path = work.join("Djogi.toml");
+        if let Ok(work_canon) = work.canonicalize() {
+            guard_contained(&config_path, &work_canon);
+        }
+        fs::write(config_path, format!(
+            "[database]\nurl = \"{test_db_url}\"\n\
+             max_connections = 1\ndev_mode = false\n\
+             [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
+        ))
         .unwrap();
 
         let db_url_guard = DatabaseUrlEnvGuard::new();
@@ -6032,6 +6066,7 @@ mod tests {
             app: "billing".into(),
         };
         let work = temp_workspace("drift-missing-snapshot");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
 
         let v1_models = std::collections::BTreeMap::from([(
             table.clone(),
@@ -6071,6 +6106,7 @@ mod tests {
         );
 
         let snap_path = reconstruct_snapshot_path(&work, &bucket);
+        guard_contained(&snap_path, &ws_canon);
         fs::remove_file(&snap_path).expect("delete recorded snapshot");
 
         let exit = run_apply_in_test_db(&mut ctx, &work, FakeMode::Real).await;
@@ -6249,6 +6285,7 @@ mod tests {
             app: "billing".into(),
         };
         let work = temp_workspace("fake-corrupt-snapshot");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
 
         let v1_models = std::collections::BTreeMap::from([(
             table.clone(),
@@ -6290,6 +6327,7 @@ mod tests {
         let second_version = report.composed_buckets[0].version.clone();
 
         let snap_path = reconstruct_snapshot_path(&work, &bucket);
+        guard_contained(&snap_path, &ws_canon);
         fs::write(&snap_path, b"not json").expect("corrupt snapshot");
 
         let exit = run_apply_in_test_db(
@@ -6403,6 +6441,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_refuses_malformed_pending_json() {
         let work = temp_workspace("discover_pending_malformed");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
@@ -6410,7 +6449,9 @@ mod tests {
                 app: String::new(),
             },
         );
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let parent_dir = path.parent().unwrap();
+        fs::create_dir_all(parent_dir).unwrap();
+        guard_contained(parent_dir, &ws_canon);
         fs::write(&path, b"{ not json").unwrap();
 
         let err = discover_pending_plans(&work).expect_err("malformed pending must refuse");
@@ -6421,6 +6462,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_refuses_hidden_phase_zero_database_mismatch() {
         let work = temp_workspace("discover_pending_phase_zero_db_mismatch");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         write_pending_json(
             &djogi::migrate::phase_zero_pending_json_path(
                 &work,
@@ -6444,6 +6486,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_refuses_normal_global_phase_zero_pending() {
         let work = temp_workspace("discover_pending_normal_global_phase_zero");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
@@ -6464,6 +6507,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_refuses_normal_pending_app_mismatch() {
         let work = temp_workspace("discover_pending_normal_app_mismatch");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
@@ -6484,6 +6528,7 @@ mod tests {
     #[test]
     fn discover_pending_plans_refuses_noncanonical_normal_pending_filename() {
         let work = temp_workspace("discover_pending_noncanonical_filename");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = work.join("target/djogi_pending/main/bad-name.json");
         write_pending_json(&path, "main", "bad-name", "V20260606010101__bad_name", &[]);
 
@@ -6498,6 +6543,7 @@ mod tests {
     #[test]
     fn load_verified_pending_for_apply_refuses_changed_artifact() {
         let work = temp_workspace("apply_pending_changed_after_discovery");
+        let ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
@@ -6507,6 +6553,7 @@ mod tests {
         );
         write_pending_json(&path, "main", "", "V20260606010101__stable", &[]);
         let discovered = discover_pending_plans(&work).expect("discover");
+        guard_contained(&path, &ws_canon);
         fs::write(
             &path,
             serde_json::to_vec_pretty(&PendingPlan {
@@ -6529,6 +6576,7 @@ mod tests {
     #[test]
     fn reconcile_pending_plans_after_lock_refuses_added_artifact() {
         let work = temp_workspace("apply_pending_added_before_lock");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
@@ -6562,6 +6610,7 @@ mod tests {
     #[test]
     fn reconcile_pending_plans_after_lock_accepts_unchanged_set() {
         let work = temp_workspace("apply_pending_stable_under_lock");
+        let _ws_canon = work.canonicalize().expect("canonicalize workspace");
         let path = djogi::migrate::pending_json_path(
             &work,
             &BucketKey {
