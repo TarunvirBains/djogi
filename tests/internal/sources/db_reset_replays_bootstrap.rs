@@ -20,7 +20,6 @@
 // succeeds.
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use djogi::config::MigrateConfig;
@@ -58,7 +57,7 @@ fn safe_remove_workspace(path: &Path) {
         && let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
     {
         assert!(path_canon.starts_with(&temp_canon));
-        let _ = fs::remove_dir_all(&path_canon);
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
     }
 }
 
@@ -429,8 +428,12 @@ async fn db_reset_refuses_checksum_drift_before_drop() {
     let original_sql =
         djogi::migrate::read_workspace_file_to_string(&work_canon, &phase_zero_path)
             .expect("read bootstrap SQL");
-    fs::write(&phase_zero_path, format!("{original_sql}\n-- checksum drift for #275\n"))
-        .expect("mutate bootstrap SQL");
+    djogi::migrate::write_workspace_file(
+        &work_canon,
+        &phase_zero_path,
+        format!("{original_sql}\n-- checksum drift for #275\n").as_bytes(),
+    )
+    .expect("mutate bootstrap SQL");
 
     let err = reset_app_database(ResetRequest {
         database_url: &virgin_url,

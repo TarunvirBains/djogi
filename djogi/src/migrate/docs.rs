@@ -665,7 +665,7 @@ mod tests {
         let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
         let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
             .expect("resolve temp docs root");
-        fs::create_dir_all(&p).unwrap();
+        crate::migrate::common::create_workspace_dir_all(&temp_canon, &p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
             assert!(
                 p_canon.starts_with(&temp_canon),

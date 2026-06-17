@@ -74,7 +74,7 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        let vetted = fs::canonicalize(&path).unwrap_or_else(|e| panic!("{e}"));
+        let vetted = path.canonicalize().unwrap_or_else(|e| panic!("{e}"));
         assert!(vetted.starts_with(&cache_root));
         if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
@@ -277,6 +277,7 @@ mod tests {
         ));
         let temp_canon = std::env::temp_dir().canonicalize().unwrap();
         assert!(tmp.starts_with(&temp_canon));
+        fs::create_dir_all(tmp.parent().unwrap_or(&tmp)).unwrap();
         fs::create_dir_all(&tmp).unwrap();
         let tmp = tmp.canonicalize().unwrap();
 
@@ -287,6 +288,7 @@ mod tests {
                 "refusing to create dir outside test root: {}",
                 candidate.display()
             );
+            fs::create_dir_all(candidate.parent().unwrap_or(&candidate)).unwrap();
             fs::create_dir_all(&candidate).unwrap();
         };
         let safe_write = |rel: &str, contents: &[u8]| {

@@ -129,7 +129,11 @@ pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), Snapsh
             path: Some(parent.to_path_buf()),
             source: e,
         })?;
-        fs::create_dir_all(parent).map_err(|e| SnapshotError::Io {
+        super::common::create_workspace_parent_dirs(
+            parent.parent().unwrap_or_else(|| Path::new(".")),
+            path,
+        )
+        .map_err(|e| SnapshotError::Io {
             path: Some(parent.to_path_buf()),
             source: e,
         })?;
@@ -425,7 +429,8 @@ mod tests {
             .expect("canonicalize temp dir");
         let tmp = super::common::resolve_write_workspace_path(&temp_canon, &tmp)
             .expect("resolve temp dir for snapshot test");
-        fs::create_dir_all(&tmp).expect("create temp dir for snapshot test");
+        super::common::create_workspace_dir_all(&temp_canon, &tmp)
+            .expect("create temp dir for snapshot test");
         let tmp_canon = tmp.canonicalize().expect("canonicalize temp dir");
         let nested = tmp_canon.join("a").join("b").join("schema_snapshot.json");
         assert!(

@@ -1350,7 +1350,11 @@ mod tests {
             let _ = fs::remove_dir_all(&root);
         }
         assert!(root.starts_with(&temp_canon));
-        fs::create_dir_all(&root).unwrap();
+        if let Some(parent) = root.parent() {
+            let parent = parent.canonicalize().unwrap_or_else(|_| temp_canon.clone());
+            let root = parent.join(root.file_name().unwrap());
+            fs::create_dir_all(&root).unwrap();
+        }
         let root = root.canonicalize().unwrap();
         let safe_create_dir = |rel: &str| {
             let candidate = root.join(rel);
@@ -1359,6 +1363,9 @@ mod tests {
                 "refusing to create dir outside test root: {}",
                 candidate.display()
             );
+            if let Some(parent) = candidate.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
             fs::create_dir_all(&candidate).unwrap();
         };
         safe_create_dir(".github/workflows");

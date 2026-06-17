@@ -29,7 +29,12 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         "workspace path {} is outside temp directory and current directory",
         canon.display()
     );
-    fs::create_dir_all(&canon).unwrap();
+    let anchor = if canon.starts_with(&temp) {
+        &temp
+    } else {
+        &cwd
+    };
+    djogi::migrate::create_workspace_dir_all(anchor, &canon).unwrap();
     let canon = canon.canonicalize().expect("canonicalize workspace");
     assert!(
         canon.starts_with(&temp) || canon.starts_with(&cwd),
@@ -51,7 +56,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .expect("canonicalize temp directory");
     let p = temp_canon.join(format!("djogi-build-pending-{tag}-{nanos}-{n}"));
     assert!(p.starts_with(&temp_canon));
-    fs::create_dir_all(&p).unwrap();
+    djogi::migrate::create_workspace_dir_all(&temp_canon, &p).unwrap();
     safe_workspace(&p)
 }
 
@@ -64,15 +69,15 @@ fn safe_create_dir(path: &Path) {
         "refusing to create dir outside safe parent: {}",
         candidate.display()
     );
-    fs::create_dir_all(&candidate).unwrap();
+    djogi::migrate::create_workspace_dir_all(&parent, &candidate).unwrap();
 }
 
-fn safe_write_bytes(path: &Path, bytes: &[u8]) {
+fn safe_write_bytes(path: &Path, bytes: impl AsRef<[u8]>) {
     let path = vetted_child_path(path);
-    if let Some(parent) = path.parent() {
-        safe_create_dir(parent);
-    }
-    fs::write(&path, bytes).unwrap();
+    let parent = path.parent().expect("path parent").to_path_buf();
+    let parent = safe_workspace(&parent);
+    let candidate = parent.join(path.file_name().expect("path filename"));
+    djogi::migrate::write_workspace_file(&parent, &candidate, bytes.as_ref()).unwrap();
 }
 
 fn vetted_child_path(path: &Path) -> PathBuf {
@@ -143,7 +148,7 @@ fn write_pending_with_format_version(
     if let Some(parent) = path.parent() {
         safe_create_dir(parent);
     }
-    safe_write_bytes(&path, &serde_json::to_vec_pretty(&pending).unwrap());
+    safe_write_bytes(&path, serde_json::to_vec_pretty(&pending).unwrap());
 }
 
 fn safe_remove_workspace(path: &Path) {
@@ -158,7 +163,7 @@ fn safe_remove_workspace(path: &Path) {
         "refusing to remove dir outside temp: {}",
         path_canon.display()
     );
-    let _ = fs::remove_dir_all(&path_canon);
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
 }
 
 fn diagnostic_texts(diagnostics: &[build_script::BuildDiagnostic]) -> Vec<&str> {
@@ -401,7 +406,7 @@ fn build_collect_diagnostics_hidden_phase_zero_with_malformed_bucket_key_invento
     models.insert("badkey".to_string(), schema("pending"));
     let models_path = work.join("target/djogi_models.json");
     let models_path = vetted_child_path(&models_path);
-    safe_write_bytes(&models_path, &serde_json::to_vec_pretty(&models).unwrap());
+    safe_write_bytes(&models_path, serde_json::to_vec_pretty(&models).unwrap());
 
     let diagnostics = build_script::collect_diagnostics(&work);
     let texts = diagnostic_texts(&diagnostics);
