@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use djogi::config::MigrateConfig;
@@ -58,12 +58,25 @@ fn empty_snapshot() -> AppliedSchema {
     }
 }
 
+fn test_temp_root() -> PathBuf {
+    let root = std::env::temp_dir().join("djogi-runner-tests");
+    let _ = fs::create_dir_all(&root);
+    root
+}
+
+fn is_within(parent: &Path, child: &Path) -> bool {
+    match (parent.canonicalize(), child.canonicalize()) {
+        (Ok(parent_abs), Ok(child_abs)) => child_abs.starts_with(parent_abs),
+        _ => false,
+    }
+}
+
 fn temp_snapshot_path() -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.json"))
+    test_temp_root().join(format!("djogi-runner-test-{stamp}.json"))
 }
 
 /// Per-test workspace lock path. Each test gets its own unique path
@@ -73,7 +86,7 @@ fn temp_workspace_lock_path() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.lock"))
+    test_temp_root().join(format!("djogi-runner-test-{stamp}.lock"))
 }
 
 fn temp_workspace_root() -> PathBuf {
@@ -308,7 +321,10 @@ async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext
     assert_eq!(loaded.format_version, SNAPSHOT_FORMAT_VERSION);
 
     // Cleanup.
-    let _ = std::fs::remove_file(&snapshot_path);
+    let temp_root = test_temp_root();
+    if is_within(&temp_root, &snapshot_path) {
+        let _ = std::fs::remove_file(&snapshot_path);
+    }
 }
 
 // ── Failure: transactional apply rolls back ───────────────────────────────
