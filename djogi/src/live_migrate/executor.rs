@@ -3,6 +3,8 @@
 //! and tracks progress in the `djogi_live_plans` ledger via the
 //! state helpers from [`super::state`].
 
+use std::path::Path;
+
 use crate::context::DjogiContext;
 use crate::live_migrate::compose::StepResult;
 use crate::live_migrate::plan::{LivePlan, Step, StepKind};
@@ -75,6 +77,7 @@ pub struct ExecutionContext<'a> {
 ///   [`ExecutorError::PlanFile`] when a step or the plan file fails.
 pub async fn run_plan(
     ctx: &mut DjogiContext,
+    migrations_root: &Path,
     plan_path: std::path::PathBuf,
     start_index: u32,
     is_resume: bool,
@@ -82,7 +85,7 @@ pub async fn run_plan(
     justify: Option<&str>,
 ) -> Result<StepResult, ExecutorError> {
     // 1. Load plan from disk
-    let plan = crate::live_migrate::plan_file::read_plan(&plan_path)?;
+    let plan = crate::live_migrate::plan_file::read_plan(migrations_root, &plan_path)?;
 
     // 2. Destructive-step gate. The engine is the authoritative
     // enforcement point: every call path (run / resume / finalize)

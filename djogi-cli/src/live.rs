@@ -640,12 +640,13 @@ pub fn refuse_offline_only(reason: impl Into<String>) -> LiveCmdError {
 async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, LiveCmdError> {
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
+    let migrations_root = djogi::migrate::migrations_root(&workspace);
     let config = load_config(&workspace)?;
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
     let path = resolve_plan_file_path(&workspace, &row);
-    verify_checksum(&path, &row.plan_file_checksum)?;
-    let plan = read_plan(&path)?;
+    verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
+    let plan = read_plan(&migrations_root, &path)?;
 
     let current_index = u32::try_from(row.current_step_index).unwrap_or(0);
     let hooks = active_hooks_at_step(&plan, current_index)
@@ -719,13 +720,14 @@ async fn run_cmd(
     require_justify_for_dangerous(allow_raw_dangerous, justify)?;
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
+    let migrations_root = djogi::migrate::migrations_root(&workspace);
     let config = load_config(&workspace)?;
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
     assert_run_status_allows_progress(row.status)?;
     let path = resolve_plan_file_path(&workspace, &row);
-    verify_checksum(&path, &row.plan_file_checksum)?;
-    let plan = read_plan(&path)?;
+    verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
+    let plan = read_plan(&migrations_root, &path)?;
 
     // Walk the plan ahead of time and refuse any destructive step
     // (CleanupLegacyState, or RunReversibleSchemaOp whose up_sql drops
@@ -748,6 +750,7 @@ async fn run_cmd(
     // gate as well as the CLI pre-flight above (belt and suspenders).
     match djogi::live_migrate::executor::run_plan(
         &mut ctx,
+        &migrations_root,
         path,
         0,
         false,
@@ -804,17 +807,19 @@ async fn resume_cmd(
     require_justify_for_destructive(allow_destructive, justify)?;
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
+    let migrations_root = djogi::migrate::migrations_root(&workspace);
     let config = load_config(&workspace)?;
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
     assert_resume_status_allows_progress(row.status)?;
     let path = resolve_plan_file_path(&workspace, &row);
-    verify_checksum(&path, &row.plan_file_checksum)?;
-    let _plan = read_plan(&path)?;
+    verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
+    let _plan = read_plan(&migrations_root, &path)?;
     // Resume execution from current step
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
     match djogi::live_migrate::executor::run_plan(
         &mut ctx,
+        &migrations_root,
         path,
         start_idx,
         true,
@@ -938,6 +943,7 @@ async fn finalize_cmd(
 ) -> Result<i32, LiveCmdError> {
     let plan_id = parse_plan_id(plan_id_raw)?;
     let workspace = resolve_workspace(workspace);
+    let migrations_root = djogi::migrate::migrations_root(&workspace);
     let config = load_config(&workspace)?;
     let mut ctx = connect(&config.database.url).await?;
     let row = fetch_row(&mut ctx, plan_id).await?;
@@ -955,13 +961,13 @@ async fn finalize_cmd(
         ));
     }
     let path = resolve_plan_file_path(&workspace, &row);
-    verify_checksum(&path, &row.plan_file_checksum)?;
-    let _plan = read_plan(&path)?;
+    verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
+    let _plan = read_plan(&migrations_root, &path)?;
     // Resume execution from current step. `live finalize` implies the
     // destructive opt-in (5th arg `true`); the engine still requires the
     // non-empty `justify` checked above.
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
-    match djogi::live_migrate::executor::run_plan(&mut ctx, path, start_idx, true, true, justify)
+    match djogi::live_migrate::executor::run_plan(&mut ctx, &migrations_root, path, start_idx, true, true, justify)
         .await
     {
         Ok(result) => match result {
