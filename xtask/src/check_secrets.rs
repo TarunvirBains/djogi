@@ -312,9 +312,9 @@ fn scan_repo() -> Result<Vec<Finding>, String> {
         if should_skip_file(&path) {
             continue;
         }
-        let canonical = path.canonicalize().map_err(|error| {
-            format!("cannot resolve {}: {error}", path.display())
-        })?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
         if !canonical.starts_with(&cwd) {
             continue;
         }
@@ -449,7 +449,8 @@ fn should_use_act_filesystem_fallback(error: &str) -> bool {
 }
 
 fn list_filesystem_repo_files(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let canonical_root = root.canonicalize()
+    let canonical_root = root
+        .canonicalize()
         .map_err(|error| format!("cannot resolve root path {}: {error}", root.display()))?;
     let mut paths = Vec::new();
     collect_filesystem_repo_files(&canonical_root, &canonical_root, &mut paths)
@@ -484,7 +485,11 @@ fn collect_filesystem_repo_files(
             }
             collect_filesystem_repo_files(canonical_root, &path, paths)?;
         } else if file_type.is_file() {
-            paths.push(path.strip_prefix(canonical_root).unwrap_or(&path).to_owned());
+            paths.push(
+                path.strip_prefix(canonical_root)
+                    .unwrap_or(&path)
+                    .to_owned(),
+            );
         }
     }
 
@@ -1352,7 +1357,10 @@ mod tests {
         let safe_write = |rel: &str, contents: &str| {
             let candidate = root.join(rel);
             if !candidate.starts_with(&root) {
-                panic!("refusing to write outside test root: {}", candidate.display());
+                panic!(
+                    "refusing to write outside test root: {}",
+                    candidate.display()
+                );
             }
             fs::write(candidate, contents).unwrap();
         };

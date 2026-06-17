@@ -159,14 +159,14 @@ pub fn run(list_only: bool) -> ExitCode {
 }
 
 fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    let root_canon = root.canonicalize().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("canonicalize {}: {e}", root.display()),
-        )
-    })?;
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("canonicalize {}: {e}", root.display())))?;
     let cwd = std::env::current_dir().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "cannot determine current directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot determine current directory",
+        )
     })?;
     if !root_canon.starts_with(&cwd) {
         return Err(io::Error::new(
@@ -205,31 +205,17 @@ fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     Ok(())
 }
 
-fn collect_active_rs_files(
-    root: &Path,
-    dir: &Path,
-    files: &mut Vec<PathBuf>,
-) -> io::Result<()> {
-    let root_canon = root.canonicalize().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("canonicalize {}: {e}", root.display()),
-        )
-    })?;
-    let dir_canon = dir.canonicalize().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("canonicalize {}: {e}", dir.display()),
-        )
-    })?;
+fn collect_active_rs_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("canonicalize {}: {e}", root.display())))?;
+    let dir_canon = dir
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("canonicalize {}: {e}", dir.display())))?;
     if !dir_canon.starts_with(&root_canon) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "path {} escapes root {}",
-                dir.display(),
-                root.display()
-            ),
+            format!("path {} escapes root {}", dir.display(), root.display()),
         ));
     }
 
@@ -272,14 +258,14 @@ fn is_active_rust_surface(root: &Path, path: &Path) -> bool {
 }
 
 fn collect_workflow_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    let root_canon = root.canonicalize().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("canonicalize {}: {e}", root.display()),
-        )
-    })?;
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| io::Error::new(e.kind(), format!("canonicalize {}: {e}", root.display())))?;
     let cwd = std::env::current_dir().map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidInput, "cannot determine current directory")
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot determine current directory",
+        )
     })?;
     if !root_canon.starts_with(&cwd) {
         return Err(io::Error::new(

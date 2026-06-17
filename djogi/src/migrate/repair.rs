@@ -58,6 +58,7 @@ use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::DjogiError;
 
 use super::bootstrap::PHASE_ZERO_VERSION;
+use super::common;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ChecksumFormatErrorKind, LEDGER_SELECT_COLS, LedgerRow, LedgerStatus, compute_checksum,
@@ -668,34 +669,36 @@ fn check_phase_zero_repair(
     let bucket_dir = super::target::bucket_dir(workspace, bucket);
     let up_path = bucket_dir.join(super::naming::up_filename(version));
 
-    let workspace_canon = std::fs::canonicalize(workspace).map_err(|e| RepairError::LedgerIo {
-        source: DjogiError::Db(crate::error::DbError::other(format!(
-            "canonicalize workspace {}: {e}",
-            workspace.display()
-        ))),
-    })?;
-    let bucket_dir_canon = std::fs::canonicalize(&bucket_dir).map_err(|e| RepairError::LedgerIo {
-        source: DjogiError::Db(crate::error::DbError::other(format!(
-            "canonicalize bucket dir {}: {e}",
-            bucket_dir.display()
-        ))),
-    })?;
-    let up_filename = super::naming::up_filename(version);
-    let up_path_canon = bucket_dir_canon.join(up_filename);
-    if !up_path_canon.starts_with(&workspace_canon) {
-        return Err(RepairError::LedgerIo {
+    let workspace_canon =
+        common::canonicalize_base(workspace).map_err(|e| RepairError::LedgerIo {
             source: DjogiError::Db(crate::error::DbError::other(format!(
-                "resolved up-file path escapes workspace: {}",
+                "canonicalize workspace {}: {e}",
+                workspace.display()
+            ))),
+        })?;
+    let bucket_dir_canon =
+        common::canonicalize_base(&bucket_dir).map_err(|e| RepairError::LedgerIo {
+            source: DjogiError::Db(crate::error::DbError::other(format!(
+                "canonicalize bucket dir {}: {e}",
+                bucket_dir.display()
+            ))),
+        })?;
+    let up_filename = super::naming::up_filename(version);
+    let up_path_canon =
+        common::ensure_within_base(&workspace_canon, &bucket_dir_canon.join(up_filename)).map_err(
+            |_| RepairError::LedgerIo {
+                source: DjogiError::Db(crate::error::DbError::other(
+                    "resolved up-file path escapes workspace".to_string(),
+                )),
+            },
+        )?;
+    let bytes = common::read_workspace_file(&workspace_canon, &up_path_canon).map_err(|e| {
+        RepairError::LedgerIo {
+            source: DjogiError::Db(crate::error::DbError::other(format!(
+                "read Phase 0 up-file at {}: {e}",
                 up_path.display()
             ))),
-        });
-    }
-
-    let bytes = std::fs::read(&up_path_canon).map_err(|e| RepairError::LedgerIo {
-        source: DjogiError::Db(crate::error::DbError::other(format!(
-            "read Phase 0 up-file at {}: {e}",
-            up_path.display()
-        ))),
+        }
     })?;
     super::phase_zero::require_identity_free_phase_zero_migration_artifact(&bytes).map_err(|_| {
         RepairError::PhaseZeroArtifactRefused {

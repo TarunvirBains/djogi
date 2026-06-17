@@ -1309,9 +1309,7 @@ fn emit_rls_side_channel(
     let manifest_canonical = std::path::Path::new(&manifest_dir)
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from(&manifest_dir));
-    let rls_dir = manifest_canonical
-        .join("target")
-        .join("djogi_rls");
+    let rls_dir = manifest_canonical.join("target").join("djogi_rls");
 
     if !rls_dir.starts_with(&manifest_canonical) {
         eprintln!(

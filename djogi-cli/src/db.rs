@@ -783,8 +783,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_canon =
-            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {

@@ -49,8 +49,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
+use super::common;
 use super::naming::{MIGRATION_DOWN_SUFFIX, MIGRATION_FILE_EXT};
 use super::projection::BucketKey;
 
@@ -205,7 +207,16 @@ fn scan_filesystem_filtered(
     database_filter: Option<&str>,
 ) -> Result<BTreeSet<FilesystemBucket>, io::Error> {
     let mut out = BTreeSet::new();
-    let migrations = migrations_root(workspace_root);
+    let workspace_root = common::canonicalize_base(workspace_root).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!(
+                "failed to canonicalize workspace root {}: {source}",
+                workspace_root.display()
+            ),
+        )
+    })?;
+    let migrations = migrations_root(&workspace_root);
     let entries = match fs::read_dir(&migrations) {
         Ok(e) => e,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(out),
@@ -280,18 +291,32 @@ pub fn scan_filesystem_with_files(
     workspace_root: &Path,
     database_filter: Option<&str>,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, io::Error> {
+    let workspace_root = common::canonicalize_base(workspace_root).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!(
+                "failed to canonicalize workspace root {}: {source}",
+                workspace_root.display()
+            ),
+        )
+    })?;
+
     let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
     // Push the database filter into the first-level walk so we never
     // open peer-database app directories the caller doesn't care
     // about. The per-database short-circuit also keeps `db reset`
     // from triggering filesystem audits on unrelated databases.
-    let buckets = scan_filesystem_filtered(workspace_root, database_filter)?;
+    let buckets = scan_filesystem_filtered(&workspace_root, database_filter)?;
     for fb in buckets {
         let bucket = BucketKey {
             database: fb.database,
             app: fb.app,
         };
-        let dir = bucket_dir(workspace_root, &bucket);
+        let dir = common::resolve_within_base(
+            &workspace_root,
+            &bucket_dir(&workspace_root, &bucket),
+            common::CandidateResolutionMode::Existing,
+        )?;
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -452,7 +477,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("djogi-target-{tag}-{nanos}-{n}"))
+        let path = std::env::temp_dir().join(format!("djogi-target-{tag}-{nanos}-{n}"));
+        std::fs::create_dir_all(&path).expect("create temp root");
+        path.canonicalize().expect("canonicalize temp root")
     }
 
     #[test]

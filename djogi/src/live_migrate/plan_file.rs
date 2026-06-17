@@ -21,6 +21,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::migrate::common;
 use sha2::{Digest, Sha256};
 
 use crate::live_migrate::plan::{LivePlan, PlanValidationError};
@@ -125,37 +126,38 @@ pub fn plan_path(
 /// existing file (immutability contract). Creates parent directories
 /// as needed (`migrations/<target>/live/`).
 pub fn write_plan(migrations_root: &Path, plan: &LivePlan) -> Result<PathBuf, PlanFileError> {
-    let migrations_root = migrations_root.canonicalize().map_err(|source| {
-        PlanFileError::Io {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
             path: migrations_root.to_path_buf(),
             source,
-        }
-    })?;
+        })?;
     let path = plan_path(
         &migrations_root,
         &plan.header.target_database,
         plan.header.plan_id,
         &plan.header.slug,
     );
-    if !path.starts_with(&migrations_root) {
-        return Err(PlanFileError::Io {
-            path: path.clone(),
-            source: std::io::Error::other(
-                "resolved plan path resolves outside the migrations root directory",
-            ),
-        });
-    }
+    let path = common::resolve_within_base(
+        &migrations_root,
+        &path,
+        common::CandidateResolutionMode::MayCreate,
+    )
+    .map_err(|source| PlanFileError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let _parent =
+        common::create_workspace_parent_dirs(&migrations_root, &path).map_err(|source| {
+            PlanFileError::Io {
+                path: path.parent().unwrap_or(&path).to_path_buf(),
+                source,
+            }
+        })?;
     plan.validate()
         .map_err(|source| PlanFileError::Validation {
             path: path.clone(),
             source,
         })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| PlanFileError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
     let bytes = serde_json::to_vec_pretty(plan)
         .map_err(|source| PlanFileError::JsonSerialize { source })?;
     // Use create_new(true) for the immutability check — atomic at the
@@ -185,35 +187,24 @@ pub fn write_plan(migrations_root: &Path, plan: &LivePlan) -> Result<PathBuf, Pl
 /// Read and parse a plan file from disk. Validates the resulting
 /// [`LivePlan`] before returning so callers always receive a
 /// structurally-sound plan or an actionable error.
-pub fn read_plan(
-    migrations_root: &Path,
-    plan_file_path: &Path,
-) -> Result<LivePlan, PlanFileError> {
-    let migrations_root = migrations_root.canonicalize().map_err(|source| {
-        PlanFileError::Io {
+pub fn read_plan(migrations_root: &Path, plan_file_path: &Path) -> Result<LivePlan, PlanFileError> {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
             path: migrations_root.to_path_buf(),
             source,
-        }
+        })?;
+    let plan_file_path = common::resolve_within_base(
+        &migrations_root,
+        plan_file_path,
+        common::CandidateResolutionMode::Existing,
+    )
+    .map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => PlanFileError::NotFound(plan_file_path.to_path_buf()),
+        _ => PlanFileError::Io {
+            path: plan_file_path.to_path_buf(),
+            source,
+        },
     })?;
-    let plan_file_path = plan_file_path.canonicalize().map_err(|source| {
-        match source.kind() {
-            std::io::ErrorKind::NotFound => {
-                PlanFileError::NotFound(plan_file_path.to_path_buf())
-            }
-            _ => PlanFileError::Io {
-                path: plan_file_path.to_path_buf(),
-                source,
-            },
-        }
-    })?;
-    if !plan_file_path.starts_with(&migrations_root) {
-        return Err(PlanFileError::Io {
-            path: plan_file_path.clone(),
-            source: std::io::Error::other(
-                "resolved plan path resolves outside the migrations root directory",
-            ),
-        });
-    }
     let bytes = read_file_bytes(&plan_file_path)?;
     let plan: LivePlan =
         serde_json::from_slice(&bytes).map_err(|source| PlanFileError::JsonParse {
@@ -236,31 +227,23 @@ pub fn compute_checksum(
     migrations_root: &Path,
     plan_file_path: &Path,
 ) -> Result<String, PlanFileError> {
-    let migrations_root = migrations_root.canonicalize().map_err(|source| {
-        PlanFileError::Io {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
             path: migrations_root.to_path_buf(),
             source,
-        }
+        })?;
+    let plan_file_path = common::resolve_within_base(
+        &migrations_root,
+        plan_file_path,
+        common::CandidateResolutionMode::Existing,
+    )
+    .map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => PlanFileError::NotFound(plan_file_path.to_path_buf()),
+        _ => PlanFileError::Io {
+            path: plan_file_path.to_path_buf(),
+            source,
+        },
     })?;
-    let plan_file_path = plan_file_path.canonicalize().map_err(|source| {
-        match source.kind() {
-            std::io::ErrorKind::NotFound => {
-                PlanFileError::NotFound(plan_file_path.to_path_buf())
-            }
-            _ => PlanFileError::Io {
-                path: plan_file_path.to_path_buf(),
-                source,
-            },
-        }
-    })?;
-    if !plan_file_path.starts_with(&migrations_root) {
-        return Err(PlanFileError::Io {
-            path: plan_file_path.clone(),
-            source: std::io::Error::other(
-                "resolved plan path resolves outside the migrations root directory",
-            ),
-        });
-    }
     let bytes = read_file_bytes(&plan_file_path)?;
     Ok(format_checksum(&bytes))
 }
@@ -410,7 +393,11 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let pid = std::process::id();
-            let path = std::env::temp_dir().join(format!("djogi-plan-file-{label}-{pid}-{nanos}"));
+            let temp_root = std::env::temp_dir();
+            let dir_name = format!("djogi-plan-file-{label}-{pid}-{nanos}");
+            let path =
+                common::resolve_maybe_missing_workspace_path(&temp_root, Path::new(&dir_name))
+                    .unwrap_or_else(|_| temp_root.join(&dir_name));
             std::fs::create_dir_all(&path).expect("create tempdir");
             TempDir(path)
         }
@@ -504,8 +491,13 @@ mod tests {
         let path = write_plan(tmp.path(), &plan).expect("write plan");
         let cs = compute_checksum(tmp.path(), &path).expect("compute");
         // Append a stray byte to simulate an edit.
-        let tmp_canonical = tmp.path().canonicalize().expect("canonicalize temp dir");
-        let path_canonical = path.canonicalize().expect("canonicalize plan path");
+        let tmp_canonical = common::canonicalize_base(tmp.path()).expect("canonicalize temp dir");
+        let path_canonical = common::resolve_within_base(
+            tmp.path(),
+            &path,
+            common::CandidateResolutionMode::Existing,
+        )
+        .expect("canonicalize plan path");
         assert!(
             path_canonical.starts_with(&tmp_canonical),
             "plan path should be within temp dir"
@@ -535,7 +527,8 @@ mod tests {
         // Use a structurally well-formed checksum so the failure is
         // file-presence, not malformed-input.
         let well_formed = format!("V1:{}", "0".repeat(64));
-        let err = verify_checksum(tmp.path(), &missing, &well_formed).expect_err("missing must fail");
+        let err =
+            verify_checksum(tmp.path(), &missing, &well_formed).expect_err("missing must fail");
         assert!(matches!(err, PlanFileError::NotFound(_)));
     }
 

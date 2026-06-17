@@ -32,6 +32,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
+use super::common;
 use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
 
 /// Errors surfaced by snapshot load / save. Distinct from
@@ -130,20 +131,11 @@ pub fn save_snapshot(snapshot: &AppliedSchema, path: &Path) -> Result<(), Snapsh
         path: Some(parent.to_path_buf()),
         source: e,
     })?;
-    let file_name = path.file_name().ok_or_else(|| SnapshotError::Io {
-        path: Some(path.to_path_buf()),
-        source: io::Error::new(io::ErrorKind::InvalidInput, "snapshot path has no file name"),
-    })?;
-    let path_canon = parent_canon.join(file_name);
-    if !path_canon.starts_with(&parent_canon) {
-        return Err(SnapshotError::Io {
+    let path_canon =
+        common::ensure_within_base(&parent_canon, &path).map_err(|err| SnapshotError::Io {
             path: Some(path.to_path_buf()),
-            source: io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "resolved snapshot path escapes its parent directory",
-            ),
-        });
-    }
+            source: err,
+        })?;
 
     let mut bytes = serde_json::to_vec_pretty(snapshot).map_err(|e| SnapshotError::Parse {
         path: Some(path.to_path_buf()),
@@ -185,17 +177,6 @@ pub fn load_snapshot(path: &Path) -> Result<AppliedSchema, SnapshotError> {
         path: Some(path.to_path_buf()),
         source: e,
     })?;
-    if let Some(parent) = path_canon.parent()
-        && !path_canon.starts_with(parent)
-    {
-        return Err(SnapshotError::Io {
-            path: Some(path.to_path_buf()),
-            source: io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "resolved snapshot path escapes its parent directory",
-            ),
-        });
-    }
     let bytes = fs::read(&path_canon).map_err(|e| SnapshotError::Io {
         path: Some(path.to_path_buf()),
         source: e,

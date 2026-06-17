@@ -14,9 +14,14 @@ mod build_script;
 fn safe_workspace(workspace: &Path) -> PathBuf {
     let canon = workspace.canonicalize().unwrap_or_else(|_| {
         let parent = workspace.parent().expect("workspace path has a parent");
-        let parent_canon = parent.canonicalize()
+        let parent_canon = parent
+            .canonicalize()
             .unwrap_or_else(|err| panic!("canonicalize parent {}: {err}", parent.display()));
-        parent_canon.join(workspace.file_name().expect("workspace path has a file name"))
+        parent_canon.join(
+            workspace
+                .file_name()
+                .expect("workspace path has a file name"),
+        )
     });
     let temp = std::env::temp_dir();
     let cwd = std::env::current_dir().expect("current directory exists");

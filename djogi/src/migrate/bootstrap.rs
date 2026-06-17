@@ -90,6 +90,7 @@ use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use tokio_postgres::GenericClient;
 
+use super::common;
 use super::compose::{AppLifecycle, PENDING_FORMAT_VERSION, PendingPlan, load_pending};
 use super::guard::WorkspaceGuard;
 use super::ledger::compute_checksum;
@@ -670,9 +671,12 @@ pub fn ensure_phase_zero_emitted(
     now: OffsetDateTime,
     _guard: &WorkspaceGuard,
 ) -> Result<Vec<EmittedPhaseZero>, AutoEmitError> {
-    let workspace_root_canon = workspace_root.canonicalize().map_err(|e| {
-        AutoEmitError::Io { path: workspace_root.to_path_buf(), source: e }
-    })?;
+    let workspace_root_canon = workspace_root
+        .canonicalize()
+        .map_err(|e| AutoEmitError::Io {
+            path: workspace_root.to_path_buf(),
+            source: e,
+        })?;
 
     // 1. Collect the distinct database set from inputs.
     // Sources:
@@ -705,11 +709,11 @@ pub fn ensure_phase_zero_emitted(
 
         // Validate constructed paths stay within the canonicalized workspace root
         // to prevent path-injection via symlinks or relative components.
-        if !dir.starts_with(&workspace_root_canon)
-            || !up_path.starts_with(&workspace_root_canon)
-            || !down_path.starts_with(&workspace_root_canon)
-            || !pending_path.starts_with(&workspace_root_canon)
-            || !legacy_pending_path.starts_with(&workspace_root_canon)
+        if common::ensure_within_base(&workspace_root_canon, &dir).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &up_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &down_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &pending_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &legacy_pending_path).is_err()
         {
             continue;
         }
@@ -918,15 +922,16 @@ fn ensure_parent(path: &Path) -> Result<(), AutoEmitError> {
             loop {
                 match existing.canonicalize() {
                     Ok(base) => {
-                        let suffix = parent.strip_prefix(&existing).map_err(|_| {
-                            AutoEmitError::Io {
-                                path: parent.to_path_buf(),
-                                source: io::Error::new(
-                                    io::ErrorKind::InvalidInput,
-                                    "parent path cannot be resolved",
-                                ),
-                            }
-                        })?;
+                        let suffix =
+                            parent
+                                .strip_prefix(&existing)
+                                .map_err(|_| AutoEmitError::Io {
+                                    path: parent.to_path_buf(),
+                                    source: io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "parent path cannot be resolved",
+                                    ),
+                                })?;
                         break base.join(suffix);
                     }
                     Err(_) => {
@@ -1734,8 +1739,11 @@ mod tests {
         };
         let legacy_write = pending_json_path(&work, &bucket);
         assert!(legacy_write.starts_with(&work));
-        fs::write(&legacy_write, serde_json::to_vec_pretty(&legacy_pending).unwrap())
-            .unwrap();
+        fs::write(
+            &legacy_write,
+            serde_json::to_vec_pretty(&legacy_pending).unwrap(),
+        )
+        .unwrap();
 
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");

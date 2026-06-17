@@ -1,8 +1,9 @@
-use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::common;
 use super::diff::Classification;
 use super::projection::BucketKey;
 use super::segment::{MigrationPlan, Segment, SegmentKind};
@@ -112,19 +113,29 @@ pub(crate) fn load_committed_replay_plan(
     checksum_up: &str,
     checksum_down: Option<&str>,
 ) -> ReplayPlanLoadStatus {
-    let workspace_root = match workspace_root.canonicalize() {
+    let workspace_root = match common::canonicalize_base(workspace_root) {
         Ok(p) => p,
         Err(e) => {
             return ReplayPlanLoadStatus::Invalid(ReplayPlanInvalidReason::Io(e.to_string()));
         }
     };
     let path = committed_replay_plan_path(&workspace_root, bucket, version);
-    if !path.starts_with(&workspace_root) {
-        return ReplayPlanLoadStatus::Invalid(ReplayPlanInvalidReason::Io(
-            "resolved plan path resolves outside the workspace root directory".to_owned(),
-        ));
-    }
-    let bytes = match fs::read(&path) {
+    let path = match common::resolve_within_base(
+        &workspace_root,
+        &path,
+        common::CandidateResolutionMode::Existing,
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            if err.kind() == io::ErrorKind::NotFound {
+                return ReplayPlanLoadStatus::Missing;
+            }
+            return ReplayPlanLoadStatus::Invalid(ReplayPlanInvalidReason::Io(
+                "resolved plan path resolves outside the workspace root directory".to_owned(),
+            ));
+        }
+    };
+    let bytes = match common::read_workspace_file(&workspace_root, &path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return ReplayPlanLoadStatus::Missing,
         Err(e) => {

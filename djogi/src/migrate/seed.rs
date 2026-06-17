@@ -31,6 +31,7 @@ use crate::__bypass::RawAccessExt as _;
 use crate::context::{DjogiContext, PinnedCtx};
 use crate::error::DjogiError;
 
+use super::common;
 use super::ledger::compute_checksum;
 use super::projection::BucketKey;
 use super::runner::{advisory_lock_key, release_advisory_lock};
@@ -376,21 +377,15 @@ pub fn discover_seeds(
         source: err,
     })?;
     let dir = workspace_root.join(SEEDS_DIRNAME).join(database);
-    if let Ok(dir_canon) = dir.canonicalize()
-        && !dir_canon.starts_with(&ws_canon)
-    {
-        return Err(SeedError::Io {
-            path: dir.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "seed directory {} escapes workspace {}",
-                    dir.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
+    if let Err(source) = common::ensure_within_base(&ws_canon, &dir) {
+        if dir.exists() {
+            return Err(SeedError::Io {
+                path: dir.clone(),
+                source,
+            });
+        }
     }
+
     let mut out: Vec<DiscoveredSeed> = Vec::new();
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -724,20 +719,13 @@ async fn run_seeds_inner(
     let mut entries: Vec<SeedReportEntry> = Vec::with_capacity(discovered.len());
 
     for seed in discovered {
-        if let Ok(seed_canon) = seed.path.canonicalize()
-            && !seed_canon.starts_with(&ws_canon)
-        {
-            return Err(SeedError::Io {
-                path: seed.path.clone(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!(
-                        "seed file {} escapes workspace {}",
-                        seed.path.display(),
-                        ws_canon.display()
-                    ),
-                ),
-            });
+        if let Err(source) = common::ensure_within_base(&ws_canon, &seed.path) {
+            if seed.path.exists() {
+                return Err(SeedError::Io {
+                    path: seed.path.clone(),
+                    source,
+                });
+            }
         }
         let body_bytes = fs::read(&seed.path).map_err(|err| SeedError::Io {
             path: seed.path.clone(),
@@ -872,8 +860,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_canon =
-            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-seed-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {

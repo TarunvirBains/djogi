@@ -210,9 +210,12 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                 };
                 filesystem.push((database.clone(), label.clone()));
                 let snap_path = app_entry.path().join("schema_snapshot.json");
-                if snap_path.canonicalize().ok().as_ref().is_none_or(|p| {
-                    !p.starts_with(&ws_canon)
-                }) {
+                if snap_path
+                    .canonicalize()
+                    .ok()
+                    .as_ref()
+                    .is_none_or(|p| !p.starts_with(&ws_canon))
+                {
                     continue;
                 }
                 if let Ok(text) = std::fs::read_to_string(&snap_path)
@@ -268,9 +271,12 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                             continue;
                         };
                         let path = phase_zero_file.path();
-                        if path.canonicalize().ok().as_ref().is_none_or(|p| {
-                            !p.starts_with(&ws_canon)
-                        }) {
+                        if path
+                            .canonicalize()
+                            .ok()
+                            .as_ref()
+                            .is_none_or(|p| !p.starts_with(&ws_canon))
+                        {
                             continue;
                         }
                         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -320,9 +326,12 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                     continue;
                 }
                 let path = f.path();
-                if path.canonicalize().ok().as_ref().is_none_or(|p| {
-                    !p.starts_with(&ws_canon)
-                }) {
+                if path
+                    .canonicalize()
+                    .ok()
+                    .as_ref()
+                    .is_none_or(|p| !p.starts_with(&ws_canon))
+                {
                     continue;
                 }
                 let Ok(text) = std::fs::read_to_string(&path) else {
@@ -500,10 +509,7 @@ impl PendingArtifacts {
     }
 }
 
-fn read_models_inventory(
-    models_path: &Path,
-    workspace_root: &Path,
-) -> ModelsInventoryState {
+fn read_models_inventory(models_path: &Path, workspace_root: &Path) -> ModelsInventoryState {
     let Ok(root_canon) = std::fs::canonicalize(workspace_root) else {
         return ModelsInventoryState::Absent;
     };

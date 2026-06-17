@@ -78,7 +78,10 @@ pub fn run() -> ExitCode {
         let canon_root = match root.canonicalize() {
             Ok(p) => p,
             Err(error) => {
-                eprintln!("{}: failed to canonicalize root: {error}", display_path(root));
+                eprintln!(
+                    "{}: failed to canonicalize root: {error}",
+                    display_path(root)
+                );
                 continue;
             }
         };

@@ -124,7 +124,9 @@ fn fresh_empty_workspace(stub: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_canonical = std::env::temp_dir().canonicalize().expect("canonicalize temp_dir");
+    let temp_canonical = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp_dir");
     let dir = temp_canonical.join(format!("djogi-370-{stub}-{stamp}"));
     assert!(
         dir.starts_with(&temp_canonical),
@@ -170,7 +172,9 @@ fn verify_with_empty_provider_and_no_snapshots_refuses_exit_2() {
         provider.models_call_count()
     );
 
-    let temp_canonical = std::env::temp_dir().canonicalize().expect("canonicalize temp_dir");
+    let temp_canonical = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp_dir");
     assert!(
         workspace.starts_with(&temp_canonical),
         "refusing to remove dir outside temp: {}",

@@ -50,6 +50,7 @@ pub mod attune;
 pub mod audit;
 pub mod bootstrap;
 pub mod build_match;
+pub(crate) mod common;
 pub mod compose;
 pub mod diff;
 pub mod docs;

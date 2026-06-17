@@ -80,6 +80,7 @@ use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::pg::pool::DjogiPool;
 
+use super::common;
 use super::compose::{
     DATE_ARRAY_HELPER_PRELUDE, NUMERIC_ARRAY_HELPER_PRELUDE, TSTZ_ARRAY_HELPER_PRELUDE,
     date_array_helper_operation, numeric_array_helper_operation, tstz_array_helper_operation,
@@ -885,27 +886,21 @@ fn collect_checksum_parity_issues(
     database: &str,
     historical_entries: &[HistoricalReplayEntry],
 ) -> Result<Vec<ResetChecksumParityIssue>, ResetError> {
-    let ws_canon = workspace_root.canonicalize().map_err(|err| {
-        ResetError::MigrationScanFailed {
-            path: workspace_root.to_path_buf(),
-            source: err,
-        }
-    })?;
+    let ws_canon =
+        workspace_root
+            .canonicalize()
+            .map_err(|err| ResetError::MigrationScanFailed {
+                path: workspace_root.to_path_buf(),
+                source: err,
+            })?;
     let scan_dir = migrations_root(workspace_root).join(database);
-    if let Ok(scan_canon) = scan_dir.canonicalize()
-        && !scan_canon.starts_with(&ws_canon)
-    {
-        return Err(ResetError::MigrationScanFailed {
-            path: scan_dir.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "migration directory {} escapes workspace {}",
-                    scan_dir.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
+    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir) {
+        if scan_dir.exists() {
+            return Err(ResetError::MigrationScanFailed {
+                path: scan_dir.clone(),
+                source,
+            });
+        }
     }
     let on_disk = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
@@ -968,20 +963,13 @@ fn push_checksum_issue_if_needed(
     path: &Path,
     ws_canon: &Path,
 ) -> Result<(), ResetError> {
-    if let Ok(path_canon) = path.canonicalize()
-        && !path_canon.starts_with(ws_canon)
-    {
-        return Err(ResetError::SqlReadFailed {
-            path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "migration file {} escapes workspace {}",
-                    path.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
+    if let Err(source) = common::ensure_within_base(ws_canon, path) {
+        if path.exists() {
+            return Err(ResetError::SqlReadFailed {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
     }
     let on_disk_sql = match fs::read_to_string(path) {
         Ok(sql) => sql,
@@ -1254,27 +1242,21 @@ fn scan_committed_migrations(
     workspace_root: &Path,
     database: &str,
 ) -> Result<BTreeMap<BucketKey, Vec<String>>, ResetError> {
-    let ws_canon = workspace_root.canonicalize().map_err(|err| {
-        ResetError::MigrationScanFailed {
-            path: workspace_root.to_path_buf(),
-            source: err,
-        }
-    })?;
+    let ws_canon =
+        workspace_root
+            .canonicalize()
+            .map_err(|err| ResetError::MigrationScanFailed {
+                path: workspace_root.to_path_buf(),
+                source: err,
+            })?;
     let scan_dir = migrations_root(workspace_root).join(database);
-    if let Ok(scan_canon) = scan_dir.canonicalize()
-        && !scan_canon.starts_with(&ws_canon)
-    {
-        return Err(ResetError::MigrationScanFailed {
-            path: scan_dir.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "migration directory {} escapes workspace {}",
-                    scan_dir.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
+    if let Err(source) = common::ensure_within_base(&ws_canon, &scan_dir) {
+        if scan_dir.exists() {
+            return Err(ResetError::MigrationScanFailed {
+                path: scan_dir.clone(),
+                source,
+            });
+        }
     }
     let with_paths = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
@@ -1603,44 +1585,26 @@ fn read_replay_sql_files(
     bucket: &BucketKey,
     version: &str,
 ) -> Result<ReplaySqlFiles, ResetError> {
-    let ws_canon = workspace_root.canonicalize().map_err(|err| {
-        ResetError::SqlReadFailed {
+    let ws_canon = workspace_root
+        .canonicalize()
+        .map_err(|err| ResetError::SqlReadFailed {
             path: workspace_root.to_path_buf(),
             source: err,
-        }
-    })?;
+        })?;
     let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
-    if let Ok(bd_canon) = bucket_dir.canonicalize()
-        && !bd_canon.starts_with(&ws_canon)
-    {
+    if let Err(source) = common::ensure_within_base(&ws_canon, &bucket_dir) {
         return Err(ResetError::SqlReadFailed {
             path: bucket_dir.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "bucket directory {} escapes workspace {}",
-                    bucket_dir.display(),
-                    ws_canon.display()
-                ),
-            ),
+            source,
         });
     }
     let up_path = bucket_dir.join(up_filename(version));
-    if let Ok(up_canon) = up_path.canonicalize()
-        && !up_canon.starts_with(&ws_canon)
-    {
-        return Err(ResetError::SqlReadFailed {
+    let up_path = common::ensure_within_base(&ws_canon, &up_path).map_err(|source| {
+        ResetError::SqlReadFailed {
             path: up_path.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "migration file {} escapes workspace {}",
-                    up_path.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
-    }
+            source,
+        }
+    })?;
     let down_path = bucket_dir.join(down_filename(version));
 
     let up_sql = fs::read_to_string(&up_path).map_err(|e| ResetError::SqlReadFailed {
@@ -1649,34 +1613,34 @@ fn read_replay_sql_files(
     })?;
     let checksum_up = compute_committed_sql_checksum(&up_sql, ResetSqlSide::Up);
 
-    if let Ok(down_canon) = down_path.canonicalize()
-        && !down_canon.starts_with(&ws_canon)
-    {
-        return Err(ResetError::SqlReadFailed {
-            path: down_path.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "migration file {} escapes workspace {}",
-                    down_path.display(),
-                    ws_canon.display()
-                ),
-            ),
-        });
-    }
+    let down_path = match common::ensure_within_base(&ws_canon, &down_path) {
+        Ok(path) => Some(path),
+        Err(source) => {
+            if down_path.exists() {
+                return Err(ResetError::SqlReadFailed {
+                    path: down_path.clone(),
+                    source,
+                });
+            }
+            None
+        }
+    };
 
-    let (down_sql, checksum_down) = match fs::read_to_string(&down_path) {
-        Ok(sql) => {
-            let checksum_down = compute_committed_down_sql_checksum(&sql);
-            (sql, checksum_down)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-        Err(e) => {
-            return Err(ResetError::SqlReadFailed {
-                path: down_path,
-                source: e,
-            });
-        }
+    let (down_sql, checksum_down) = match down_path {
+        Some(down_path) => match fs::read_to_string(&down_path) {
+            Ok(sql) => {
+                let checksum_down = compute_committed_down_sql_checksum(&sql);
+                (sql, checksum_down)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+            Err(e) => {
+                return Err(ResetError::SqlReadFailed {
+                    path: down_path,
+                    source: e,
+                });
+            }
+        },
+        None => (String::new(), None),
     };
 
     Ok(ReplaySqlFiles {
@@ -1990,14 +1954,17 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_canon = std::env::temp_dir().canonicalize()
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
             .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-reset-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
-        let p_canon = std::fs::canonicalize(&p).unwrap_or_else(|_| {
-            panic!("workspace {} must be canonicalizable", p.display())
-        });
-        assert!(p_canon.starts_with(&temp_canon), "workspace path escapes temp directory");
+        let p_canon = std::fs::canonicalize(&p)
+            .unwrap_or_else(|_| panic!("workspace {} must be canonicalizable", p.display()));
+        assert!(
+            p_canon.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
         p
     }
 
@@ -2395,13 +2362,25 @@ mod tests {
         fs::create_dir_all(&main_global).unwrap();
         fs::create_dir_all(&main_billing).unwrap();
         let mg_canon = main_global.canonicalize().unwrap_or_else(|_| {
-            panic!("main_global {} must be canonicalizable", main_global.display())
+            panic!(
+                "main_global {} must be canonicalizable",
+                main_global.display()
+            )
         });
-        assert!(mg_canon.starts_with(&work_canon), "main_global escapes workspace");
+        assert!(
+            mg_canon.starts_with(&work_canon),
+            "main_global escapes workspace"
+        );
         let mb_canon = main_billing.canonicalize().unwrap_or_else(|_| {
-            panic!("main_billing {} must be canonicalizable", main_billing.display())
+            panic!(
+                "main_billing {} must be canonicalizable",
+                main_billing.display()
+            )
         });
-        assert!(mb_canon.starts_with(&work_canon), "main_billing escapes workspace");
+        assert!(
+            mb_canon.starts_with(&work_canon),
+            "main_billing escapes workspace"
+        );
         fs::write(
             main_global.join("V20260301000000__init.sdjql"),
             "-- up\nCREATE TABLE foo (id BIGINT PRIMARY KEY);",
@@ -2490,9 +2469,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2547,9 +2532,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2640,9 +2631,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2675,9 +2672,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2744,9 +2747,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
@@ -2784,9 +2793,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
@@ -2834,9 +2849,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2882,9 +2903,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -2920,9 +2947,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE SCHEMA IF NOT EXISTS heeranjid;",
@@ -2953,9 +2986,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "-- AddTable widgets\n\
@@ -3018,9 +3057,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n",
@@ -3050,9 +3095,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "DO $$\n\
@@ -3086,9 +3137,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         fs::write(
             bucket_dir.join(up_filename(version)),
             "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
@@ -3127,9 +3184,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
         fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
         fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
@@ -3163,9 +3226,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
         let up_sql = "-- AddTable widgets\n\
              CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
@@ -3216,9 +3285,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3277,9 +3352,15 @@ mod tests {
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
         fs::create_dir_all(&bucket_dir).unwrap();
         let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
-            panic!("bucket_dir {} must be canonicalizable", bucket_dir.display())
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
         });
-        assert!(bd_canon.starts_with(&work_canon), "bucket_dir escapes workspace");
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
         fs::write(
             bucket_dir.join(up_filename(version)),
@@ -3627,7 +3708,10 @@ mod tests {
         let bucket_canon = fs::canonicalize(&bucket)
             .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
         let root_canon = fs::canonicalize(&root).expect("canonicalize root");
-        assert!(bucket_canon.starts_with(&root_canon), "bucket escapes workspace");
+        assert!(
+            bucket_canon.starts_with(&root_canon),
+            "bucket escapes workspace"
+        );
 
         fs::write(
             bucket.join("V20260501000000__new.sdjql"),
@@ -3667,7 +3751,10 @@ mod tests {
         let bucket_canon = fs::canonicalize(&bucket)
             .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
         let root_canon = fs::canonicalize(&root).expect("canonicalize root");
-        assert!(bucket_canon.starts_with(&root_canon), "bucket escapes workspace");
+        assert!(
+            bucket_canon.starts_with(&root_canon),
+            "bucket escapes workspace"
+        );
 
         fs::write(
             bucket.join("V20260301000000__legacy.sql"),

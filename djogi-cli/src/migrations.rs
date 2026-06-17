@@ -94,12 +94,12 @@ fn load_replay_plan_from_disk(
     pending_checksum_up: &str,
     pending_checksum_down: Option<&str>,
 ) -> Result<(djogi::migrate::MigrationPlan, String, Option<String>), ApplyReplayPlanError> {
-    let ws_canon = workspace.canonicalize().map_err(|_| {
-        ApplyReplayPlanError::PathEscape {
+    let ws_canon = workspace
+        .canonicalize()
+        .map_err(|_| ApplyReplayPlanError::PathEscape {
             path: workspace.to_path_buf(),
             workspace: workspace.to_path_buf(),
-        }
-    })?;
+        })?;
 
     // Try to load the committed replay plan JSON first.
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
@@ -362,10 +362,7 @@ fn classify_phase_zero_for_cleanup(
     let ws_canon = match workspace.canonicalize() {
         Ok(c) => c,
         Err(_) => {
-            return Some(format!(
-                "workspace {} not accessible",
-                workspace.display()
-            ));
+            return Some(format!("workspace {} not accessible", workspace.display()));
         }
     };
 
@@ -1743,7 +1740,8 @@ fn load_verified_pending_for_apply(
     workspace: &Path,
     pending_file: &DiscoveredPendingPlan,
 ) -> Result<PendingPlan, String> {
-    let ws_canon = workspace.canonicalize()
+    let ws_canon = workspace
+        .canonicalize()
         .map_err(|e| format!("canonicalize workspace: {e}"))?;
     if let Ok(p_canon) = pending_file.path.canonicalize()
         && !p_canon.starts_with(&ws_canon)
@@ -3359,9 +3357,9 @@ fn gate_rollback_targets<'a>(
     bucket: &BucketKey,
     rows: &[&'a djogi::migrate::LedgerSummaryRow],
 ) -> Result<Vec<GatedRollbackTarget<'a>>, RollbackCliGateError> {
-    let ws_canon = workspace.canonicalize().map_err(|e| {
-        RollbackCliGateError::Io(format!("canonicalize workspace: {e}"))
-    })?;
+    let ws_canon = workspace
+        .canonicalize()
+        .map_err(|e| RollbackCliGateError::Io(format!("canonicalize workspace: {e}")))?;
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
     if let Ok(bd_canon) = bucket_dir.canonicalize()
         && !bd_canon.starts_with(&ws_canon)
@@ -3993,7 +3991,8 @@ fn load_committed_plan_for_resume(
     bucket: &djogi::migrate::BucketKey,
     version: &str,
 ) -> Result<djogi::migrate::MigrationPlan, String> {
-    let ws_canon = workspace.canonicalize()
+    let ws_canon = workspace
+        .canonicalize()
         .map_err(|e| format!("canonicalize workspace: {e}"))?;
     let bucket_dir = djogi::migrate::bucket_dir(workspace, bucket);
     if let Ok(bd_canon) = bucket_dir.canonicalize()
@@ -5342,11 +5341,14 @@ mod tests {
         // Write minimal workspace config for run_apply.
         let config_path = work.join("Djogi.toml");
         guard_contained(&config_path, &ws_canon);
-        fs::write(config_path, format!(
-            "[database]\nurl = \"{test_db_url}\"\n\
+        fs::write(
+            config_path,
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-        ))
+            ),
+        )
         .unwrap();
 
         // Override DATABASE_URL to the per-test database for the duration of
@@ -5676,11 +5678,14 @@ mod tests {
         // Write minimal workspace config for run_apply.
         let config_path = work.join("Djogi.toml");
         guard_contained(&config_path, &ws_canon);
-        fs::write(config_path, format!(
-            "[database]\nurl = \"{test_db_url}\"\n\
+        fs::write(
+            config_path,
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-        ))
+            ),
+        )
         .unwrap();
 
         let db_url_guard = DatabaseUrlEnvGuard::new();
@@ -5877,11 +5882,14 @@ mod tests {
         if let Ok(work_canon) = work.canonicalize() {
             guard_contained(&config_path, &work_canon);
         }
-        fs::write(config_path, format!(
-            "[database]\nurl = \"{test_db_url}\"\n\
+        fs::write(
+            config_path,
+            format!(
+                "[database]\nurl = \"{test_db_url}\"\n\
              max_connections = 1\ndev_mode = false\n\
              [server]\nhost = \"127.0.0.1\"\nport = 8080\n"
-        ))
+            ),
+        )
         .unwrap();
 
         let db_url_guard = DatabaseUrlEnvGuard::new();

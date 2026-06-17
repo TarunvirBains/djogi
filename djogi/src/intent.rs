@@ -30,6 +30,7 @@
 //! `models` and `fields` are `BTreeMap<String, _>` so docs rendering is
 //! byte-deterministic regardless of parse order.
 
+use crate::migrate::common;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -105,8 +106,15 @@ pub enum IntentError {
 /// Load `<workspace_root>/.djogi/intent.json` if present. Absent file
 /// → `Ok(None)`; non-NotFound I/O or parse errors → `Err`.
 pub fn load(workspace_root: &Path) -> Result<Option<IntentFile>, IntentError> {
-    let path = workspace_root.join(".djogi").join("intent.json");
-    let bytes = match std::fs::read(&path) {
+    let path = common::resolve_maybe_missing_workspace_path(
+        workspace_root,
+        Path::new(".djogi").join("intent.json"),
+    )
+    .map_err(|source| IntentError::Io {
+        path: workspace_root.join(".djogi").join("intent.json"),
+        source,
+    })?;
+    let bytes = match common::read_workspace_file(workspace_root, &path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(source) => return Err(IntentError::Io { path, source }),
@@ -164,7 +172,11 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let pid = std::process::id();
-            let path = std::env::temp_dir().join(format!("djogi-intent-{label}-{pid}-{nanos}"));
+            let temp_root = std::env::temp_dir();
+            let dir_name = format!("djogi-intent-{label}-{pid}-{nanos}");
+            let path =
+                common::resolve_maybe_missing_workspace_path(&temp_root, Path::new(&dir_name))
+                    .unwrap_or_else(|_| temp_root.join(&dir_name));
             std::fs::create_dir_all(&path).expect("create tempdir");
             TempDir(path)
         }
@@ -181,7 +193,8 @@ mod tests {
     }
 
     fn write_intent(dir: &Path, contents: &str) {
-        let djogi_dir = dir.join(".djogi");
+        let djogi_dir =
+            common::resolve_maybe_missing_workspace_path(dir, ".djogi").expect("intent dir");
         std::fs::create_dir_all(&djogi_dir).expect("create .djogi");
         let mut f =
             std::fs::File::create(djogi_dir.join("intent.json")).expect("create intent.json");

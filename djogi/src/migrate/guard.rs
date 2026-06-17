@@ -48,7 +48,7 @@
 //! (`u8::is_ascii_digit`) per the Djogi-wide no-regex policy. Plain
 //! decimal ASCII, optionally followed by a trailing newline.
 
-use std::fs::{canonicalize, File, OpenOptions};
+use std::fs::{File, OpenOptions, canonicalize};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

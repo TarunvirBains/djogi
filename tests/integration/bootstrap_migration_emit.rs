@@ -51,7 +51,9 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir_canon = std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+    let temp_dir_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
     let path = temp_dir_canon.join(format!("djogi-bootstrap-emit-{label}-{stamp}"));
     fs::create_dir_all(&path).expect("create workspace root");
     if let Ok(path_canon) = std::fs::canonicalize(&path) {
@@ -179,7 +181,11 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     // Up SQL inspection: HeeRanjID install + PostGIS extension, with
     // no production node-id seed/defaults.
     let work_canon = std::fs::canonicalize(&work).expect("canonicalize workspace");
-    if !up_path.canonicalize().unwrap_or(up_path.clone()).starts_with(&work_canon) {
+    if !up_path
+        .canonicalize()
+        .unwrap_or(up_path.clone())
+        .starts_with(&work_canon)
+    {
         panic!("up SQL path escapes workspace");
     }
     let up_sql = fs::read_to_string(&up_path).expect("read up");
@@ -213,7 +219,11 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     );
 
     // Down SQL is comment-only.
-    if !down_path.canonicalize().unwrap_or(down_path.clone()).starts_with(&work_canon) {
+    if !down_path
+        .canonicalize()
+        .unwrap_or(down_path.clone())
+        .starts_with(&work_canon)
+    {
         panic!("down SQL path escapes workspace");
     }
     let down_sql = fs::read_to_string(&down_path).expect("read down");

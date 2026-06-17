@@ -46,6 +46,7 @@ use crate::descriptor::{
     FieldDescriptor, FieldSqlType, IndexKind, IndexSpec, IndexTarget, ModelDescriptor, PkType,
 };
 
+use super::common;
 use super::target::GLOBAL_BUCKET_DIRNAME;
 
 // ── Public types ──────────────────────────────────────────────────────────
@@ -177,12 +178,10 @@ pub fn render_inventory(
             path: parent.to_path_buf(),
             source: e,
         })?;
-        let name = output_root
-            .file_name()
-            .ok_or_else(|| DocsError::Io {
-                path: output_root.to_path_buf(),
-                source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no file name"),
-            })?;
+        let name = output_root.file_name().ok_or_else(|| DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidInput, "output path has no file name"),
+        })?;
         parent_canon.join(name)
     };
 
@@ -198,7 +197,17 @@ pub fn render_inventory(
         ),
     })?;
     let temp = std::env::temp_dir();
-    if !output_root_canon.starts_with(&cwd) && !output_root_canon.starts_with(&temp) {
+    let temp = temp.canonicalize().map_err(|e| DocsError::Io {
+        path: output_root.to_path_buf(),
+        source: e,
+    })?;
+    let cwd = cwd.canonicalize().map_err(|e| DocsError::Io {
+        path: output_root.to_path_buf(),
+        source: e,
+    })?;
+    let output_root_under_cwd = common::ensure_within_base(&cwd, &output_root_canon).is_ok();
+    let output_root_under_temp = common::ensure_within_base(&temp, &output_root_canon).is_ok();
+    if !output_root_under_cwd && !output_root_under_temp {
         return Err(DocsError::Io {
             path: output_root.to_path_buf(),
             source: io::Error::new(
@@ -668,8 +677,9 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let temp_canon =
-            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
         let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         if let Ok(p_canon) = std::fs::canonicalize(&p) {
@@ -1008,8 +1018,9 @@ mod tests {
                 Vec::new()
             }
         }
-        let temp_canon =
-            std::env::temp_dir().canonicalize().expect("canonicalize temp dir");
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
         let dir = temp_canon.join(format!(
             "djogi-docs-provider-{}",
             std::time::SystemTime::now()

@@ -967,8 +967,16 @@ async fn finalize_cmd(
     // destructive opt-in (5th arg `true`); the engine still requires the
     // non-empty `justify` checked above.
     let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
-    match djogi::live_migrate::executor::run_plan(&mut ctx, &migrations_root, path, start_idx, true, true, justify)
-        .await
+    match djogi::live_migrate::executor::run_plan(
+        &mut ctx,
+        &migrations_root,
+        path,
+        start_idx,
+        true,
+        true,
+        justify,
+    )
+    .await
     {
         Ok(result) => match result {
             StepResult::Completed => {
