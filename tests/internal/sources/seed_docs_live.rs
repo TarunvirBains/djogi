@@ -31,7 +31,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use djogi::migrate::{SeedError, SeedOutcome, derive_per_database_url, run_seeds};
+use djogi::migrate::{
+    SeedError, SeedOutcome, derive_per_database_url, read_workspace_file_to_string,
+    remove_workspace_dir_all, run_seeds, write_workspace_file,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -100,15 +103,17 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
 
     // Two SQL seed files. The seeds create + populate a small
     // reference table; we cleanly assert post-state.
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_init.sql"),
-        "CREATE TABLE seed_widgets (id BIGINT PRIMARY KEY, name TEXT NOT NULL);\n\
+        b"CREATE TABLE seed_widgets (id BIGINT PRIMARY KEY, name TEXT NOT NULL);\n\
          INSERT INTO seed_widgets (id, name) VALUES (1, 'alpha');\n",
     )
     .unwrap();
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("02_data.sql"),
-        "INSERT INTO seed_widgets (id, name) VALUES (2, 'beta');\n",
+        b"INSERT INTO seed_widgets (id, name) VALUES (2, 'beta');\n",
     )
     .unwrap();
 
@@ -177,7 +182,7 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
 
     // Cleanup the workspace; the test DB itself is dropped by the
     // harness on return.
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Seed runner: checksum drift refusal ───────────────────────────────────
@@ -191,9 +196,10 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
 
     // First run — apply a seed.
     let seed_path = seeds_dir.join("01_init.sql");
-    fs::write(
+    write_workspace_file(
+        &work,
         &seed_path,
-        "CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
+        b"CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
          INSERT INTO seed_drift (id) VALUES (1);\n",
     )
     .unwrap();
@@ -209,9 +215,10 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
 
     // Mutate the seed file on disk — anything that changes the
     // bytes flips the checksum.
-    fs::write(
+    write_workspace_file(
+        &work,
         &seed_path,
-        "CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
+        b"CREATE TABLE seed_drift (id BIGINT PRIMARY KEY);\n\
          INSERT INTO seed_drift (id) VALUES (1);\n\
          -- drift comment\n",
     )
@@ -241,7 +248,7 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
         other => panic!("expected ChecksumDrift, got {other:?}"),
     }
 
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Seed runner: localhost gate ───────────────────────────────────────────
@@ -282,7 +289,7 @@ async fn seed_runner_refuses_remote_url_without_override(mut ctx: djogi::DjogiCo
     .await
     .expect("override must allow run to proceed");
     assert!(report.entries.is_empty(), "no seeds present in workspace");
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 #[djogi::djogi_test]
@@ -295,9 +302,10 @@ async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) 
     ctx.raw_ddl("CREATE TABLE seed_concurrent (id BIGINT NOT NULL)")
         .await
         .expect("create target table");
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_non_idempotent.sql"),
-        "SELECT pg_sleep(0.25);\n\
+        b"SELECT pg_sleep(0.25);\n\
          INSERT INTO seed_concurrent (id) VALUES (1);\n",
     )
     .unwrap();
@@ -341,7 +349,7 @@ async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) 
         count, 1,
         "the non-idempotent seed body must execute exactly once under contention"
     );
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 #[djogi::djogi_test]
@@ -354,9 +362,10 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
     ctx.raw_ddl("CREATE TABLE seed_stale_claim (id BIGINT NOT NULL)")
         .await
         .expect("create target table");
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_finalize_gap.sql"),
-        "INSERT INTO seed_stale_claim (id) VALUES (1);\n",
+        b"INSERT INTO seed_stale_claim (id) VALUES (1);\n",
     )
     .unwrap();
 
@@ -419,7 +428,7 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
         .await
         .expect("count seeded rows after stale claim rerun");
     assert_eq!(rerun_count, 1, "stale claim must prevent silent re-execution");
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 #[djogi::djogi_test]
@@ -429,9 +438,10 @@ async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiC
     let seeds_dir = work.join("seeds").join(&database);
     fs::create_dir_all(&seeds_dir).unwrap();
 
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_broken.sql"),
-        "INSERT INTO seed_missing_target (id) VALUES (1);\n",
+        b"INSERT INTO seed_missing_target (id) VALUES (1);\n",
     )
     .unwrap();
 
@@ -476,7 +486,7 @@ async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiC
         other => panic!("expected FailedClaim, got {other:?}"),
     }
 
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 #[djogi::djogi_test]
@@ -488,9 +498,10 @@ async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun
     let seeds_dir = work.join("seeds").join(&database);
     fs::create_dir_all(&seeds_dir).unwrap();
 
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_explicit_tx_broken.sql"),
-        "BEGIN;\n\
+        b"BEGIN;\n\
          CREATE TABLE seed_explicit_tx_probe (id BIGINT PRIMARY KEY);\n\
          INSERT INTO seed_missing_target (id) VALUES (1);\n\
          COMMIT;\n",
@@ -546,7 +557,7 @@ async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun
         other => panic!("expected FailedClaim, got {other:?}"),
     }
 
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Docs: live test against an empty inventory ────────────────────────────
@@ -610,12 +621,13 @@ async fn docs_generate_produces_readme_under_arbitrary_root(mut _ctx: djogi::Djo
     // Either the inventory is empty (no `#[model]`-generated
     // descriptors in the integration binary) or it is not — both
     // shapes must produce a README.
-    let readme = std::fs::read_to_string(out.join("README.md")).expect("README must exist");
+    let readme =
+        read_workspace_file_to_string(&out, "README.md").expect("README must exist");
     assert!(readme.contains("Djogi model reference"));
     if report.models_rendered == 0 {
         assert!(readme.contains("No models registered"));
     }
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Codex umbrella U-4: db reset replay must honour historical apply order ─
@@ -776,9 +788,10 @@ async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiCo
     let work = temp_workspace("u_partial_seed_route");
     let seeds_dir = work.join("seeds").join(&second_db);
     fs::create_dir_all(&seeds_dir).unwrap();
-    fs::write(
+    write_workspace_file(
+        &work,
         seeds_dir.join("01_route_proof.sql"),
-        "CREATE TABLE u_partial_seed_proof (id BIGINT PRIMARY KEY);\n\
+        b"CREATE TABLE u_partial_seed_proof (id BIGINT PRIMARY KEY);\n\
          INSERT INTO u_partial_seed_proof (id) VALUES (42);\n",
     )
     .unwrap();
@@ -881,7 +894,7 @@ async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiCo
     drop(admin_client);
     let _ = teardown_driver.await;
 
-    let _ = fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── #331 Session-pinning regression test: run_seeds ─────────────────────
@@ -896,11 +909,8 @@ async fn run_seeds_pool_backed_context_pins_session(mut ctx: djogi::DjogiContext
     let db_name = current_database(&mut ctx).await;
     let seed_dir = temp_workspace(&format!("331_seed_pin_{}", db_name));
     let seed_file = seed_dir.join("001_test_331.sql");
-    fs::write(
-        &seed_file,
-        "-- #331 seed regression test\nSELECT 1;\n",
-    )
-    .expect("write seed file");
+    write_workspace_file(&seed_dir, &seed_file, b"-- #331 seed regression test\nSELECT 1;\n")
+        .expect("write seed file");
 
     // [REQ-331-12] Record backend PID before run_seeds
     let pid_before: i32 = ctx
