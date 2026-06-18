@@ -80,6 +80,7 @@ use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 use crate::pg::pool::DjogiPool;
 
+use super::common;
 use super::compose::{
     DATE_ARRAY_HELPER_PRELUDE, NUMERIC_ARRAY_HELPER_PRELUDE, TSTZ_ARRAY_HELPER_PRELUDE,
     date_array_helper_operation, numeric_array_helper_operation, tstz_array_helper_operation,
@@ -885,9 +886,17 @@ fn collect_checksum_parity_issues(
     database: &str,
     historical_entries: &[HistoricalReplayEntry],
 ) -> Result<Vec<ResetChecksumParityIssue>, ResetError> {
+    let ws_canon =
+        workspace_root
+            .canonicalize()
+            .map_err(|err| ResetError::MigrationScanFailed {
+                path: workspace_root.to_path_buf(),
+                source: err,
+            })?;
+    let scan_dir = migrations_root(workspace_root).join(database);
     let on_disk = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
-            path: migrations_root(workspace_root).join(database),
+            path: scan_dir,
             source: err,
         })?;
     let mut issues = Vec::new();
@@ -918,6 +927,7 @@ fn collect_checksum_parity_issues(
             ResetSqlSide::Up,
             &entry.checksum_up,
             &up_path,
+            &ws_canon,
         )?;
 
         if let Some(ledger_checksum_down) = entry.checksum_down.as_deref() {
@@ -929,6 +939,7 @@ fn collect_checksum_parity_issues(
                 ResetSqlSide::Down,
                 ledger_checksum_down,
                 &down_path,
+                &ws_canon,
             )?;
         }
     }
@@ -942,10 +953,11 @@ fn push_checksum_issue_if_needed(
     sql_side: ResetSqlSide,
     ledger_checksum: &str,
     path: &Path,
+    ws_canon: &Path,
 ) -> Result<(), ResetError> {
-    let on_disk_sql = match fs::read_to_string(path) {
-        Ok(sql) => sql,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let path = match common::resolve_existing_workspace_path(ws_canon, path) {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             issues.push(ResetChecksumParityIssue {
                 bucket: entry.bucket.clone(),
                 version: entry.version.clone(),
@@ -956,9 +968,18 @@ fn push_checksum_issue_if_needed(
             });
             return Ok(());
         }
-        Err(e) => {
+        Err(source) => {
             return Err(ResetError::SqlReadFailed {
                 path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let on_disk_sql = match fs::read_to_string(&path) {
+        Ok(sql) => sql,
+        Err(e) => {
+            return Err(ResetError::SqlReadFailed {
+                path: path.clone(),
                 source: e,
             });
         }
@@ -1214,9 +1235,27 @@ fn scan_committed_migrations(
     workspace_root: &Path,
     database: &str,
 ) -> Result<BTreeMap<BucketKey, Vec<String>>, ResetError> {
+    let ws_canon =
+        workspace_root
+            .canonicalize()
+            .map_err(|err| ResetError::MigrationScanFailed {
+                path: workspace_root.to_path_buf(),
+                source: err,
+            })?;
+    let scan_dir = migrations_root(workspace_root).join(database);
+    let scan_dir = match common::resolve_existing_workspace_path(&ws_canon, &scan_dir) {
+        Ok(scan_dir) => scan_dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(source) => {
+            return Err(ResetError::MigrationScanFailed {
+                path: scan_dir,
+                source,
+            });
+        }
+    };
     let with_paths = super::target::scan_filesystem_with_files(workspace_root, Some(database))
         .map_err(|err| ResetError::MigrationScanFailed {
-            path: migrations_root(workspace_root).join(database),
+            path: scan_dir,
             source: err,
         })?;
     Ok(with_paths
@@ -1541,8 +1580,26 @@ fn read_replay_sql_files(
     bucket: &BucketKey,
     version: &str,
 ) -> Result<ReplaySqlFiles, ResetError> {
+    let ws_canon = workspace_root
+        .canonicalize()
+        .map_err(|err| ResetError::SqlReadFailed {
+            path: workspace_root.to_path_buf(),
+            source: err,
+        })?;
     let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
+    if let Err(source) = common::ensure_within_base(&ws_canon, &bucket_dir) {
+        return Err(ResetError::SqlReadFailed {
+            path: bucket_dir.clone(),
+            source,
+        });
+    }
     let up_path = bucket_dir.join(up_filename(version));
+    let up_path = common::ensure_within_base(&ws_canon, &up_path).map_err(|source| {
+        ResetError::SqlReadFailed {
+            path: up_path.clone(),
+            source,
+        }
+    })?;
     let down_path = bucket_dir.join(down_filename(version));
 
     let up_sql = fs::read_to_string(&up_path).map_err(|e| ResetError::SqlReadFailed {
@@ -1551,18 +1608,32 @@ fn read_replay_sql_files(
     })?;
     let checksum_up = compute_committed_sql_checksum(&up_sql, ResetSqlSide::Up);
 
-    let (down_sql, checksum_down) = match fs::read_to_string(&down_path) {
-        Ok(sql) => {
-            let checksum_down = compute_committed_down_sql_checksum(&sql);
-            (sql, checksum_down)
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-        Err(e) => {
+    let down_path = match common::resolve_existing_workspace_path(&ws_canon, &down_path) {
+        Ok(path) => Some(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => {
             return Err(ResetError::SqlReadFailed {
-                path: down_path,
-                source: e,
+                path: down_path.clone(),
+                source,
             });
         }
+    };
+
+    let (down_sql, checksum_down) = match down_path {
+        Some(down_path) => match fs::read_to_string(&down_path) {
+            Ok(sql) => {
+                let checksum_down = compute_committed_down_sql_checksum(&sql);
+                (sql, checksum_down)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+            Err(e) => {
+                return Err(ResetError::SqlReadFailed {
+                    path: down_path,
+                    source: e,
+                });
+            }
+        },
+        None => (String::new(), None),
     };
 
     Ok(ReplaySqlFiles {
@@ -1876,9 +1947,45 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-reset-{tag}-{nanos}-{n}"));
-        fs::create_dir_all(&p).unwrap();
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-reset-{tag}-{nanos}-{n}"));
+        let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve temp workspace path");
+        crate::migrate::common::create_workspace_parent_dirs(&temp_canon, p.join(".keep"))
+            .expect("create temp root");
+        let p_canon = std::fs::canonicalize(&p)
+            .unwrap_or_else(|_| panic!("workspace {} must be canonicalizable", p.display()));
+        assert!(
+            p_canon.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
         p
+    }
+
+    fn safe_remove_workspace(path: &Path) {
+        if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+            && let Ok(path_canon) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, path)
+        {
+            if !path_canon.starts_with(&temp_canon) {
+                panic!("remove_dir_all refused: workspace path escapes temp directory");
+            }
+            let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &path_canon);
+        }
+    }
+
+    fn safe_create_workspace_dir(root: &Path, path: impl AsRef<Path>) {
+        let path = crate::migrate::common::resolve_write_workspace_path(root, path.as_ref())
+            .expect("resolve workspace dir");
+        crate::migrate::common::create_workspace_parent_dirs(root, path.join(".keep"))
+            .expect("create workspace dir");
+    }
+
+    fn safe_write_workspace_file(root: &Path, path: impl AsRef<Path>, contents: &str) {
+        crate::migrate::common::write_workspace_file(root, path.as_ref(), contents.as_bytes())
+            .expect("write workspace file");
     }
 
     fn req<'a>(
@@ -1924,7 +2031,7 @@ mod tests {
             }
             other => panic!("expected NotLocalhost refusal, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Gate 2 — production profile refuses even against localhost
@@ -1941,7 +2048,7 @@ mod tests {
             }
             other => panic!("expected ProductionProfile refusal, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Gate 3 — unconfirmed invocation refuses. The default for
@@ -1960,7 +2067,7 @@ mod tests {
             Err(ResetError::Refused(ResetRefusal::NotConfirmed)) => {}
             other => panic!("expected NotConfirmed refusal, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Gate ordering — a request that fails multiple gates should
@@ -1983,7 +2090,7 @@ mod tests {
             Err(ResetError::Refused(ResetRefusal::NotLocalhost { .. })) => {}
             other => panic!("expected NotLocalhost first, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── Node identity gate tests ────────────────────────────────
@@ -1999,7 +2106,7 @@ mod tests {
             Err(ResetError::Refused(ResetRefusal::MissingNodeIdentity)) => {}
             other => panic!("expected MissingNodeIdentity refusal, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Identity gate 2 — selected node identity refuses destructive reset.
@@ -2016,7 +2123,7 @@ mod tests {
             }
             other => panic!("expected SelectedNodeRefused refusal, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Identity gate 3 — single-node-dev identity passes the identity gate.
@@ -2041,7 +2148,7 @@ mod tests {
             }
             other => panic!("expected NotLocalhost after identity gate passes, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Identity gate 4 — identity-free mode is refused by the identity gate.
@@ -2059,7 +2166,7 @@ mod tests {
             }
             other => panic!("expected IdentityFreeRefused, got {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -2225,7 +2332,7 @@ mod tests {
             other => panic!("expected InvalidDatabaseName, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -2257,36 +2364,57 @@ mod tests {
     fn scan_committed_migrations_returns_versions_in_lexical_order() {
         use super::super::target::{GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR};
         let work = temp_root("scan");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         // Lay down two buckets with two up files each.
         let main_global = work.join(format!("{MIGRATIONS_DIR}/main/{GLOBAL_BUCKET_DIRNAME}"));
         let main_billing = work.join(format!("{MIGRATIONS_DIR}/main/billing"));
-        fs::create_dir_all(&main_global).unwrap();
-        fs::create_dir_all(&main_billing).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &main_global);
+        safe_create_workspace_dir(&work, &main_billing);
+        let mg_canon = main_global.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "main_global {} must be canonicalizable",
+                main_global.display()
+            )
+        });
+        assert!(
+            mg_canon.starts_with(&work_canon),
+            "main_global escapes workspace"
+        );
+        let mb_canon = main_billing.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "main_billing {} must be canonicalizable",
+                main_billing.display()
+            )
+        });
+        assert!(
+            mb_canon.starts_with(&work_canon),
+            "main_billing escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             main_global.join("V20260301000000__init.sdjql"),
             "-- up\nCREATE TABLE foo (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             main_global.join("V20260301000000__init.down.sdjql"),
             "-- down\nDROP TABLE foo;",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             main_global.join("V20260201000000__earlier.sdjql"),
             "-- up\nCREATE TABLE bar (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             main_billing.join("V20260401000000__widgets.sdjql"),
             "-- up\nCREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
+        );
         // Hand-written `seed.sql` (no `V` prefix) should be skipped.
-        fs::write(main_global.join("seed.sql"), "-- not a migration").unwrap();
+        safe_write_workspace_file(&work, main_global.join("seed.sql"), "-- not a migration");
         // The schema_snapshot.json should be skipped (no `.sdjql`
         // suffix).
-        fs::write(main_global.join("schema_snapshot.json"), "{}").unwrap();
+        safe_write_workspace_file(&work, main_global.join("schema_snapshot.json"), "{}");
 
         let scanned = scan_committed_migrations(&work, "main").unwrap();
         // Two buckets, in BTreeMap order.
@@ -2313,7 +2441,7 @@ mod tests {
             scanned[&billing_bucket],
             vec!["V20260401000000__widgets".to_string()]
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -2322,7 +2450,7 @@ mod tests {
         // No migrations/ tree at all → empty map, no error.
         let scanned = scan_committed_migrations(&work, "main").unwrap();
         assert!(scanned.is_empty());
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     fn historical_entry(
@@ -2344,15 +2472,26 @@ mod tests {
     #[test]
     fn u275_preflight_checksum_parity_refuses_when_up_sql_drifted() {
         let work = temp_root("u275_up_drift");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000000__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_checksum_parity(
             &work,
@@ -2390,26 +2529,37 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_preflight_checksum_parity_refuses_when_down_sql_drifted() {
         let work = temp_root("u275_down_drift");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000001__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
             "DROP TABLE widgets;",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_checksum_parity(
             &work,
@@ -2444,7 +2594,7 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -2478,21 +2628,32 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_preflight_checksum_parity_override_allows_drift() {
         let work = temp_root("u275_override");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
+        );
 
         preflight_reset_checksum_parity(
             &work,
@@ -2508,21 +2669,32 @@ mod tests {
         )
         .expect("explicit override should bypass checksum-parity refusal");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_preflight_checksum_parity_refuses_when_down_file_is_missing() {
         let work = temp_root("u275_missing_down");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000003__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_checksum_parity(
             &work,
@@ -2549,7 +2721,7 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     fn composed_up_sql(version: &str, body: &str) -> String {
@@ -2578,20 +2750,31 @@ mod tests {
     #[test]
     fn u275_preflight_checksum_parity_accepts_composed_sql_headers() {
         let work = temp_root("u275_composed_headers");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000012__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
-            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
-        )
-        .unwrap();
-        fs::write(
+            &composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
-            composed_down_sql(version, "DROP TABLE widgets;"),
-        )
-        .unwrap();
+            &composed_down_sql(version, "DROP TABLE widgets;"),
+        );
 
         preflight_reset_checksum_parity(
             &work,
@@ -2607,21 +2790,32 @@ mod tests {
         )
         .expect("composed comments and labels must not count as checksum drift");
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_preflight_checksum_parity_refuses_edited_composed_operation_sql() {
         let work = temp_root("u275_composed_operation_drift");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000013__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
-            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
-        )
-        .unwrap();
+            &composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        );
 
         let err = preflight_reset_checksum_parity(
             &work,
@@ -2652,21 +2846,32 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_preflight_checksum_parity_refuses_when_baseline_row_cannot_be_compared() {
         let work = temp_root("u275_baseline");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000004__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_checksum_parity(
             &work,
@@ -2695,26 +2900,37 @@ mod tests {
             other => panic!("expected checksum-parity refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_replay_sql_checksums_include_down_when_down_file_exists() {
         let work = temp_root("u275_replay_checksums");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000005__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
             "DROP TABLE widgets;",
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -2728,26 +2944,37 @@ mod tests {
             "reset replay must preserve checksum_down so later resets still enforce down-side parity"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u275_replay_sql_checksums_treat_comment_only_down_as_none() {
         let work = temp_root("u275_comment_only_down");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000016__phase_zero_like";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE SCHEMA IF NOT EXISTS heeranjid;",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
             "-- no meaningful rollback\n-- framework bootstrap is dependency-only\n",
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -2756,29 +2983,40 @@ mod tests {
             "comment-only down files must preserve the no-real-rollback null sentinel"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_preflight_replay_semantics_refuses_non_transactional_sql_without_manifest() {
         let work = temp_root("u276_missing_manifest");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000006__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "-- AddTable widgets\n\
              CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
              -- AddIndex widgets_id_idx\n\
              CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
             "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_replay_semantics(&work, "main")
             .expect_err("legacy file-only concurrent index replay must refuse before drop");
@@ -2797,7 +3035,7 @@ mod tests {
             other => panic!("expected replay-semantics refusal, got {other:?}"),
         }
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     fn assert_single_replay_semantics_issue(
@@ -2822,16 +3060,31 @@ mod tests {
     #[test]
     fn u276_preflight_replay_semantics_refuses_call_backfill_without_manifest() {
         let work = temp_root("u276_missing_manifest_call");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000008__pk_flip_call";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n",
-        )
-        .unwrap();
-        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+        );
+        safe_write_workspace_file(
+            &work,
+            bucket_dir.join(down_filename(version)),
+            "SELECT 1;\n",
+        );
 
         let err = preflight_reset_replay_semantics(&work, "main")
             .expect_err("CALL backfill replay without manifest must refuse before drop");
@@ -2843,26 +3096,41 @@ mod tests {
             "CALL heeranjid_bulk_backfill",
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_preflight_replay_semantics_refuses_do_backfill_without_manifest() {
         let work = temp_root("u276_missing_manifest_do");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000009__pk_flip_do";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "DO $$\n\
              BEGIN\n\
                  COMMIT;\n\
              END\n\
              $$;\n",
-        )
-        .unwrap();
-        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
+        );
+        safe_write_workspace_file(
+            &work,
+            bucket_dir.join(down_filename(version)),
+            "SELECT 1;\n",
+        );
 
         let err = preflight_reset_replay_semantics(&work, "main")
             .expect_err("DO backfill replay without manifest must refuse before drop");
@@ -2874,17 +3142,29 @@ mod tests {
             "DO block with COMMIT",
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_preflight_replay_semantics_refuses_partitioned_placeholder_without_manifest() {
         let work = temp_root("u276_missing_manifest_partitioned");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000010__pk_flip_partitioned";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
-        fs::write(
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
             "CREATE UNIQUE INDEX events_partition_key_id_desc_idx\n  \
              ON ONLY events (partition_key, id_desc);\n\
@@ -2892,13 +3172,12 @@ mod tests {
              --             ON <leaf> (partition_key, id_desc);\n\
              -- Then ALTER INDEX events_partition_key_id_desc_idx ATTACH PARTITION\n\
              --             <leaf>_partition_key_id_desc_idx;\n",
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
             "DROP INDEX IF EXISTS events_partition_key_id_desc_idx;\n",
-        )
-        .unwrap();
+        );
 
         let err = preflight_reset_replay_semantics(&work, "main")
             .expect_err("partitioned placeholder replay without manifest must refuse before drop");
@@ -2910,24 +3189,39 @@ mod tests {
             "PARTITIONED CONCURRENTLY placeholder",
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_load_reset_replay_plan_refuses_invalid_call_manifest() {
         let work = temp_root("u276_invalid_manifest_call");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000011__pk_flip_call_invalid";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
         let up_sql = "CALL heeranjid_bulk_backfill('widgets', 'id', 'id_desc', 'heer', 10000);\n";
-        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
-        fs::write(bucket_dir.join(down_filename(version)), "SELECT 1;\n").unwrap();
-        fs::write(
+        safe_write_workspace_file(&work, bucket_dir.join(up_filename(version)), up_sql);
+        safe_write_workspace_file(
+            &work,
+            bucket_dir.join(down_filename(version)),
+            "SELECT 1;\n",
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(format!("{version}.plan.json")),
             "{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"V1:stale\",\n  \"checksum_down\": null,\n  \"classification\": { \"kind\": \"additive\" },\n  \"segments\": []\n}\n",
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -2941,33 +3235,44 @@ mod tests {
             "CALL heeranjid_bulk_backfill",
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_load_reset_replay_plan_preserves_committed_segment_kinds() {
         let work = temp_root("u276_manifest_roundtrip");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000007__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
         let up_sql = "-- AddTable widgets\n\
              CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
              -- AddIndex widgets_id_idx\n\
              CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\n";
         let down_sql = "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;\n";
-        fs::write(bucket_dir.join(up_filename(version)), up_sql).unwrap();
-        fs::write(bucket_dir.join(down_filename(version)), down_sql).unwrap();
-        fs::write(
+        safe_write_workspace_file(&work, bucket_dir.join(up_filename(version)), up_sql);
+        safe_write_workspace_file(&work, bucket_dir.join(down_filename(version)), down_sql);
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(format!("{version}.plan.json")),
-            format!(
+            &format!(
                 "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
                 compute_checksum([up_sql]),
                 compute_checksum([down_sql]),
             ),
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -2989,38 +3294,50 @@ mod tests {
             "AddIndex widgets_id_idx"
         );
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_load_reset_replay_plan_accepts_composed_sql_operation_checksums() {
         let work = temp_root("u276_manifest_composed_checksum");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000014__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
-        fs::write(
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
-            composed_up_sql(
+            &composed_up_sql(
                 version,
                 "CREATE TABLE widgets (id BIGINT PRIMARY KEY);\n\n\
                  -- AddIndex widgets_id_idx\n\
                  CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);",
             ),
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
-            composed_down_sql(
+            &composed_down_sql(
                 version,
                 "DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;",
             ),
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(format!("{version}.plan.json")),
-            format!(
+            &format!(
                 "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": \"{}\",\n  \"classification\": {{ \"kind\": \"additive\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }},\n    {{\n      \"kind\": \"non_transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddIndex widgets_id_idx\", \"up\": \"CREATE INDEX CONCURRENTLY widgets_id_idx ON widgets (id);\" }}\n      ]\n    }}\n  ]\n}}\n",
                 compute_checksum([
                     "CREATE TABLE widgets (id BIGINT PRIMARY KEY);",
@@ -3028,8 +3345,7 @@ mod tests {
                 ]),
                 compute_checksum(["DROP INDEX CONCURRENTLY widgets_id_idx;\nDROP TABLE widgets;"]),
             ),
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -3045,38 +3361,49 @@ mod tests {
             .expect("manifest should produce a replay plan");
         assert_eq!(plan.segments.len(), 2);
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
     fn u276_load_reset_replay_plan_accepts_composed_comment_only_down_manifest() {
         let work = temp_root("u276_manifest_comment_only_down");
+        let work_canon = work.canonicalize().expect("canonicalize work");
         let bucket = bk("main", "");
         let version = "V20260301000015__widgets";
         let bucket_dir = super::super::target::bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_dir).unwrap();
+        safe_create_workspace_dir(&work, &bucket_dir);
+        let bd_canon = bucket_dir.canonicalize().unwrap_or_else(|_| {
+            panic!(
+                "bucket_dir {} must be canonicalizable",
+                bucket_dir.display()
+            )
+        });
+        assert!(
+            bd_canon.starts_with(&work_canon),
+            "bucket_dir escapes workspace"
+        );
 
-        fs::write(
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(up_filename(version)),
-            composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
-        )
-        .unwrap();
-        fs::write(
+            &composed_up_sql(version, "CREATE TABLE widgets (id BIGINT PRIMARY KEY);"),
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(down_filename(version)),
-            composed_down_sql(
+            &composed_down_sql(
                 version,
                 "-- no-op rollback placeholder: lossy operation requires manual rollback",
             ),
-        )
-        .unwrap();
-        fs::write(
+        );
+        safe_write_workspace_file(
+            &work,
             bucket_dir.join(format!("{version}.plan.json")),
-            format!(
+            &format!(
                 "{{\n  \"format_version\": \"1\",\n  \"checksum_up\": \"{}\",\n  \"checksum_down\": null,\n  \"classification\": {{ \"kind\": \"lossy\" }},\n  \"segments\": [\n    {{\n      \"kind\": \"transactional\",\n      \"statements\": [\n        {{ \"label\": \"AddTable widgets\", \"up\": \"CREATE TABLE widgets (id BIGINT PRIMARY KEY);\" }}\n      ]\n    }}\n  ]\n}}\n",
                 compute_checksum(["CREATE TABLE widgets (id BIGINT PRIMARY KEY);"]),
             ),
-        )
-        .unwrap();
+        );
 
         let replay_sql =
             read_replay_sql_files(&work, &bucket, version).expect("load replay SQL files");
@@ -3089,7 +3416,7 @@ mod tests {
             .expect("manifest should produce a replay plan");
         assert_eq!(plan.segments.len(), 1);
 
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -3313,7 +3640,7 @@ mod tests {
                  (pre-fix this would have proceeded into the destructive drop)"
             ),
         }
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// The Display impl for `HistoricalOrderCaptureFailed` carries
@@ -3398,20 +3725,28 @@ mod tests {
     fn reset_discovers_sdjql_migration_files() {
         let root = temp_root("sdjql-discovery");
         let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
-        fs::create_dir_all(&bucket).unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        let bucket_canon = fs::canonicalize(&bucket)
+            .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
+        let root_canon = fs::canonicalize(&root).expect("canonicalize root");
+        assert!(
+            bucket_canon.starts_with(&root_canon),
+            "bucket escapes workspace"
+        );
 
-        fs::write(
+        safe_write_workspace_file(
+            &root,
             bucket.join("V20260501000000__new.sdjql"),
             "-- Djogi composed migration — up\n-- Version: V20260501000000__new\n\
              -- Bucket:  main/myapp\n-- Classification: Additive\n--\n\
-             -- Apply via `djogi migrations apply`, not psql...\n-- DO NOT EDIT...\n\nCREATE TABLE items (id bigint PRIMARY KEY);\n"
-        ).unwrap();
-        fs::write(
+             -- Apply via `djogi migrations apply`, not psql...\n-- DO NOT EDIT...\n\nCREATE TABLE items (id bigint PRIMARY KEY);\n",
+        );
+        safe_write_workspace_file(
+            &root,
             bucket.join("V20260501000000__new.down.sdjql"),
             "-- Djogi composed migration — down\n-- Version: V20260501000000__new\n\
              -- Bucket:  main/myapp\n-- DO NOT EDIT...\n\nDROP TABLE items;\n",
-        )
-        .unwrap();
+        );
 
         let scanned =
             super::super::target::scan_filesystem_with_files(&root, Some("main")).unwrap();
@@ -3427,17 +3762,29 @@ mod tests {
         );
         assert!(scanned[&bk_main].contains_key("V20260501000000__new"));
 
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
     fn reset_rejects_legacy_sql_migration_files() {
         let root = temp_root("legacy-sql-reject");
         let bucket = super::super::target::bucket_dir(&root, &bk("main", "myapp"));
-        fs::create_dir_all(&bucket).unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        let bucket_canon = fs::canonicalize(&bucket)
+            .unwrap_or_else(|_| panic!("bucket {} must be canonicalizable", bucket.display()));
+        let root_canon = fs::canonicalize(&root).expect("canonicalize root");
+        assert!(
+            bucket_canon.starts_with(&root_canon),
+            "bucket escapes workspace"
+        );
 
-        fs::write(
+        let legacy_path = crate::migrate::common::resolve_write_workspace_path(
+            &root_canon,
             bucket.join("V20260301000000__legacy.sql"),
+        )
+        .expect("resolve legacy sql path");
+        fs::write(
+            &legacy_path,
             "-- Djogi composed migration — up\n-- Version: V20260301000000__legacy\n\
              CREATE TABLE users (id bigint PRIMARY KEY);\n",
         )
@@ -3454,6 +3801,6 @@ mod tests {
             "error must mention the legacy file: {err}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        let _ = crate::migrate::common::remove_workspace_dir_all(&root_canon, &root_canon);
     }
 }

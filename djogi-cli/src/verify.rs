@@ -185,6 +185,13 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
     // Step 1 — resolve workspace, load config.
     let workspace =
         workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // Canonicalize the workspace root so that constructed snapshot paths
+    // can be validated against it, preventing path traversal via symlinks
+    // or crafted database/app names in the migrations tree.
+    let workspace_canon = std::fs::canonicalize(&workspace).map_err(|e| VerifyError::Io {
+        path: workspace.clone(),
+        source: e,
+    })?;
     let config = DjogiConfig::load_from_workspace(&workspace)
         .map_err(|e| VerifyError::Config(e.to_string()))?;
 
@@ -254,6 +261,16 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
             .join(&bucket.database)
             .join(app_dirname(&bucket.app))
             .join(SNAPSHOT_FILENAME);
+        // Validate the resolved snapshot path stays within the canonicalized
+        // workspace root to prevent traversal via symlinks in subdirectories.
+        // Canonicalize the parent dir (the file may not exist yet).
+        let snap_parent_canon = snapshot
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .filter(|p| p.starts_with(&workspace_canon));
+        if snap_parent_canon.is_none() {
+            continue;
+        }
         let bytes = match read_snapshot_bytes(&snapshot)? {
             Some(b) => b,
             None => continue,
@@ -382,7 +399,25 @@ fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, Ve
     if !meta.is_file() {
         return Ok(None);
     }
-    let bytes = std::fs::read(snapshot).map_err(|e| VerifyError::Io {
+    // Canonicalize the resolved path and validate it stays within its
+    // parent directory, so symlinks cannot redirect the read operation
+    // to an arbitrary location.
+    let snapshot_canon = std::fs::canonicalize(snapshot).map_err(|e| VerifyError::Io {
+        path: snapshot.to_path_buf(),
+        source: e,
+    })?;
+    if let Some(parent) = snapshot_canon.parent()
+        && !snapshot_canon.starts_with(parent)
+    {
+        return Err(VerifyError::Io {
+            path: snapshot.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "resolved snapshot path escapes its parent directory",
+            ),
+        });
+    }
+    let bytes = std::fs::read(&snapshot_canon).map_err(|e| VerifyError::Io {
         path: snapshot.to_path_buf(),
         source: e,
     })?;

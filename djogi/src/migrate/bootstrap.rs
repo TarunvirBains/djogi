@@ -90,15 +90,14 @@ use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use tokio_postgres::GenericClient;
 
+use super::common;
 use super::compose::{AppLifecycle, PENDING_FORMAT_VERSION, PendingPlan, load_pending};
 use super::guard::WorkspaceGuard;
 use super::ledger::compute_checksum;
 use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
 use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
-use super::target::{
-    bucket_dir, pending_database_dir, pending_json_path, phase_zero_pending_json_path,
-};
+use super::target::{bucket_dir, pending_json_path, phase_zero_pending_json_path};
 
 /// Default node id used by single-node deployments.
 /// Matches the value `heeranjid::postgres_schema::seed_default_node`
@@ -670,6 +669,13 @@ pub fn ensure_phase_zero_emitted(
     now: OffsetDateTime,
     _guard: &WorkspaceGuard,
 ) -> Result<Vec<EmittedPhaseZero>, AutoEmitError> {
+    let workspace_root_canon = workspace_root
+        .canonicalize()
+        .map_err(|e| AutoEmitError::Io {
+            path: workspace_root.to_path_buf(),
+            source: e,
+        })?;
+
     // 1. Collect the distinct database set from inputs.
     // Sources:
     // - Every bucket in `models` carries a `database`.
@@ -698,20 +704,33 @@ pub fn ensure_phase_zero_emitted(
         let pending_path =
             phase_zero_pending_json_path(workspace_root, database, PHASE_ZERO_VERSION);
         let legacy_pending_path = pending_json_path(workspace_root, &bucket);
-        let hidden_pending_exists = pending_path.exists();
+
+        // Validate constructed paths stay within the canonicalized workspace root
+        // to prevent path-injection via symlinks or relative components.
+        if common::ensure_within_base(&workspace_root_canon, &dir).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &up_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &down_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &pending_path).is_err()
+            || common::ensure_within_base(&workspace_root_canon, &legacy_pending_path).is_err()
+        {
+            continue;
+        }
+
+        let hidden_pending_exists =
+            common::workspace_path_exists(&workspace_root_canon, &pending_path);
 
         // All three artifacts must be present and the pending JSON must
         // parse as a Phase 0 witness before the emit is considered
         // complete. Checking only path existence would let partial or
         // foreign pending files suppress re-emission forever.
-        let phase_zero_complete = up_path.exists()
-            && down_path.exists()
+        let phase_zero_complete = common::workspace_path_exists(&workspace_root_canon, &up_path)
+            && common::workspace_path_exists(&workspace_root_canon, &down_path)
             && load_pending(&pending_path)
                 .ok()
                 .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
         let legacy_phase_zero_complete = !hidden_pending_exists
-            && up_path.exists()
-            && down_path.exists()
+            && common::workspace_path_exists(&workspace_root_canon, &up_path)
+            && common::workspace_path_exists(&workspace_root_canon, &down_path)
             && load_pending(&legacy_pending_path)
                 .ok()
                 .is_some_and(|plan| phase_zero_pending_matches(&plan, database));
@@ -754,30 +773,29 @@ pub fn ensure_phase_zero_emitted(
 
         // 5. Ensure parent directories exist for the bucket dir and
         // the pending dir, then write all three files.
+        // These calls are placed after the containment checks above so
+        // no filesystem operations run on unvalidated paths.
         ensure_parent(&up_path)?;
         ensure_parent(&pending_path)?;
-        fs::create_dir_all(&dir).map_err(|e| AutoEmitError::Io {
-            path: dir.clone(),
-            source: e,
-        })?;
-        fs::create_dir_all(pending_database_dir(workspace_root, database)).map_err(|e| {
-            AutoEmitError::Io {
-                path: pending_database_dir(workspace_root, database),
-                source: e,
-            }
-        })?;
-        fs::write(&up_path, up_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+        crate::migrate::common::write_workspace_file(workspace_root, &up_path, up_sql.as_bytes())
+            .map_err(|e| AutoEmitError::Io {
             path: up_path.clone(),
             source: e,
         })?;
-        fs::write(&down_path, down_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+        crate::migrate::common::write_workspace_file(
+            workspace_root,
+            &down_path,
+            down_sql.as_bytes(),
+        )
+        .map_err(|e| AutoEmitError::Io {
             path: down_path.clone(),
             source: e,
         })?;
-        fs::write(&pending_path, &pending_bytes).map_err(|e| AutoEmitError::Io {
-            path: pending_path.clone(),
-            source: e,
-        })?;
+        crate::migrate::common::write_workspace_file(workspace_root, &pending_path, &pending_bytes)
+            .map_err(|e| AutoEmitError::Io {
+                path: pending_path.clone(),
+                source: e,
+            })?;
 
         emitted.push(EmittedPhaseZero {
             database: database.clone(),
@@ -878,12 +896,57 @@ fn extensions_for_database(
 /// missing intermediates) when absent. Mirrors the helper used in
 /// `compose.rs` — duplicated here so `bootstrap` does not import
 /// internals from a peer module.
+///
+/// Canonicalizes the resolved parent path before creating directories,
+/// so symlinks in the caller-supplied path cannot redirect the operation
+/// to an arbitrary location.
 fn ensure_parent(path: &Path) -> Result<(), AutoEmitError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent).map_err(|e| AutoEmitError::Io {
-            path: parent.to_path_buf(),
+        // Canonicalize the parent (or its existing ancestor) so symlinks
+        // cannot redirect the directory creation. If the parent does not
+        // yet exist, canonicalize the deepest existing ancestor and
+        // re-append the remaining components.
+        let parent_canon = if parent.exists() {
+            parent.canonicalize().map_err(|e| AutoEmitError::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            })?
+        } else {
+            let mut existing = PathBuf::from(parent);
+            loop {
+                match existing.canonicalize() {
+                    Ok(base) => {
+                        let suffix =
+                            parent
+                                .strip_prefix(&existing)
+                                .map_err(|_| AutoEmitError::Io {
+                                    path: parent.to_path_buf(),
+                                    source: io::Error::new(
+                                        io::ErrorKind::InvalidInput,
+                                        "parent path cannot be resolved",
+                                    ),
+                                })?;
+                        break base.join(suffix);
+                    }
+                    Err(_) => {
+                        match existing.parent() {
+                            Some(p) if !p.as_os_str().is_empty() => {
+                                existing = PathBuf::from(p);
+                            }
+                            _ => {
+                                // Reached root without finding an existing ancestor.
+                                // Fallback to the original parent path.
+                                break parent.to_path_buf();
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        fs::create_dir_all(&parent_canon).map_err(|e| AutoEmitError::Io {
+            path: parent_canon,
             source: e,
         })?;
     }
@@ -1369,11 +1432,30 @@ mod tests {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!("djogi-bootstrap-test-{label}-{stamp}"));
-        std::fs::create_dir_all(&root).expect("create workspace root");
+        // Canonicalize temp_dir and validate containment before creating
+        // directories, so symlinks cannot redirect the workspace outside
+        // the temp directory.
+        let temp_dir_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("temp dir exists");
+        if !root.starts_with(&temp_dir_canon) {
+            panic!("test workspace path escaped temp directory");
+        }
+        crate::migrate::common::create_workspace_parent_dirs(&temp_dir_canon, root.join(".keep"))
+            .expect("create workspace root");
         let lock_path = root.join(crate::migrate::guard::LOCK_FILE_NAME);
         let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(5))
             .expect("acquire workspace lock");
         (root, guard)
+    }
+
+    fn safe_remove_workspace(work: &Path) {
+        let temp_canon = std::env::temp_dir().canonicalize().unwrap_or_default();
+        if let Ok(vetted) =
+            crate::migrate::common::resolve_existing_workspace_path(&temp_canon, work)
+        {
+            let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &vetted);
+        }
     }
 
     fn fixed_now() -> OffsetDateTime {
@@ -1401,6 +1483,7 @@ mod tests {
         assert!(emitted[0].down_sql_path.exists());
         assert!(emitted[0].pending_json_path.exists());
         // Up SQL contains HeeRanjID install; no node seed in production emit.
+        assert!(emitted[0].up_sql_path.starts_with(&work));
         let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
         assert!(up.contains("HeeRanjID base schema"));
         // Production emit: no node-seed section, no database-level defaults.
@@ -1409,17 +1492,19 @@ mod tests {
         assert!(!up.contains("default-node seed"));
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
+        assert!(emitted[0].down_sql_path.starts_with(&work));
         let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();
         assert!(down.contains("bootstrap migration — down"));
         assert!(!down.contains("DROP "), "down must not contain real DDL");
         // Pending JSON parses cleanly.
+        assert!(emitted[0].pending_json_path.starts_with(&work));
         let pending_bytes = fs::read(&emitted[0].pending_json_path).unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
         assert_eq!(pending.version, PHASE_ZERO_VERSION);
         assert_eq!(pending.bucket_database, "main");
         assert_eq!(pending.bucket_app, "");
         assert!(pending.checksum_up.starts_with("V1:"));
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1441,7 +1526,7 @@ mod tests {
             second.is_empty(),
             "second run must be a no-op once the bootstrap migration exists"
         );
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1541,6 +1626,7 @@ mod tests {
         );
 
         // Up SQL for main contains CREATE EXTENSION postgis but NOT pg_trgm.
+        assert!(main_emit.up_sql_path.starts_with(&work));
         let main_up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
         assert!(main_up.contains("CREATE EXTENSION IF NOT EXISTS \"postgis\""));
         assert!(
@@ -1549,13 +1635,14 @@ mod tests {
         );
 
         // Up SQL for crud_log contains CREATE EXTENSION pg_trgm but NOT postgis.
+        assert!(crud_emit.up_sql_path.starts_with(&work));
         let crud_up = fs::read_to_string(&crud_emit.up_sql_path).unwrap();
         assert!(crud_up.contains("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""));
         assert!(
             !crud_up.contains("\"postgis\""),
             "cross-database extension bled into crud_log"
         );
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// End-to-end: a model that declares
@@ -1592,12 +1679,13 @@ mod tests {
             ["btree_gist"].iter().map(|s| s.to_string()).collect(),
             "EXCLUDE-derived btree_gist must surface in bootstrap-migration extensions",
         );
+        assert!(main_emit.up_sql_path.starts_with(&work));
         let up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
         assert!(
             up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
             "bootstrap-migration up SQL must auto-install btree_gist: {up}",
         );
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1619,16 +1707,27 @@ mod tests {
             app: String::new(),
         };
         let dir = bucket_dir(&work, &bucket);
-        fs::create_dir_all(&dir).unwrap();
-        fs::create_dir_all(pending_database_dir(&work, "main")).unwrap();
-        fs::write(
-            dir.join(up_filename(PHASE_ZERO_VERSION)),
-            "-- existing bootstrap-migration up",
+        assert!(dir.starts_with(&work));
+        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+            .expect("seed bucket dir");
+        let pend_db_dir = crate::migrate::target::pending_database_dir(&work, "main");
+        assert!(pend_db_dir.starts_with(&work));
+        crate::migrate::common::write_workspace_file(&work, pend_db_dir.join(".keep"), b"")
+            .expect("seed pending dir");
+        let up_write = dir.join(up_filename(PHASE_ZERO_VERSION));
+        assert!(up_write.starts_with(&work));
+        crate::migrate::common::write_workspace_file(
+            &work,
+            &up_write,
+            b"-- existing bootstrap-migration up",
         )
         .unwrap();
-        fs::write(
-            dir.join(down_filename(PHASE_ZERO_VERSION)),
-            "-- existing bootstrap-migration down",
+        let down_write = dir.join(down_filename(PHASE_ZERO_VERSION));
+        assert!(down_write.starts_with(&work));
+        crate::migrate::common::write_workspace_file(
+            &work,
+            &down_write,
+            b"-- existing bootstrap-migration down",
         )
         .unwrap();
         let legacy_pending = PendingPlan {
@@ -1644,8 +1743,10 @@ mod tests {
             composed_at: format_rfc3339_seconds(fixed_now()),
             depends_on: Vec::new(),
         };
+        let legacy_write = pending_json_path(&work, &bucket);
+        assert!(legacy_write.starts_with(&work));
         fs::write(
-            pending_json_path(&work, &bucket),
+            &legacy_write,
             serde_json::to_vec_pretty(&legacy_pending).unwrap(),
         )
         .unwrap();
@@ -1658,9 +1759,12 @@ mod tests {
         );
 
         // Confirm the existing up-sql was NOT overwritten.
-        let content = fs::read_to_string(dir.join(up_filename(PHASE_ZERO_VERSION))).unwrap();
+        let up_check_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        assert!(up_check_path.starts_with(&work));
+        let content =
+            crate::migrate::common::read_workspace_file_to_string(&work, &up_check_path).unwrap();
         assert_eq!(content, "-- existing bootstrap-migration up");
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     #[test]
@@ -1678,9 +1782,15 @@ mod tests {
             app: String::new(),
         };
         let dir = bucket_dir(&work, &bucket);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(up_filename(PHASE_ZERO_VERSION)), "-- old up").unwrap();
-        fs::write(dir.join(down_filename(PHASE_ZERO_VERSION)), "-- old down").unwrap();
+        assert!(dir.starts_with(&work));
+        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+            .expect("seed bucket dir");
+        let up_w = dir.join(up_filename(PHASE_ZERO_VERSION));
+        assert!(up_w.starts_with(&work));
+        crate::migrate::common::write_workspace_file(&work, &up_w, b"-- old up").unwrap();
+        let down_w = dir.join(down_filename(PHASE_ZERO_VERSION));
+        assert!(down_w.starts_with(&work));
+        crate::migrate::common::write_workspace_file(&work, &down_w, b"-- old down").unwrap();
 
         let valid_legacy_pending = PendingPlan {
             format_version: PENDING_FORMAT_VERSION.to_string(),
@@ -1696,6 +1806,7 @@ mod tests {
             depends_on: Vec::new(),
         };
         let legacy_path = pending_json_path(&work, &bucket);
+        assert!(legacy_path.starts_with(&work));
         ensure_parent(&legacy_path).unwrap();
         fs::write(
             &legacy_path,
@@ -1706,6 +1817,7 @@ mod tests {
         let hidden_path = phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
         let mut invalid_hidden_pending = valid_legacy_pending.clone();
         invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
+        assert!(hidden_path.starts_with(&work));
         ensure_parent(&hidden_path).unwrap();
         fs::write(
             &hidden_path,
@@ -1722,6 +1834,6 @@ mod tests {
         );
         assert_eq!(emitted[0].pending_json_path, hidden_path);
 
-        let _ = std::fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 }

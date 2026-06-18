@@ -44,7 +44,22 @@ fn main() {
     // parent. Tests / integrators that want to point build.rs at a
     // different root set `DJOGI_WORKSPACE_ROOT` directly.
     let workspace_root = match std::env::var_os("DJOGI_WORKSPACE_ROOT") {
-        Some(root) => PathBuf::from(root),
+        Some(root) => {
+            let candidate = PathBuf::from(root);
+            match std::fs::canonicalize(&candidate) {
+                Ok(p) => p,
+                Err(_) => {
+                    let manifest_dir = match std::env::var_os("CARGO_MANIFEST_DIR") {
+                        Some(s) => PathBuf::from(s),
+                        None => return, // out-of-cargo build context; nothing to do.
+                    };
+                    manifest_dir
+                        .parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or(manifest_dir)
+                }
+            }
+        }
         None => {
             let manifest_dir = match std::env::var_os("CARGO_MANIFEST_DIR") {
                 Some(s) => PathBuf::from(s),
@@ -93,8 +108,17 @@ pub(crate) struct BuildDiagnostic {
 ///
 /// No regex — byte-level scanning only.
 fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
+    let Ok(root_canon) = std::fs::canonicalize(workspace_root) else {
+        return false;
+    };
     let path = workspace_root.join("Djogi.toml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(path_canon) = std::fs::canonicalize(&path) else {
+        return false;
+    };
+    if !path_canon.starts_with(&root_canon) {
+        return false;
+    }
+    let Ok(text) = std::fs::read_to_string(&path_canon) else {
         return false;
     };
     let mut in_build_section = false;
@@ -143,13 +167,25 @@ fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
 /// `Djogi.toml::build.suppress_drift_warning = true`.
 pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic> {
     let mut out: Vec<BuildDiagnostic> = Vec::new();
+    // Canonicalize the workspace root so that symlink traversal inside
+    // discovered subdirectories cannot redirect reads outside the tree.
+    let Ok(ws_canon) = std::fs::canonicalize(workspace_root) else {
+        return out;
+    };
     let migrations_root = workspace_root.join("migrations");
     let pending_root = workspace_root.join("target").join("djogi_pending");
+    let safe_read_dir = |dir: &Path| -> Option<std::fs::ReadDir> {
+        let dir = std::fs::canonicalize(dir).ok()?;
+        if !dir.starts_with(&ws_canon) {
+            return None;
+        }
+        std::fs::read_dir(&dir).ok()
+    };
 
     // Walk migrations/<database>/<app>/schema_snapshot.json files.
     let mut snapshots: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
     let mut filesystem: Vec<(String, String)> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&migrations_root) {
+    if let Some(entries) = safe_read_dir(&migrations_root) {
         for db_entry in entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -161,7 +197,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                 continue;
             }
             let db_path = db_entry.path();
-            let Ok(app_entries) = std::fs::read_dir(&db_path) else {
+            let Some(app_entries) = safe_read_dir(&db_path) else {
                 continue;
             };
             for app_entry in app_entries.flatten() {
@@ -181,6 +217,14 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                 };
                 filesystem.push((database.clone(), label.clone()));
                 let snap_path = app_entry.path().join("schema_snapshot.json");
+                if snap_path
+                    .canonicalize()
+                    .ok()
+                    .as_ref()
+                    .is_none_or(|p| !p.starts_with(&ws_canon))
+                {
+                    continue;
+                }
                 if let Ok(text) = std::fs::read_to_string(&snap_path)
                     && let Ok(v) = parse_json(&text)
                 {
@@ -196,7 +240,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     // plan, so future-version pending JSON surfaces a version-mismatch
     // warning instead of falling through to garbage outcome classification.
     let mut pendings: BTreeMap<(String, String), PendingArtifacts> = BTreeMap::new();
-    if let Ok(db_entries) = std::fs::read_dir(&pending_root) {
+    if let Some(db_entries) = safe_read_dir(&pending_root) {
         for db_entry in db_entries.flatten() {
             if !db_entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
@@ -207,7 +251,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
             if !is_acceptable_dir_name(database.as_bytes()) {
                 continue;
             }
-            let Ok(file_entries) = std::fs::read_dir(db_entry.path()) else {
+            let Some(file_entries) = safe_read_dir(&db_entry.path()) else {
                 continue;
             };
             for f in file_entries.flatten() {
@@ -218,7 +262,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                     if f.file_name().to_str() != Some(".phase_zero") {
                         continue;
                     }
-                    let Ok(phase_zero_entries) = std::fs::read_dir(f.path()) else {
+                    let Some(phase_zero_entries) = safe_read_dir(&f.path()) else {
                         continue;
                     };
                     for phase_zero_file in phase_zero_entries.flatten() {
@@ -234,6 +278,14 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                             continue;
                         };
                         let path = phase_zero_file.path();
+                        if path
+                            .canonicalize()
+                            .ok()
+                            .as_ref()
+                            .is_none_or(|p| !p.starts_with(&ws_canon))
+                        {
+                            continue;
+                        }
                         let Ok(text) = std::fs::read_to_string(&path) else {
                             continue;
                         };
@@ -281,6 +333,14 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
                     continue;
                 }
                 let path = f.path();
+                if path
+                    .canonicalize()
+                    .ok()
+                    .as_ref()
+                    .is_none_or(|p| !p.starts_with(&ws_canon))
+                {
+                    continue;
+                }
                 let Ok(text) = std::fs::read_to_string(&path) else {
                     continue;
                 };
@@ -324,7 +384,7 @@ pub(crate) fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic>
     // legitimate fresh-adoption path; malformed is loud and degrades
     // to the same reduced pending↔snapshot classifier.
     let models_path = workspace_root.join("target").join("djogi_models.json");
-    let models_inventory = read_models_inventory(&models_path);
+    let models_inventory = read_models_inventory(&models_path, &ws_canon);
     if let ModelsInventoryState::Malformed { detail } = &models_inventory {
         out.push(BuildDiagnostic {
             text: format_warning_inventory_malformed(&models_path.display().to_string(), detail),
@@ -456,8 +516,17 @@ impl PendingArtifacts {
     }
 }
 
-fn read_models_inventory(models_path: &Path) -> ModelsInventoryState {
-    match std::fs::read_to_string(models_path) {
+fn read_models_inventory(models_path: &Path, workspace_root: &Path) -> ModelsInventoryState {
+    let Ok(root_canon) = std::fs::canonicalize(workspace_root) else {
+        return ModelsInventoryState::Absent;
+    };
+    let Ok(path_canon) = std::fs::canonicalize(models_path) else {
+        return ModelsInventoryState::Absent;
+    };
+    if !path_canon.starts_with(&root_canon) {
+        return ModelsInventoryState::Absent;
+    }
+    match std::fs::read_to_string(&path_canon) {
         Ok(text) => match parse_json(&text) {
             Ok(JsonValue::Object(obj)) => {
                 let mut models_per_bucket = BTreeMap::new();

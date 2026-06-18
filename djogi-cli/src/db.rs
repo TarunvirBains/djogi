@@ -721,7 +721,6 @@ pub fn docs_cmd(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct DatabaseUrlEnvGuard {
@@ -783,9 +782,43 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
-        fs::create_dir_all(&p).unwrap();
-        p
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-cli-db-{tag}-{nanos}-{n}"));
+        let p_parent = p.parent().expect("workspace path parent");
+        let p_parent_canon = p_parent
+            .canonicalize()
+            .expect("canonicalize workspace parent");
+        let p = p_parent_canon.join(p.file_name().expect("workspace path filename"));
+        assert!(
+            p.starts_with(&temp_canon),
+            "workspace path escapes temp directory"
+        );
+        let p = djogi::migrate::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve workspace path");
+        djogi::migrate::create_workspace_parent_dirs(&temp_canon, p.join(".keep"))
+            .expect("create workspace root");
+        p.canonicalize().expect("canonicalize workspace")
+    }
+
+    fn safe_remove_workspace(path: &Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let path_canon = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
+        if !path_canon.starts_with(&temp_canon) {
+            panic!("remove_dir_all refused: workspace path escapes temp directory");
+        }
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
+    }
+
+    fn safe_write_workspace_file(workspace: &Path, rel: &str, contents: &str) {
+        let workspace_canon = workspace
+            .canonicalize()
+            .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", workspace.display()));
+        djogi::migrate::write_workspace_file(&workspace_canon, rel, contents.as_bytes()).unwrap();
     }
 
     /// `db reset` without node identity must refuse before any prompt,
@@ -797,7 +830,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             reset_cmd(
                 true,                   // yes
@@ -813,7 +846,7 @@ mod tests {
             ExitCode::from(2),
             "missing identity must refuse before localhost gating"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// `db reset --single-node-dev` against a production profile must
@@ -827,7 +860,7 @@ mod tests {
                     [database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             reset_cmd(
                 true,                   // yes
@@ -843,7 +876,7 @@ mod tests {
             ExitCode::from(2),
             "production profile must refuse single-node-dev during identity resolution"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     // ── cleanup-test-dbs ────────────────────────────────────────────
@@ -858,7 +891,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         // `--yes` set, `--allow-non-localhost` NOT set, `--dry-run`
         // NOT set — localhost gate must refuse first.
         let exit = without_database_url(|| {
@@ -875,7 +908,7 @@ mod tests {
             ExitCode::from(2),
             "non-localhost without override must refuse"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Production profile refuses (exit 2) even with localhost +
@@ -888,7 +921,7 @@ mod tests {
                     [database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
@@ -899,7 +932,7 @@ mod tests {
             )
         });
         assert_eq!(exit, ExitCode::from(2), "production must refuse");
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Localhost + non-production + neither `--yes` nor `--dry-run`
@@ -911,7 +944,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
@@ -926,7 +959,7 @@ mod tests {
             ExitCode::from(2),
             "missing --yes without --dry-run must refuse"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// Invalid maintenance database name (e.g. SQL-injection
@@ -940,7 +973,7 @@ mod tests {
         let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
                     max_connections = 1\ndev_mode = false\n\
                     [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
-        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        safe_write_workspace_file(&work, "Djogi.toml", toml);
         let exit = without_database_url(|| {
             cleanup_test_dbs_cmd(
                 false,
@@ -955,7 +988,7 @@ mod tests {
             ExitCode::from(1),
             "invalid maintenance DB name must reject"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 
     /// `is_valid_pg_identifier` accepts typical names and rejects
@@ -1007,6 +1040,6 @@ mod tests {
             !out.join("README.md").exists(),
             "refusal must not render docs"
         );
-        let _ = fs::remove_dir_all(&work);
+        safe_remove_workspace(&work);
     }
 }

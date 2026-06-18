@@ -21,6 +21,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use crate::migrate::common;
 use sha2::{Digest, Sha256};
 
 use crate::live_migrate::plan::{LivePlan, PlanValidationError};
@@ -125,23 +126,38 @@ pub fn plan_path(
 /// existing file (immutability contract). Creates parent directories
 /// as needed (`migrations/<target>/live/`).
 pub fn write_plan(migrations_root: &Path, plan: &LivePlan) -> Result<PathBuf, PlanFileError> {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
+            path: migrations_root.to_path_buf(),
+            source,
+        })?;
     let path = plan_path(
-        migrations_root,
+        &migrations_root,
         &plan.header.target_database,
         plan.header.plan_id,
         &plan.header.slug,
     );
+    let path = common::resolve_within_base(
+        &migrations_root,
+        &path,
+        common::CandidateResolutionMode::MayCreate,
+    )
+    .map_err(|source| PlanFileError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    let _parent =
+        common::create_workspace_parent_dirs(&migrations_root, &path).map_err(|source| {
+            PlanFileError::Io {
+                path: path.parent().unwrap_or(&path).to_path_buf(),
+                source,
+            }
+        })?;
     plan.validate()
         .map_err(|source| PlanFileError::Validation {
             path: path.clone(),
             source,
         })?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| PlanFileError::Io {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
     let bytes = serde_json::to_vec_pretty(plan)
         .map_err(|source| PlanFileError::JsonSerialize { source })?;
     // Use create_new(true) for the immutability check — atomic at the
@@ -171,8 +187,25 @@ pub fn write_plan(migrations_root: &Path, plan: &LivePlan) -> Result<PathBuf, Pl
 /// Read and parse a plan file from disk. Validates the resulting
 /// [`LivePlan`] before returning so callers always receive a
 /// structurally-sound plan or an actionable error.
-pub fn read_plan(plan_file_path: &Path) -> Result<LivePlan, PlanFileError> {
-    let bytes = read_file_bytes(plan_file_path)?;
+pub fn read_plan(migrations_root: &Path, plan_file_path: &Path) -> Result<LivePlan, PlanFileError> {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
+            path: migrations_root.to_path_buf(),
+            source,
+        })?;
+    let plan_file_path = common::resolve_within_base(
+        &migrations_root,
+        plan_file_path,
+        common::CandidateResolutionMode::Existing,
+    )
+    .map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => PlanFileError::NotFound(plan_file_path.to_path_buf()),
+        _ => PlanFileError::Io {
+            path: plan_file_path.to_path_buf(),
+            source,
+        },
+    })?;
+    let bytes = read_file_bytes(&plan_file_path)?;
     let plan: LivePlan =
         serde_json::from_slice(&bytes).map_err(|source| PlanFileError::JsonParse {
             path: plan_file_path.to_path_buf(),
@@ -190,8 +223,28 @@ pub fn read_plan(plan_file_path: &Path) -> Result<LivePlan, PlanFileError> {
 /// raw bytes. Hashes the file as written rather than re-serialising
 /// the in-memory plan so byte-for-byte changes (whitespace, key
 /// ordering) are caught by [`verify_checksum`].
-pub fn compute_checksum(plan_file_path: &Path) -> Result<String, PlanFileError> {
-    let bytes = read_file_bytes(plan_file_path)?;
+pub fn compute_checksum(
+    migrations_root: &Path,
+    plan_file_path: &Path,
+) -> Result<String, PlanFileError> {
+    let migrations_root =
+        common::canonicalize_base(migrations_root).map_err(|source| PlanFileError::Io {
+            path: migrations_root.to_path_buf(),
+            source,
+        })?;
+    let plan_file_path = common::resolve_within_base(
+        &migrations_root,
+        plan_file_path,
+        common::CandidateResolutionMode::Existing,
+    )
+    .map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => PlanFileError::NotFound(plan_file_path.to_path_buf()),
+        _ => PlanFileError::Io {
+            path: plan_file_path.to_path_buf(),
+            source,
+        },
+    })?;
+    let bytes = read_file_bytes(&plan_file_path)?;
     Ok(format_checksum(&bytes))
 }
 
@@ -201,9 +254,13 @@ pub fn compute_checksum(plan_file_path: &Path) -> Result<String, PlanFileError> 
 /// `expected` must already be a well-formed `V1:<64-hex>` string; an
 /// otherwise-malformed value returns [`PlanFileError::MalformedChecksum`]
 /// rather than silently slipping through the byte compare.
-pub fn verify_checksum(plan_file_path: &Path, expected: &str) -> Result<(), PlanFileError> {
+pub fn verify_checksum(
+    migrations_root: &Path,
+    plan_file_path: &Path,
+    expected: &str,
+) -> Result<(), PlanFileError> {
     validate_checksum_shape(expected)?;
-    let actual = compute_checksum(plan_file_path)?;
+    let actual = compute_checksum(migrations_root, plan_file_path)?;
     if expected == actual {
         Ok(())
     } else {
@@ -336,8 +393,14 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let pid = std::process::id();
-            let path = std::env::temp_dir().join(format!("djogi-plan-file-{label}-{pid}-{nanos}"));
-            std::fs::create_dir_all(&path).expect("create tempdir");
+            let temp_root = std::env::temp_dir();
+            let dir_name = format!("djogi-plan-file-{label}-{pid}-{nanos}");
+            let path =
+                common::resolve_maybe_missing_workspace_path(&temp_root, Path::new(&dir_name))
+                    .unwrap_or_else(|_| temp_root.join(&dir_name));
+            let path = common::resolve_write_workspace_path(&temp_root, &path)
+                .expect("resolve tempdir path");
+            common::create_workspace_dir_all(&temp_root, &path).expect("create tempdir");
             TempDir(path)
         }
 
@@ -348,7 +411,8 @@ mod tests {
 
     impl Drop for TempDir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            let temp_root = std::env::temp_dir();
+            let _ = common::remove_workspace_dir_all(&temp_root, &self.0);
         }
     }
 
@@ -371,7 +435,7 @@ mod tests {
         let tmp = TempDir::new("round-trip");
         let plan = sample_plan();
         let written = write_plan(tmp.path(), &plan).expect("write plan");
-        let back = read_plan(&written).expect("read plan");
+        let back = read_plan(tmp.path(), &written).expect("read plan");
         assert_eq!(back, plan);
     }
 
@@ -401,8 +465,8 @@ mod tests {
         let tmp = TempDir::new("checksum-shape");
         let plan = sample_plan();
         let path = write_plan(tmp.path(), &plan).expect("write plan");
-        let cs1 = compute_checksum(&path).expect("compute 1");
-        let cs2 = compute_checksum(&path).expect("compute 2");
+        let cs1 = compute_checksum(tmp.path(), &path).expect("compute 1");
+        let cs2 = compute_checksum(tmp.path(), &path).expect("compute 2");
         assert_eq!(cs1, cs2);
         assert!(cs1.starts_with("V1:"), "expected V1: prefix; got {cs1}");
         assert_eq!(cs1.len(), 67);
@@ -419,8 +483,8 @@ mod tests {
         let tmp = TempDir::new("verify-ok");
         let plan = sample_plan();
         let path = write_plan(tmp.path(), &plan).expect("write plan");
-        let cs = compute_checksum(&path).expect("compute");
-        verify_checksum(&path, &cs).expect("verify ok");
+        let cs = compute_checksum(tmp.path(), &path).expect("compute");
+        verify_checksum(tmp.path(), &path, &cs).expect("verify ok");
     }
 
     #[test]
@@ -428,15 +492,26 @@ mod tests {
         let tmp = TempDir::new("verify-edited");
         let plan = sample_plan();
         let path = write_plan(tmp.path(), &plan).expect("write plan");
-        let cs = compute_checksum(&path).expect("compute");
+        let cs = compute_checksum(tmp.path(), &path).expect("compute");
         // Append a stray byte to simulate an edit.
+        let tmp_canonical = common::canonicalize_base(tmp.path()).expect("canonicalize temp dir");
+        let path_canonical = common::resolve_within_base(
+            tmp.path(),
+            &path,
+            common::CandidateResolutionMode::Existing,
+        )
+        .expect("canonicalize plan path");
+        assert!(
+            path_canonical.starts_with(&tmp_canonical),
+            "plan path should be within temp dir"
+        );
         let mut f = OpenOptions::new()
             .append(true)
-            .open(&path)
+            .open(&path_canonical)
             .expect("open append");
         f.write_all(b"\n").expect("append byte");
         drop(f);
-        let err = verify_checksum(&path, &cs).expect_err("verify should fail");
+        let err = verify_checksum(tmp.path(), &path, &cs).expect_err("verify should fail");
         match err {
             PlanFileError::ChecksumMismatch {
                 expected, actual, ..
@@ -455,7 +530,8 @@ mod tests {
         // Use a structurally well-formed checksum so the failure is
         // file-presence, not malformed-input.
         let well_formed = format!("V1:{}", "0".repeat(64));
-        let err = verify_checksum(&missing, &well_formed).expect_err("missing must fail");
+        let err =
+            verify_checksum(tmp.path(), &missing, &well_formed).expect_err("missing must fail");
         assert!(matches!(err, PlanFileError::NotFound(_)));
     }
 
@@ -464,14 +540,14 @@ mod tests {
         let tmp = TempDir::new("verify-malformed");
         let plan = sample_plan();
         let path = write_plan(tmp.path(), &plan).expect("write plan");
-        let err = verify_checksum(&path, "not-a-checksum").expect_err("malformed");
+        let err = verify_checksum(tmp.path(), &path, "not-a-checksum").expect_err("malformed");
         assert!(matches!(err, PlanFileError::MalformedChecksum { .. }));
     }
 
     #[test]
     fn read_plan_returns_not_found_for_missing_file() {
         let tmp = TempDir::new("read-missing");
-        let err = read_plan(&tmp.path().join("nope.json")).expect_err("missing");
+        let err = read_plan(tmp.path(), &tmp.path().join("nope.json")).expect_err("missing");
         assert!(matches!(err, PlanFileError::NotFound(_)));
     }
 
@@ -479,8 +555,8 @@ mod tests {
     fn read_plan_rejects_malformed_json() {
         let tmp = TempDir::new("read-malformed");
         let path = tmp.path().join("malformed.json");
-        std::fs::write(&path, b"{ not json }").expect("write malformed");
-        let err = read_plan(&path).expect_err("parse should fail");
+        common::write_workspace_file(tmp.path(), &path, b"{ not json }").expect("write malformed");
+        let err = read_plan(tmp.path(), &path).expect_err("parse should fail");
         assert!(matches!(err, PlanFileError::JsonParse { .. }));
     }
 }

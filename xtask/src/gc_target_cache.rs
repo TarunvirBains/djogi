@@ -18,8 +18,18 @@ pub fn run(dry_run: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let cache_root =
+        validate_cache_root_within_home(&home, &cache_root).unwrap_or_else(|e| panic!("{e}"));
 
-    if !cache_root.exists() {
+    if !cache_root
+        .canonicalize()
+        .map(|path| path.starts_with(&home))
+        .unwrap_or(false)
+    {
         println!(
             "gc-target-cache: cache root {} does not exist; nothing to do",
             cache_root.display()
@@ -35,7 +45,7 @@ pub fn run(dry_run: bool) -> ExitCode {
         }
     };
 
-    let cache_ids = match read_cache_ids(&cache_root) {
+    let cache_ids = match read_cache_ids_from_validated_root(&cache_root) {
         Ok(set) => set,
         Err(error) => {
             eprintln!(
@@ -64,10 +74,17 @@ pub fn run(dry_run: bool) -> ExitCode {
         if dry_run {
             continue;
         }
-        if let Err(error) = fs::remove_dir_all(&path) {
+        let vetted = path.canonicalize().unwrap_or_else(|e| panic!("{e}"));
+        if !vetted.starts_with(&cache_root) {
+            panic!(
+                "refusing to remove cache path outside root: {}",
+                vetted.display()
+            );
+        }
+        if let Err(error) = fs::remove_dir_all(&vetted) {
             eprintln!(
                 "gc-target-cache: failed to remove {}: {error}",
-                path.display()
+                vetted.display()
             );
             return ExitCode::FAILURE;
         }
@@ -90,14 +107,58 @@ pub fn run(dry_run: bool) -> ExitCode {
 }
 
 fn resolve_cache_root() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())?;
+    let home = PathBuf::from(home);
+
     if let Ok(value) = std::env::var(CACHE_ROOT_ENV)
         && !value.is_empty()
     {
-        return Ok(PathBuf::from(value));
+        let candidate = PathBuf::from(value);
+        return validate_cache_root_within_home(&home, &candidate);
     }
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| "HOME is not set; cannot locate cache root".to_string())?;
-    Ok(PathBuf::from(home).join(DEFAULT_CACHE_SUBPATH))
+
+    let default_root = home.join(DEFAULT_CACHE_SUBPATH);
+    validate_cache_root_within_home(&home, &default_root)
+}
+
+fn validate_cache_root_within_home(home: &Path, candidate: &Path) -> Result<PathBuf, String> {
+    let canonical_home = fs::canonicalize(home)
+        .map_err(|error| format!("failed to canonicalize HOME {}: {error}", home.display()))?;
+
+    // Canonicalize when possible (existing paths). For non-existing paths, validate parent.
+    let canonical_candidate = match fs::canonicalize(candidate) {
+        Ok(path) => path,
+        Err(_) => {
+            let parent = candidate.parent().ok_or_else(|| {
+                format!(
+                    "invalid cache root {}; no parent directory to validate",
+                    candidate.display()
+                )
+            })?;
+            let canonical_parent = fs::canonicalize(parent).map_err(|error| {
+                format!(
+                    "failed to canonicalize cache root parent {}: {error}",
+                    parent.display()
+                )
+            })?;
+            canonical_parent.join(
+                candidate
+                    .file_name()
+                    .ok_or_else(|| format!("invalid cache root {}", candidate.display()))?,
+            )
+        }
+    };
+
+    if !canonical_candidate.starts_with(&canonical_home) {
+        return Err(format!(
+            "cache root {} is outside HOME {}",
+            candidate.display(),
+            canonical_home.display()
+        ));
+    }
+
+    Ok(canonical_candidate)
 }
 
 fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
@@ -132,7 +193,7 @@ fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
     Ok(ids)
 }
 
-fn read_cache_ids(root: &Path) -> io::Result<BTreeSet<String>> {
+fn read_cache_ids_from_validated_root(root: &Path) -> io::Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
     for entry in fs::read_dir(root)? {
         let entry = entry?;
@@ -164,9 +225,7 @@ fn worktree_id(absolute_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_cache_ids, worktree_id};
-    use std::fs;
-
+    use super::{read_cache_ids_from_validated_root, worktree_id};
     #[test]
     fn worktree_id_is_stable_12_hex_chars() {
         let id = worktree_id("/home/dev/projects/djogi/.worktrees/c1");
@@ -206,24 +265,38 @@ mod tests {
     }
 
     #[test]
-    fn read_cache_ids_collects_subdirs_only() {
-        let tmp = std::env::temp_dir().join(format!(
+    fn read_cache_ids_from_validated_root_collects_subdirs_only() {
+        let tmp_name = format!(
             "djogi-gc-test-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
-        ));
-        fs::create_dir_all(tmp.join("abc123def456")).unwrap();
-        fs::create_dir_all(tmp.join("789abc012def")).unwrap();
-        fs::write(tmp.join("not-a-dir"), b"ignored").unwrap();
+        );
+        if tmp_name.contains('/') || tmp_name.contains('\\') || tmp_name.contains("..") {
+            panic!("unsafe temp path component: {tmp_name}");
+        }
+        let temp_canon = std::env::temp_dir().canonicalize().unwrap();
+        let tmp = super::validate_cache_root_within_home(&temp_canon, &temp_canon.join(tmp_name))
+            .expect("resolve tmp");
+        djogi::migrate::create_workspace_dir_all(&temp_canon, &tmp).unwrap();
+        let tmp = tmp.canonicalize().unwrap();
 
-        let ids = read_cache_ids(&tmp).expect("read");
+        let abc = djogi::migrate::resolve_write_workspace_path(&tmp, "abc123def456").unwrap();
+        let def = djogi::migrate::resolve_write_workspace_path(&tmp, "789abc012def").unwrap();
+        djogi::migrate::create_workspace_dir_all(&tmp, &abc).unwrap();
+        djogi::migrate::create_workspace_dir_all(&tmp, &def).unwrap();
+        djogi::migrate::write_workspace_file(&tmp, tmp.join("not-a-dir"), b"ignored").unwrap();
+
+        let ids = read_cache_ids_from_validated_root(&tmp).expect("read");
         assert!(ids.contains("abc123def456"));
         assert!(ids.contains("789abc012def"));
         assert!(!ids.contains("not-a-dir"));
 
-        fs::remove_dir_all(&tmp).ok();
+        let _ = djogi::migrate::remove_workspace_dir_all(
+            &std::env::temp_dir().canonicalize().unwrap(),
+            &tmp,
+        );
     }
 }

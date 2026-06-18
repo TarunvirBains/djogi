@@ -41,7 +41,6 @@
 // - Plan specs for verify CLI semantics.
 // - `djogi-cli/src/verify.rs` — the implementation under test.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -79,9 +78,17 @@ fn splice_db_into_url(url: &str, new_db: &str) -> String {
 /// Returns the absolute path to the snapshot file and its byte
 /// content.
 fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathBuf, Vec<u8>) {
+    let workspace_canon = workspace.canonicalize().expect("canonicalize workspace");
     let app_dir = if app.is_empty() { "_global_" } else { app };
-    let dir = workspace.join("migrations").join(database).join(app_dir);
-    fs::create_dir_all(&dir).expect("create migrations subtree");
+    let dir = workspace_canon.join("migrations").join(database).join(app_dir);
+    let dir = djogi::migrate::resolve_write_workspace_path(&workspace_canon, &dir)
+        .expect("resolve migrations subtree");
+    djogi::migrate::create_workspace_dir_all(&workspace_canon, &dir)
+        .expect("create migrations subtree");
+    let dir = dir.canonicalize().expect("canonicalize migrations subtree");
+    if !dir.starts_with(&workspace_canon) {
+        panic!("migrations dir escapes workspace");
+    }
 
     // Realistic minimal-snapshot shape — matches what the runner's
     // snapshot writer produces. The exact bytes do not matter for
@@ -94,7 +101,8 @@ fn write_fixture_snapshot(workspace: &Path, database: &str, app: &str) -> (PathB
 "#
     .to_vec();
     let path = dir.join("schema_snapshot.json");
-    fs::write(&path, &payload).expect("write schema_snapshot.json");
+    djogi::migrate::write_workspace_file(&workspace_canon, &path, &payload)
+        .expect("write schema_snapshot.json");
     (path, payload)
 }
 
@@ -179,7 +187,20 @@ async fn verify_clean_workspace_exits_zero(mut ctx: djogi::DjogiContext) {
 
     // Cleanup the workspace; the per-test DB is dropped by the
     // `#[djogi_test]` harness automatically.
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
+}
+
+fn safe_remove_workspace(path: &Path) {
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path_canon = path
+        .canonicalize()
+        .unwrap_or_else(|err| panic!("canonicalize workspace {}: {err}", path.display()));
+    if !path_canon.starts_with(&temp_canon) {
+        panic!("remove workspace refused: path escapes temp directory");
+    }
+    let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
 }
 
 #[djogi::djogi_test]
@@ -227,7 +248,13 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
     // attack.
     let mut tampered = snapshot_bytes.clone();
     tampered[0] ^= 0x01;
-    fs::write(&snapshot_path, &tampered).expect("re-write tampered snapshot");
+    let workspace_canon = workspace.canonicalize().expect("canonicalize workspace");
+    let sp_canon = snapshot_path.canonicalize().expect("canonicalize snapshot path");
+    if !sp_canon.starts_with(&workspace_canon) {
+        panic!("snapshot path escapes workspace");
+    }
+    djogi::migrate::write_workspace_file(&workspace_canon, &sp_canon, &tampered)
+        .expect("re-write tampered snapshot");
 
     // Step 3 — run `djogi verify` and assert exit 1 +
     // `MISMATCH <path>` on stderr.
@@ -263,5 +290,5 @@ async fn verify_mismatched_snapshot_exits_one(mut ctx: djogi::DjogiContext) {
         "expected `MISMATCH <snapshot path>` on stderr; got\nstdout: {stdout}\nstderr: {stderr}",
     );
 
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
 }

@@ -46,6 +46,7 @@ use crate::descriptor::{
     FieldDescriptor, FieldSqlType, IndexKind, IndexSpec, IndexTarget, ModelDescriptor, PkType,
 };
 
+use super::common;
 use super::target::GLOBAL_BUCKET_DIRNAME;
 
 // ── Public types ──────────────────────────────────────────────────────────
@@ -156,8 +157,53 @@ pub fn render_inventory(
     output_root: &Path,
     intent: Option<&crate::intent::IntentFile>,
 ) -> Result<DocsReport, DocsError> {
-    fs::create_dir_all(output_root).map_err(|e| DocsError::Io {
+    // Canonicalize the output root so the resolved path cannot be
+    // influenced by symlinks or relative components in the caller-
+    // supplied `output_root`. The canonicalized path is used for all
+    // subsequent file operations.
+    let output_root_canon = crate::migrate::common::canonicalize_with_parent_fallback(output_root)
+        .map_err(|e| DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: e,
+        })?;
+
+    // Containment check: the resolved output root must reside under
+    // the current working directory (or temp dir for tests). This
+    // prevents a symlinked `output_root` from redirecting writes to
+    // an arbitrary location.
+    let cwd = std::env::current_dir().map_err(|_| DocsError::Io {
         path: output_root.to_path_buf(),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot determine current directory",
+        ),
+    })?;
+    let temp = std::env::temp_dir();
+    let temp = temp.canonicalize().map_err(|e| DocsError::Io {
+        path: output_root.to_path_buf(),
+        source: e,
+    })?;
+    let cwd = cwd.canonicalize().map_err(|e| DocsError::Io {
+        path: output_root.to_path_buf(),
+        source: e,
+    })?;
+    let output_root_under_cwd = common::ensure_within_base(&cwd, &output_root_canon).is_ok();
+    let output_root_under_temp = common::ensure_within_base(&temp, &output_root_canon).is_ok();
+    if !output_root_under_cwd && !output_root_under_temp {
+        return Err(DocsError::Io {
+            path: output_root.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "output path {} is outside current directory and temp directory",
+                    output_root.display()
+                ),
+            ),
+        });
+    }
+
+    fs::create_dir_all(&output_root_canon).map_err(|e| DocsError::Io {
+        path: output_root_canon.clone(),
         source: e,
     })?;
 
@@ -174,7 +220,7 @@ pub fn render_inventory(
     let mut total = 0usize;
 
     for (app_dir, models) in &by_app {
-        let app_path = output_root.join(app_dir);
+        let app_path = output_root_canon.join(app_dir);
         fs::create_dir_all(&app_path).map_err(|e| DocsError::Io {
             path: app_path.clone(),
             source: e,
@@ -193,7 +239,7 @@ pub fn render_inventory(
 
     // Top-level README index — one bullet per model, grouped by app.
     let readme_body = render_readme(&by_app);
-    let readme_path = output_root.join("README.md");
+    let readme_path = output_root_canon.join("README.md");
     fs::write(&readme_path, readme_body.as_bytes()).map_err(|e| DocsError::Io {
         path: readme_path.clone(),
         source: e,
@@ -209,7 +255,7 @@ pub fn render_inventory(
     // inventory is accurately reflected.
     let written_set: std::collections::BTreeSet<&std::path::Path> =
         written.iter().map(PathBuf::as_path).collect();
-    if let Ok(walk) = fs::read_dir(output_root) {
+    if let Ok(walk) = fs::read_dir(&output_root_canon) {
         for entry in walk.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -222,7 +268,7 @@ pub fn render_inventory(
     }
     // Recurse into per-app subdirectories for stale model pages.
     for app_dir_name in by_app.keys() {
-        let app_path = output_root.join(app_dir_name);
+        let app_path = output_root_canon.join(app_dir_name);
         if let Ok(walk) = fs::read_dir(&app_path) {
             for entry in walk.flatten() {
                 let path = entry.path();
@@ -238,7 +284,7 @@ pub fn render_inventory(
 
     Ok(DocsReport {
         models_rendered: total,
-        output_root: output_root.to_path_buf(),
+        output_root: output_root_canon.clone(),
         written_files: written,
     })
 }
@@ -613,9 +659,42 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-docs-{tag}-{nanos}-{n}"));
-        fs::create_dir_all(&p).unwrap();
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let p = temp_canon.join(format!("djogi-docs-{tag}-{nanos}-{n}"));
+        let p = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &p)
+            .expect("resolve temp docs root");
+        crate::migrate::common::create_workspace_dir_all(&temp_canon, &p).unwrap();
+        if let Ok(p_canon) = std::fs::canonicalize(&p) {
+            assert!(
+                p_canon.starts_with(&temp_canon),
+                "workspace path escapes temp directory"
+            );
+        }
         p
+    }
+
+    fn safe_read_workspace(root: &Path, path: impl AsRef<Path>) -> Vec<u8> {
+        crate::migrate::common::read_workspace_file(root, path.as_ref())
+            .expect("read workspace file")
+    }
+
+    fn safe_read_workspace_string(root: &Path, path: impl AsRef<Path>) -> String {
+        crate::migrate::common::read_workspace_file_to_string(root, path.as_ref())
+            .expect("read workspace string")
+    }
+
+    fn safe_remove_workspace(dir: &Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let dir = std::fs::canonicalize(dir).expect("canonicalize docs workspace");
+        assert!(
+            dir.starts_with(&temp_canon),
+            "remove_dir_all refused: workspace path escapes temp directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn fixture_users() -> ModelDescriptor {
@@ -728,7 +807,7 @@ mod tests {
         assert_eq!(report.models_rendered, 2);
 
         // README at the root.
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let readme = safe_read_workspace_string(&root, root.join("README.md"));
         assert!(readme.contains("# Djogi model reference"));
         assert!(readme.contains("`User`"));
         assert!(readme.contains("`Post`"));
@@ -750,7 +829,7 @@ mod tests {
 
         // The global model lists `<global>` in its body, not the
         // on-disk directory token.
-        let post_body = fs::read_to_string(root.join("_global_/Post.md")).unwrap();
+        let post_body = safe_read_workspace_string(&root, root.join("_global_/Post.md"));
         assert!(post_body.contains("**App:** <global>"));
     }
 
@@ -766,12 +845,12 @@ mod tests {
         render_inventory(&descriptors, &root_a, None).unwrap();
         render_inventory(&descriptors, &root_b, None).unwrap();
 
-        let user_a = fs::read(root_a.join("accounts/User.md")).unwrap();
-        let user_b = fs::read(root_b.join("accounts/User.md")).unwrap();
+        let user_a = safe_read_workspace(&root_a, root_a.join("accounts/User.md"));
+        let user_b = safe_read_workspace(&root_b, root_b.join("accounts/User.md"));
         assert_eq!(user_a, user_b);
 
-        let readme_a = fs::read(root_a.join("README.md")).unwrap();
-        let readme_b = fs::read(root_b.join("README.md")).unwrap();
+        let readme_a = safe_read_workspace(&root_a, root_a.join("README.md"));
+        let readme_b = safe_read_workspace(&root_b, root_b.join("README.md"));
         assert_eq!(readme_a, readme_b);
     }
 
@@ -789,8 +868,8 @@ mod tests {
         render_inventory(&order_a, &root_a, None).unwrap();
         render_inventory(&order_b, &root_b, None).unwrap();
 
-        let readme_a = fs::read(root_a.join("README.md")).unwrap();
-        let readme_b = fs::read(root_b.join("README.md")).unwrap();
+        let readme_a = safe_read_workspace(&root_a, root_a.join("README.md"));
+        let readme_b = safe_read_workspace(&root_b, root_b.join("README.md"));
         assert_eq!(readme_a, readme_b, "render must be input-order-invariant");
     }
 
@@ -800,7 +879,7 @@ mod tests {
         let report = render_inventory(&[], &root, None).expect("render");
         assert_eq!(report.models_rendered, 0);
         // README still gets written, with the sentinel message.
-        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let readme = safe_read_workspace_string(&root, root.join("README.md"));
         assert!(readme.contains("No models registered"));
     }
 
@@ -945,7 +1024,10 @@ mod tests {
                 Vec::new()
             }
         }
-        let dir = std::env::temp_dir().join(format!(
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let dir = temp_canon.join(format!(
             "djogi-docs-provider-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -955,6 +1037,10 @@ mod tests {
         let report = generate_docs_with_provider(&EmptyProvider, &dir, None)
             .expect("empty provider renders README only");
         assert_eq!(report.models_rendered, 0);
-        let _ = std::fs::remove_dir_all(&dir);
+        if let Ok(dir_canon) = std::fs::canonicalize(&dir)
+            && dir_canon.starts_with(&temp_canon)
+        {
+            safe_remove_workspace(&dir);
+        }
     }
 }

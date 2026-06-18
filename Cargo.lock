@@ -2650,6 +2650,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0-alpha.17"
 dependencies = [
+ "djogi",
  "proc-macro2",
  "sha2",
  "syn 2.0.117",

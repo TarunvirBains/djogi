@@ -6665,7 +6665,14 @@ mod tests {
             );
         }
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
+        {
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
+        }
     }
 
     #[djogi_test]
@@ -6707,7 +6714,14 @@ mod tests {
             "audit_pool = None should not bootstrap or write the audit table"
         );
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
+        {
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
+        }
     }
 
     #[test]
@@ -6842,7 +6856,14 @@ mod tests {
             "app-side DDL should remain committed when the audit DB is unavailable"
         );
 
-        let _ = std::fs::remove_file(cleanup_path);
+        let temp_dir = std::env::temp_dir();
+        if let Ok(temp_canon) = temp_dir.canonicalize()
+            && cleanup_path.starts_with(&temp_canon)
+            && let Ok(vetted) =
+                crate::migrate::common::resolve_existing_workspace_path(&temp_canon, &cleanup_path)
+        {
+            let _ = crate::migrate::common::remove_workspace_file(&temp_canon, &vetted);
+        }
     }
 
     // ── RolledBack re-apply path ──────────────────────────────────────

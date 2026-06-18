@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use djogi::config::MigrateConfig;
@@ -58,12 +58,29 @@ fn empty_snapshot() -> AppliedSchema {
     }
 }
 
+fn test_temp_root() -> PathBuf {
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let root = temp_canon.join("djogi-runner-tests");
+    djogi::migrate::create_workspace_parent_dirs(&temp_canon, root.join(".keep"))
+        .expect("create runner temp root");
+    root.canonicalize().expect("canonicalize runner temp root")
+}
+
+fn is_within(parent: &Path, child: &Path) -> bool {
+    match (parent.canonicalize(), child.canonicalize()) {
+        (Ok(parent_abs), Ok(child_abs)) => child_abs.starts_with(parent_abs),
+        _ => false,
+    }
+}
+
 fn temp_snapshot_path() -> PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.json"))
+    test_temp_root().join(format!("djogi-runner-test-{stamp}.json"))
 }
 
 /// Per-test workspace lock path. Each test gets its own unique path
@@ -73,7 +90,7 @@ fn temp_workspace_lock_path() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.lock"))
+    test_temp_root().join(format!("djogi-runner-test-{stamp}.lock"))
 }
 
 fn temp_workspace_root() -> PathBuf {
@@ -81,9 +98,31 @@ fn temp_workspace_root() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-runner-workspace-{stamp}"));
-    fs::create_dir_all(&path).expect("create temp workspace root");
-    path
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path = temp_canon.join(format!("djogi-runner-workspace-{stamp}"));
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_canon, &path)
+        .expect("resolve temp workspace root");
+    djogi::migrate::create_workspace_parent_dirs(&temp_canon, path.join(".keep"))
+        .expect("create temp workspace root");
+    path.canonicalize().expect("canonicalize temp workspace root")
+}
+
+fn safe_remove_snapshot(path: &Path) {
+    let temp_root = test_temp_root();
+    if is_within(&temp_root, path) {
+        let _ = djogi::migrate::remove_workspace_file(&temp_root, path);
+    }
+}
+
+fn safe_remove_workspace(path: &Path) {
+    let temp_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    if let Ok(vetted) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path) {
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &vetted);
+    }
 }
 
 /// Acquire a per-test workspace `WorkspaceGuard`, satisfying the
@@ -185,7 +224,7 @@ fn canonical_identity_free_phase_zero_sql(guard: &WorkspaceGuard) -> String {
     )
     .expect("emit canonical identity-free Phase 0");
     let sql = fs::read_to_string(&emitted[0].up_sql_path).expect("read emitted Phase 0 up SQL");
-    let _ = fs::remove_dir_all(&workspace);
+    safe_remove_workspace(&workspace);
     sql
 }
 
@@ -308,7 +347,10 @@ async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext
     assert_eq!(loaded.format_version, SNAPSHOT_FORMAT_VERSION);
 
     // Cleanup.
-    let _ = std::fs::remove_file(&snapshot_path);
+    let temp_root = test_temp_root();
+    if is_within(&temp_root, &snapshot_path) {
+    safe_remove_snapshot(&snapshot_path);
+    }
 }
 
 // ── Failure: transactional apply rolls back ───────────────────────────────
@@ -472,7 +514,7 @@ async fn phase_zero_single_node_dev_provisioning_failure_marks_failed(
         !snapshot_path.exists(),
         "snapshot file must NOT be written on Phase 0 provisioning failure"
     );
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_snapshot(&snapshot_path);
 }
 
 // ── Split apply: tx + non-tx success ──────────────────────────────────────
@@ -557,7 +599,7 @@ async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
 
     // Snapshot file must exist.
     assert!(snapshot_path.exists());
-    let _ = std::fs::remove_file(&snapshot_path);
+    safe_remove_snapshot(&snapshot_path);
 }
 
 // ── Split apply: non-tx mid-step failure ──────────────────────────────────

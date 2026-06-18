@@ -305,11 +305,20 @@ const PEM_KEY_LABEL_NEEDLE: &str = "PRIVATE KEY";
 fn scan_repo() -> Result<Vec<Finding>, String> {
     let mut findings = Vec::new();
     let files = list_repo_files()?;
+    let cwd = env::current_dir()
+        .and_then(|p| p.canonicalize())
+        .map_err(|error| format!("cannot resolve current directory: {error}"))?;
     for path in files {
         if should_skip_file(&path) {
             continue;
         }
-        let Some(content) = read_text_file(&path) else {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
+        if !canonical.starts_with(&cwd) {
+            continue;
+        }
+        let Some(content) = read_text_file(&canonical) else {
             continue;
         };
         scan_text(&content, Some(&path), &mut findings);
@@ -440,21 +449,30 @@ fn should_use_act_filesystem_fallback(error: &str) -> bool {
 }
 
 fn list_filesystem_repo_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve root path {}: {error}", root.display()))?;
     let mut paths = Vec::new();
-    collect_filesystem_repo_files(root, root, &mut paths)
+    collect_filesystem_repo_files(&canonical_root, &canonical_root, &mut paths)
         .map_err(|error| format!("filesystem sweep failed: {error}"))?;
     paths.sort();
     Ok(paths)
 }
 
 fn collect_filesystem_repo_files(
-    root: &Path,
+    canonical_root: &Path,
     dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+
+        // Validate containment before following symlinks or processing entries.
+        if !path.starts_with(canonical_root) {
+            continue;
+        }
+
         let file_type = entry.file_type()?;
         let name = path
             .file_name()
@@ -465,9 +483,13 @@ fn collect_filesystem_repo_files(
             if matches!(name, ".git" | ".worktrees" | "node_modules" | "target") {
                 continue;
             }
-            collect_filesystem_repo_files(root, &path, paths)?;
+            collect_filesystem_repo_files(canonical_root, &path, paths)?;
         } else if file_type.is_file() {
-            paths.push(path.strip_prefix(root).unwrap_or(&path).to_owned());
+            paths.push(
+                path.strip_prefix(canonical_root)
+                    .unwrap_or(&path)
+                    .to_owned(),
+            );
         }
     }
 
@@ -1322,23 +1344,45 @@ mod tests {
 
     #[test]
     fn filesystem_repo_sweep_skips_build_and_git_state_dirs_but_keeps_dotgithub() {
-        let root = env::temp_dir().join(format!("djogi-check-secrets-fs-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join(".github/workflows")).unwrap();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::create_dir_all(root.join(".git/objects")).unwrap();
-        fs::create_dir_all(root.join(".worktrees/issue")).unwrap();
+        let temp_canon = env::temp_dir().canonicalize().unwrap();
+        let root_name = format!("djogi-check-secrets-fs-{}", std::process::id());
+        let root = djogi::migrate::resolve_write_workspace_path(&temp_canon, &root_name)
+            .expect("resolve temp root");
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &root);
+        djogi::migrate::create_workspace_dir_all(&temp_canon, &root).unwrap();
+        let root = root.canonicalize().unwrap();
 
-        fs::write(root.join(".github/workflows/ci.yml"), "name: CI").unwrap();
-        fs::write(root.join("src/lib.rs"), "pub fn ok() {}").unwrap();
-        fs::write(
-            root.join("target/debug/build.log"),
-            "DATABASE_URL=postgres://real:secret@db/app",
+        let github_workflows =
+            djogi::migrate::resolve_write_workspace_path(&root, ".github/workflows")
+                .expect("resolve .github/workflows");
+        djogi::migrate::create_workspace_dir_all(&root, &github_workflows).unwrap();
+        let src_dir =
+            djogi::migrate::resolve_write_workspace_path(&root, "src").expect("resolve src");
+        djogi::migrate::create_workspace_dir_all(&root, &src_dir).unwrap();
+        let target_debug = djogi::migrate::resolve_write_workspace_path(&root, "target/debug")
+            .expect("resolve target/debug");
+        djogi::migrate::create_workspace_dir_all(&root, &target_debug).unwrap();
+        let git_objects = djogi::migrate::resolve_write_workspace_path(&root, ".git/objects")
+            .expect("resolve .git/objects");
+        djogi::migrate::create_workspace_dir_all(&root, &git_objects).unwrap();
+        let worktrees_issue =
+            djogi::migrate::resolve_write_workspace_path(&root, ".worktrees/issue")
+                .expect("resolve .worktrees/issue");
+        djogi::migrate::create_workspace_dir_all(&root, &worktrees_issue).unwrap();
+
+        djogi::migrate::write_workspace_file(&root, github_workflows.join("ci.yml"), b"name: CI")
+            .unwrap();
+        djogi::migrate::write_workspace_file(&root, src_dir.join("lib.rs"), b"pub fn ok() {}")
+            .unwrap();
+        djogi::migrate::write_workspace_file(
+            &root,
+            target_debug.join("build.log"),
+            b"DATABASE_URL=postgres://real:secret@db/app",
         )
         .unwrap();
-        fs::write(root.join(".git/config"), "ignored").unwrap();
-        fs::write(root.join(".worktrees/issue/file.rs"), "ignored").unwrap();
+        djogi::migrate::write_workspace_file(&root, root.join(".git/config"), b"ignored").unwrap();
+        djogi::migrate::write_workspace_file(&root, worktrees_issue.join("file.rs"), b"ignored")
+            .unwrap();
 
         let files = list_filesystem_repo_files(&root).unwrap();
         let as_strings: BTreeSet<_> = files
@@ -1352,7 +1396,7 @@ mod tests {
         assert!(!as_strings.contains(".git/config"));
         assert!(!as_strings.contains(".worktrees/issue/file.rs"));
 
-        fs::remove_dir_all(root).unwrap();
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &root);
     }
 
     // ---- URL detection ----

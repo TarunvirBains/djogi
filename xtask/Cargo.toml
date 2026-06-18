@@ -9,3 +9,4 @@ publish = false
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
 sha2 = { workspace = true }
+djogi = { workspace = true }

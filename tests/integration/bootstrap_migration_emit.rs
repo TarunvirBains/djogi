@@ -51,9 +51,32 @@ fn temp_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("djogi-bootstrap-emit-{label}-{stamp}"));
-    fs::create_dir_all(&path).expect("create workspace root");
+    let temp_dir_canon = std::env::temp_dir()
+        .canonicalize()
+        .expect("canonicalize temp dir");
+    let path = temp_dir_canon.join(format!("djogi-bootstrap-emit-{label}-{stamp}"));
+    let path = djogi::migrate::resolve_write_workspace_path(&temp_dir_canon, &path)
+        .expect("resolve workspace root");
+    djogi::migrate::create_workspace_parent_dirs(&temp_dir_canon, path.join(".keep"))
+        .expect("create workspace root");
+    if let Ok(path_canon) = std::fs::canonicalize(&path) {
+        assert!(
+            path_canon.starts_with(&temp_dir_canon),
+            "workspace path escapes temp directory"
+        );
+    }
     path
+}
+
+fn safe_remove_workspace(path: &Path) {
+    if let Ok(temp_canon) = std::env::temp_dir().canonicalize()
+        && let Ok(path_canon) = djogi::migrate::resolve_existing_workspace_path(&temp_canon, path)
+    {
+        if !path_canon.starts_with(&temp_canon) {
+            panic!("remove_dir_all refused: workspace path escapes temp directory");
+        }
+        let _ = djogi::migrate::remove_workspace_dir_all(&temp_canon, &path_canon);
+    }
 }
 
 fn lock_for(workspace: &Path) -> WorkspaceGuard {
@@ -160,7 +183,16 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
 
     // Up SQL inspection: HeeRanjID install + PostGIS extension, with
     // no production node-id seed/defaults.
-    let up_sql = fs::read_to_string(&up_path).expect("read up");
+    let work_canon = std::fs::canonicalize(&work).expect("canonicalize workspace");
+    if !up_path
+        .canonicalize()
+        .unwrap_or(up_path.clone())
+        .starts_with(&work_canon)
+    {
+        panic!("up SQL path escapes workspace");
+    }
+    let up_sql =
+        djogi::migrate::read_workspace_file_to_string(&work_canon, &up_path).expect("read up");
     assert!(
         up_sql.contains("HeeRanjID base schema"),
         "up SQL must include HeeRanjID install"
@@ -191,7 +223,15 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
     );
 
     // Down SQL is comment-only.
-    let down_sql = fs::read_to_string(&down_path).expect("read down");
+    if !down_path
+        .canonicalize()
+        .unwrap_or(down_path.clone())
+        .starts_with(&work_canon)
+    {
+        panic!("down SQL path escapes workspace");
+    }
+    let down_sql =
+        djogi::migrate::read_workspace_file_to_string(&work_canon, &down_path).expect("read down");
     assert!(
         down_sql.contains("bootstrap migration — down"),
         "down SQL must carry the no-op marker"
@@ -201,7 +241,7 @@ fn compose_auto_emits_bootstrap_with_postgis_dependency_on_first_run() {
         "down SQL must not contain real DDL"
     );
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }
 
 #[test]
@@ -245,7 +285,7 @@ fn compose_auto_emit_is_idempotent_across_runs() {
     let first_up_after = fs::read(&first[0].up_sql_path).expect("read after second");
     assert_eq!(first_up, first_up_after);
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }
 
 #[test]
@@ -318,7 +358,7 @@ fn compose_auto_emit_returns_emissions_in_report() {
         djogi::migrate::ComposeError::NothingToCompose
     ));
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }
 
 #[test]
@@ -395,5 +435,5 @@ fn compose_auto_emit_aggregates_extensions_across_apps_in_same_database() {
     );
     assert_eq!(main_emit.extensions.len(), 2, "no spurious extensions");
 
-    let _ = fs::remove_dir_all(&work);
+    safe_remove_workspace(&work);
 }

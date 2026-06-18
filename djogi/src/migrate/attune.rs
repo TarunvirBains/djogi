@@ -85,6 +85,7 @@ use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
 use super::bootstrap::PHASE_ZERO_VERSION;
+use super::common;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ExecutionMode, LedgerRow, LedgerStatus, SHA256_HEX_LEN, compute_checksum,
@@ -772,6 +773,9 @@ pub async fn attune(
         }
     }
 
+    let workspace_root = common::canonicalize_base(req.workspace_root)
+        .map_err(|source| AttuneError::FilesystemScanFailed { source })?;
+
     // Resolve the active database name first — every subsequent
     // disk-scan + ledger-query path is scoped to the bucket that
     // matches THIS context's database. The CLI orchestrator runs
@@ -794,7 +798,7 @@ pub async fn attune(
     // operator's context is connected to `main`, only `main`'s tree
     // is in scope. Multi-database attune requires per-database
     // invocations.
-    let disk = scan_disk_for_database(req.workspace_root, &active_database)?;
+    let disk = scan_disk_for_database(&workspace_root, &active_database)?;
     let ledger_versions = if ledger_exists {
         scan_ledger(ctx, &active_database).await?
     } else {
@@ -849,7 +853,7 @@ pub async fn attune(
     // typed error BEFORE any mutation path runs so the operator-facing
     // message names the missing target instead of a partial side effect.
     let resolved_target = match req.target {
-        Some(t) if !t.is_empty() => Some(resolve_git_target(req.workspace_root, t)?),
+        Some(t) if !t.is_empty() => Some(resolve_git_target(&workspace_root, t)?),
         _ => None,
     };
 
@@ -899,7 +903,7 @@ pub async fn attune(
                 && apply
                 && let Some(sha) = resolved_target.as_ref()
             {
-                update_parent_submodule_pointer(req.workspace_root, sha)?;
+                update_parent_submodule_pointer(&workspace_root, sha)?;
                 report.parent_pointer_updated = true;
             }
             Ok(report)
@@ -913,7 +917,11 @@ pub async fn attune(
                 {
                     if let Some(path) = disk.get(&entry.bucket).and_then(|m| m.get(&entry.version))
                     {
-                        check_phase_zero_attune_entry(path, &entry.version)?;
+                        check_phase_zero_attune_entry_in_workspace(
+                            &workspace_root,
+                            path,
+                            &entry.version,
+                        )?;
                         will_insert = true;
                     }
                 }
@@ -940,6 +948,7 @@ pub async fn attune(
                             if apply {
                                 insert_recorded_row(
                                     ctx,
+                                    &workspace_root,
                                     &entry.bucket,
                                     &entry.version,
                                     &path,
@@ -987,7 +996,7 @@ pub async fn attune(
                 // to record (the operator can still re-run with
                 // `--target <ref>` to populate it).
                 if let Some(sha) = &resolved_target {
-                    update_parent_submodule_pointer(req.workspace_root, sha)?;
+                    update_parent_submodule_pointer(&workspace_root, sha)?;
                     report.parent_pointer_updated = true;
                 }
             }
@@ -1019,14 +1028,14 @@ pub async fn attune(
                     .get(&bucket)
                     .and_then(|versions| versions.get(&from.to_string()))
             {
-                check_phase_zero_attune_entry(from_path, from)?;
+                check_phase_zero_attune_entry_in_workspace(&workspace_root, from_path, from)?;
             }
             ledger::bootstrap(ctx)
                 .await
                 .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
             run_squash(
                 ctx,
-                req.workspace_root,
+                &workspace_root,
                 from,
                 *publish,
                 app.as_deref(),
@@ -1041,7 +1050,7 @@ pub async fn attune(
             // `req.record`. The operator no longer needs to type both
             // flags; one does the work of two per the spec contract.
             if effective_record && let Some(sha) = &resolved_target {
-                update_parent_submodule_pointer(req.workspace_root, sha)?;
+                update_parent_submodule_pointer(&workspace_root, sha)?;
                 report.parent_pointer_updated = true;
             }
             Ok(report)
@@ -1223,16 +1232,42 @@ fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), At
     }
 }
 
+fn check_phase_zero_attune_entry_in_workspace(
+    workspace_root: &Path,
+    up_path: &Path,
+    version: &str,
+) -> Result<(), AttuneError> {
+    if version != PHASE_ZERO_VERSION {
+        return Ok(());
+    }
+    let up_path =
+        common::resolve_read_workspace_path(workspace_root, up_path).map_err(|source| {
+            AttuneError::SqlReadFailed {
+                path: up_path.to_path_buf(),
+                source,
+            }
+        })?;
+    check_phase_zero_attune_entry(&up_path, version)
+}
+
 /// Insert a `status='applied'` ledger row for an unrecorded SQL file.
 /// The note carries the operator-supplied reason verbatim.
 async fn insert_recorded_row(
     ctx: &mut DjogiContext,
+    workspace_root: &Path,
     bucket: &BucketKey,
     version: &str,
     up_path: &Path,
     reason: &str,
 ) -> Result<(), AttuneError> {
-    let up_sql = std::fs::read_to_string(up_path).map_err(|e| AttuneError::SqlReadFailed {
+    let up_sql_path =
+        common::resolve_read_workspace_path(workspace_root, up_path).map_err(|source| {
+            AttuneError::SqlReadFailed {
+                path: up_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let up_sql = std::fs::read_to_string(&up_sql_path).map_err(|e| AttuneError::SqlReadFailed {
         path: up_path.to_path_buf(),
         source: e,
     })?;
@@ -1240,12 +1275,15 @@ async fn insert_recorded_row(
     // Try to read the down file too — the version's down checksum is
     // best-effort. Missing down is fine; record a None so the row
     // still inserts.
-    let down_path = up_path
+    let down_path = up_sql_path
         .parent()
         .map(|p| p.join(super::naming::down_filename(version)));
     let checksum_down = down_path
         .as_ref()
-        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|p| {
+            let candidate = common::resolve_maybe_missing_workspace_path(workspace_root, p).ok()?;
+            std::fs::read_to_string(&candidate).ok()
+        })
         .and_then(|down_sql| compute_committed_down_sql_checksum(&down_sql));
     let _ = SHA256_HEX_LEN; // use the constant import for documentation; checksum_up enforces shape.
 
@@ -1333,7 +1371,7 @@ async fn run_squash(
     // mutation (retained rewrite, down rewrite, sidecar delete, subsumed
     // delete, ledger update, parent pointer, publish).
     if let Some(from_path) = versions.get(&from.to_string()) {
-        check_phase_zero_attune_entry(from_path, from)?;
+        check_phase_zero_attune_entry_in_workspace(workspace_root, from_path, from)?;
     }
 
     // Lexical compare = chronological because version_prefix is `V<14 digits>`.
@@ -1347,9 +1385,12 @@ async fn run_squash(
         return Ok(());
     }
 
-    let dir = bucket_dir(workspace_root, &bucket);
+    let dir =
+        common::resolve_read_workspace_path(workspace_root, bucket_dir(workspace_root, &bucket))
+            .map_err(|source| AttuneError::FilesystemScanFailed { source })?;
 
-    let (combined_up, combined_down_segments) = build_combined_sql(&dir, &to_squash)?;
+    let (combined_up, combined_down_segments) =
+        build_combined_sql(workspace_root, &dir, &to_squash)?;
 
     // Reverse-order concat so a rollback unwinds in the same order
     // apply happened.
@@ -1360,7 +1401,12 @@ async fn run_squash(
     }
     let wrote_down = !combined_down.is_empty();
 
-    let new_up_path = dir.join(up_filename(from));
+    let new_up_candidate = dir.join(up_filename(from));
+    let new_up_path = common::resolve_write_workspace_path(workspace_root, &new_up_candidate)
+        .map_err(|source| AttuneError::SqlWriteFailed {
+            path: new_up_candidate.clone(),
+            source,
+        })?;
     std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
         AttuneError::SqlWriteFailed {
             path: new_up_path.clone(),
@@ -1368,7 +1414,14 @@ async fn run_squash(
         }
     })?;
     if wrote_down {
-        let new_down_path = dir.join(down_filename(from));
+        let new_down_candidate = dir.join(down_filename(from));
+        let new_down_path =
+            common::resolve_write_workspace_path(workspace_root, &new_down_candidate).map_err(
+                |source| AttuneError::SqlWriteFailed {
+                    path: new_down_candidate.clone(),
+                    source,
+                },
+            )?;
         std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
             AttuneError::SqlWriteFailed {
                 path: new_down_path.clone(),
@@ -1376,9 +1429,18 @@ async fn run_squash(
             }
         })?;
     }
-    delete_replay_plan_sidecar_if_exists(&dir, from)?;
+    delete_replay_plan_sidecar_if_exists(workspace_root, &dir, from)?;
 
-    delete_subsumed(ctx, &dir, &to_squash, from, &bucket, &mut entries).await?;
+    delete_subsumed(
+        ctx,
+        workspace_root,
+        &dir,
+        &to_squash,
+        from,
+        &bucket,
+        &mut entries,
+    )
+    .await?;
     refresh_retained_row(
         ctx,
         from,
@@ -1454,8 +1516,21 @@ fn locate_squash_target<'a>(
     }
 }
 
-fn delete_replay_plan_sidecar_if_exists(dir: &Path, version: &str) -> Result<(), AttuneError> {
-    let path = dir.join(committed_replay_plan_filename(version));
+fn delete_replay_plan_sidecar_if_exists(
+    workspace_root: &Path,
+    dir: &Path,
+    version: &str,
+) -> Result<(), AttuneError> {
+    let candidate = dir.join(committed_replay_plan_filename(version));
+    let path = common::resolve_maybe_missing_workspace_path(workspace_root, &candidate).map_err(
+        |source| AttuneError::SqlDeleteFailed {
+            path: candidate,
+            source,
+        },
+    )?;
+    if !path.exists() {
+        return Ok(());
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1469,13 +1544,20 @@ fn delete_replay_plan_sidecar_if_exists(dir: &Path, version: &str) -> Result<(),
 /// down files are silently skipped). The caller reverses the down
 /// segments before writing.
 fn build_combined_sql(
+    workspace_root: &Path,
     dir: &Path,
     to_squash: &[(&String, &PathBuf)],
 ) -> Result<(String, Vec<String>), AttuneError> {
     let mut combined_up = String::new();
     let mut combined_down_segments: Vec<String> = Vec::new();
     for (version, path) in to_squash {
-        let up_sql = std::fs::read_to_string(path).map_err(|e| AttuneError::SqlReadFailed {
+        let up_path = common::resolve_read_workspace_path(workspace_root, path).map_err(|e| {
+            AttuneError::SqlReadFailed {
+                path: (*path).clone(),
+                source: e,
+            }
+        })?;
+        let up_sql = std::fs::read_to_string(&up_path).map_err(|e| AttuneError::SqlReadFailed {
             path: (*path).clone(),
             source: e,
         })?;
@@ -1485,7 +1567,14 @@ fn build_combined_sql(
             combined_up.push('\n');
         }
         combined_up.push_str(&format!("-- end {version}\n\n"));
-        let down_path = dir.join(down_filename(version));
+        let down_path = common::resolve_maybe_missing_workspace_path(
+            workspace_root,
+            dir.join(down_filename(version)),
+        )
+        .map_err(|source| AttuneError::SqlReadFailed {
+            path: dir.join(down_filename(version)),
+            source,
+        })?;
         if let Ok(down_sql) = std::fs::read_to_string(&down_path) {
             combined_down_segments.push(format!(
                 "-- begin {version} (reverse)\n{down_sql}\n-- end {version}\n",
@@ -1500,28 +1589,54 @@ fn build_combined_sql(
 /// entry per deleted version.
 async fn delete_subsumed(
     ctx: &mut DjogiContext,
+    workspace_root: &Path,
     dir: &Path,
     to_squash: &[(&String, &PathBuf)],
     from: &str,
     bucket: &BucketKey,
     entries: &mut Vec<AttuneEntry>,
 ) -> Result<(), AttuneError> {
+    let dir_canon =
+        std::fs::canonicalize(dir).map_err(|e| AttuneError::FilesystemScanFailed { source: e })?;
     for (version, path) in to_squash {
         if version.as_str() == from {
             continue;
         }
-        std::fs::remove_file(path).map_err(|e| AttuneError::SqlDeleteFailed {
-            path: (*path).clone(),
+        let up_path =
+            common::resolve_read_workspace_path(workspace_root, path).map_err(|source| {
+                AttuneError::SqlDeleteFailed {
+                    path: (*path).clone(),
+                    source,
+                }
+            })?;
+        if common::ensure_within_base(&dir_canon, &up_path).is_err() {
+            return Err(AttuneError::SqlDeleteFailed {
+                path: up_path,
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "migration file outside migrations directory",
+                ),
+            });
+        }
+        std::fs::remove_file(&up_path).map_err(|e| AttuneError::SqlDeleteFailed {
+            path: up_path.clone(),
             source: e,
         })?;
-        let down = dir.join(down_filename(version));
-        if down.exists() {
-            std::fs::remove_file(&down).map_err(|e| AttuneError::SqlDeleteFailed {
-                path: down.clone(),
+        let down_path = common::resolve_maybe_missing_workspace_path(
+            workspace_root,
+            dir_canon.join(down_filename(version)),
+        )
+        .map_err(|source| AttuneError::SqlDeleteFailed {
+            path: dir.join(down_filename(version)),
+            source,
+        })?;
+        if down_path.exists() {
+            std::fs::remove_file(&down_path).map_err(|e| AttuneError::SqlDeleteFailed {
+                path: down_path.clone(),
                 source: e,
             })?;
         }
-        delete_replay_plan_sidecar_if_exists(dir, version)?;
+        delete_replay_plan_sidecar_if_exists(workspace_root, &dir_canon, version)?;
         ctx.execute(
             "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
             &[version, &bucket.app],
@@ -2018,12 +2133,12 @@ mod tests {
         let sidecar = dir.join(committed_replay_plan_filename(version));
         fs::write(&sidecar, "{}").unwrap();
 
-        delete_replay_plan_sidecar_if_exists(&dir, version).expect("delete sidecar");
+        delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("delete sidecar");
         assert!(
             !sidecar.exists(),
             "squash must not leave stale replay manifests beside rewritten SQL"
         );
-        delete_replay_plan_sidecar_if_exists(&dir, version).expect("missing sidecar is ok");
+        delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("missing sidecar is ok");
 
         let _ = fs::remove_dir_all(&root);
     }

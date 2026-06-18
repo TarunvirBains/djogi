@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use super::common;
 use super::diff::{Classification, SchemaDelta, SchemaOperation, diff_bucket_maps};
 use super::guard::WorkspaceGuard;
 use super::ledger::compute_checksum;
@@ -62,7 +63,9 @@ use super::segment::{Segment, SegmentKind, plan_delta};
 use super::snapshot::SnapshotError;
 use super::snapshot::serialize_snapshot;
 use super::sql::{OperationSql, lower_delta};
-use super::target::{bucket_dir, pending_database_dir, pending_json_path, snapshot_path};
+use super::target::{
+    bucket_dir, pending_database_dir, pending_json_path, pending_root, snapshot_path,
+};
 
 /// One restore point captured before a tmp file was promoted onto a
 /// destination that already had bytes on it.
@@ -716,7 +719,28 @@ pub fn parse_pending_bytes(
 /// Convenience wrapper around [`parse_pending_bytes`] for on-disk
 /// pending JSON files.
 pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
-    let bytes = fs::read(path).map_err(|e| PendingLoadError::Parse {
+    let base = path
+        .parent()
+        .and_then(|p| p.parent())
+        .unwrap_or_else(|| Path::new("."));
+    let base = base.canonicalize().map_err(|e| PendingLoadError::Parse {
+        path: Some(path.to_path_buf()),
+        source: serde_json::Error::io(e),
+    })?;
+    let path = path.canonicalize().map_err(|e| PendingLoadError::Parse {
+        path: Some(path.to_path_buf()),
+        source: serde_json::Error::io(e),
+    })?;
+    if !path.starts_with(&base) {
+        return Err(PendingLoadError::Parse {
+            path: Some(path),
+            source: serde_json::Error::io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "pending path escapes base",
+            )),
+        });
+    }
+    let bytes = fs::read(&path).map_err(|e| PendingLoadError::Parse {
         path: Some(path.to_path_buf()),
         source: serde_json::Error::io(e),
     })?;
@@ -1286,6 +1310,12 @@ fn order_buckets(
 /// `now` produce byte-identical output. Production callers pass
 /// `OffsetDateTime::now_utc()`; tests pin a fixed instant.
 pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
+    let workspace_root =
+        common::canonicalize_base(req.workspace_root).map_err(|source| ComposeError::Io {
+            path: req.workspace_root.to_path_buf(),
+            source,
+        })?;
+
     // 0. Bootstrap auto-emit — for any database referenced in the
     // inputs that doesn't already have a bootstrap migration on disk,
     // emit one. This runs BEFORE the tombstone / differ /
@@ -1308,7 +1338,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         Vec::new()
     } else {
         super::bootstrap::ensure_phase_zero_emitted(
-            req.workspace_root,
+            &workspace_root,
             req.models,
             req.apps,
             req.now,
@@ -1571,7 +1601,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // the snapshot JSON. This is idempotent: the same scoped snapshot would
     // be written again if compose runs again before apply (no harm done).
     for bucket in &converged_snapshot_buckets {
-        let snap_path = snapshot_path(req.workspace_root, bucket);
+        let snap_path = snapshot_path(&workspace_root, bucket);
         let current_snap = req
             .models
             .get(bucket)
@@ -1793,12 +1823,36 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                     .unwrap_or_default(),
             };
 
-            let up_path = bucket_dir(req.workspace_root, &delta.bucket).join(up_filename(&version));
-            let down_path =
-                bucket_dir(req.workspace_root, &delta.bucket).join(down_filename(&version));
+            let bucket_path = bucket_dir(&workspace_root, &delta.bucket);
+            let up_candidate = bucket_path.join(up_filename(&version));
+            let down_candidate = bucket_path.join(down_filename(&version));
+            let replay_plan_candidate =
+                committed_replay_plan_path(&workspace_root, &delta.bucket, &version);
+            let pending_candidate = pending_json_path(&workspace_root, &delta.bucket);
+
+            let up_path = common::resolve_write_workspace_path(&workspace_root, &up_candidate)
+                .map_err(|e| ComposeError::Io {
+                    path: up_candidate.clone(),
+                    source: e,
+                })?;
+            let down_path = common::resolve_write_workspace_path(&workspace_root, &down_candidate)
+                .map_err(|e| ComposeError::Io {
+                    path: down_candidate.clone(),
+                    source: e,
+                })?;
             let replay_plan_path =
-                committed_replay_plan_path(req.workspace_root, &delta.bucket, &version);
-            let pending_path = pending_json_path(req.workspace_root, &delta.bucket);
+                common::resolve_write_workspace_path(&workspace_root, &replay_plan_candidate)
+                    .map_err(|e| ComposeError::Io {
+                        path: replay_plan_candidate.clone(),
+                        source: e,
+                    })?;
+            let pending_path =
+                common::resolve_write_workspace_path(&workspace_root, &pending_candidate).map_err(
+                    |e| ComposeError::Io {
+                        path: pending_candidate.clone(),
+                        source: e,
+                    },
+                )?;
 
             let up_sql = compose_up_text(&version, delta, &lowered);
             let down_sql = compose_down_text(&version, delta, &lowered);
@@ -1834,7 +1888,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                     &delta.bucket,
                 )?;
             }
-            check_pending_path_compatible(&pending_path, &delta.bucket)?;
+            check_pending_path_compatible(&workspace_root, &pending_path, &delta.bucket)?;
 
             // Stage tmp siblings.
             ensure_parent(&up_path)?;
@@ -1883,8 +1937,8 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
                     database: delta.bucket.database.clone(),
                     app: from_label,
                 };
-                let from_dir = bucket_dir(req.workspace_root, &from_bucket);
-                let to_dir = bucket_dir(req.workspace_root, &delta.bucket);
+                let from_dir = bucket_dir(&workspace_root, &from_bucket);
+                let to_dir = bucket_dir(&workspace_root, &delta.bucket);
                 pending_folder_renames.push((from_dir, to_dir));
             }
 
@@ -2564,6 +2618,34 @@ fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathB
     use std::sync::atomic::{AtomicU64, Ordering};
     static BACKUP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    // Canonicalize both paths and verify they share the same parent.
+    // This prevents symlink-based path traversal: the tmp file was
+    // created as a sibling of final_path in atomic_write, so after
+    // canonicalization they must still reside in the same directory.
+    let tmp_canonical = tmp.canonicalize().map_err(|e| ComposeError::Io {
+        path: tmp.to_path_buf(),
+        source: e,
+    })?;
+    let final_parent = final_path.parent().ok_or_else(|| ComposeError::Io {
+        path: final_path.to_path_buf(),
+        source: io::Error::other("final_path has no parent directory"),
+    })?;
+    // Canonicalize the parent (the directory exists; ensure_parent
+    // was called before atomic_write). If final_path itself exists,
+    // canonicalize it too to catch symlinked files.
+    let final_parent_canonical = final_parent.canonicalize().map_err(|e| ComposeError::Io {
+        path: final_parent.to_path_buf(),
+        source: e,
+    })?;
+    if tmp_canonical.parent() != Some(&final_parent_canonical) {
+        return Err(ComposeError::Io {
+            path: tmp.to_path_buf(),
+            source: io::Error::other(
+                "tmp and final_path do not share the same parent directory after canonicalization",
+            ),
+        });
+    }
+
     let backup_path = if final_path.exists() {
         let pid = std::process::id();
         let n = BACKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -2612,12 +2694,25 @@ pub fn prepare_pending_dirs(workspace_root: &Path, bucket: &BucketKey) -> Result
 }
 
 fn check_pending_path_compatible(
+    workspace_root: &Path,
     pending_path: &Path,
     bucket: &BucketKey,
 ) -> Result<(), ComposeError> {
     if !pending_path.exists() {
         return Ok(());
     }
+    let pending_root = pending_root(workspace_root);
+    let pending_root = pending_root.canonicalize().map_err(|e| ComposeError::Io {
+        path: pending_root,
+        source: e,
+    })?;
+    // The pending_root directory itself may not exist yet (first compose),
+    // but the file does exist (we just checked). Canonicalize the closest
+    // existing ancestor to validate containment.
+    common::ensure_within_base(&pending_root, pending_path).map_err(|e| ComposeError::Io {
+        path: pending_path.to_path_buf(),
+        source: e,
+    })?;
     let pending = load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
         path: pending_path.to_path_buf(),
         text: format!(

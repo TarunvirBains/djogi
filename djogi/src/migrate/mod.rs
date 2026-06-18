@@ -50,6 +50,7 @@ pub mod attune;
 pub mod audit;
 pub mod bootstrap;
 pub mod build_match;
+pub(crate) mod common;
 pub mod compose;
 pub mod diff;
 pub mod docs;
@@ -93,6 +94,13 @@ pub use build_match::{
     classify_bucket as build_classify_bucket,
     classify_bucket_with_pending as build_classify_bucket_with_pending, classify_filesystem_drift,
     format_warning_inventory_malformed,
+};
+pub use common::{
+    create_workspace_dir_all, create_workspace_parent_dirs, read_workspace_dir,
+    read_workspace_file, read_workspace_file_to_string, remove_workspace_dir_all,
+    remove_workspace_file, resolve_existing_workspace_path, resolve_maybe_missing_workspace_path,
+    resolve_read_workspace_path, resolve_write_workspace_path, workspace_path_exists,
+    write_workspace_file,
 };
 pub use compose::{
     AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,

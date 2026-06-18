@@ -49,8 +49,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
+use super::common;
 use super::naming::{MIGRATION_DOWN_SUFFIX, MIGRATION_FILE_EXT};
 use super::projection::BucketKey;
 
@@ -205,7 +207,16 @@ fn scan_filesystem_filtered(
     database_filter: Option<&str>,
 ) -> Result<BTreeSet<FilesystemBucket>, io::Error> {
     let mut out = BTreeSet::new();
-    let migrations = migrations_root(workspace_root);
+    let workspace_root = common::canonicalize_base(workspace_root).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!(
+                "failed to canonicalize workspace root {}: {source}",
+                workspace_root.display()
+            ),
+        )
+    })?;
+    let migrations = migrations_root(&workspace_root);
     let entries = match fs::read_dir(&migrations) {
         Ok(e) => e,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(out),
@@ -280,18 +291,32 @@ pub fn scan_filesystem_with_files(
     workspace_root: &Path,
     database_filter: Option<&str>,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, io::Error> {
+    let workspace_root = common::canonicalize_base(workspace_root).map_err(|source| {
+        io::Error::new(
+            source.kind(),
+            format!(
+                "failed to canonicalize workspace root {}: {source}",
+                workspace_root.display()
+            ),
+        )
+    })?;
+
     let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
     // Push the database filter into the first-level walk so we never
     // open peer-database app directories the caller doesn't care
     // about. The per-database short-circuit also keeps `db reset`
     // from triggering filesystem audits on unrelated databases.
-    let buckets = scan_filesystem_filtered(workspace_root, database_filter)?;
+    let buckets = scan_filesystem_filtered(&workspace_root, database_filter)?;
     for fb in buckets {
         let bucket = BucketKey {
             database: fb.database,
             app: fb.app,
         };
-        let dir = bucket_dir(workspace_root, &bucket);
+        let dir = common::resolve_within_base(
+            &workspace_root,
+            &bucket_dir(&workspace_root, &bucket),
+            common::CandidateResolutionMode::Existing,
+        )?;
         let entries = match fs::read_dir(&dir) {
             Ok(e) => e,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
@@ -452,7 +477,43 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("djogi-target-{tag}-{nanos}-{n}"))
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let path = temp_canon.join(format!("djogi-target-{tag}-{nanos}-{n}"));
+        let path = crate::migrate::common::resolve_write_workspace_path(&temp_canon, &path)
+            .expect("resolve temp root");
+        crate::migrate::common::create_workspace_parent_dirs(&temp_canon, path.join(".keep"))
+            .expect("create temp root");
+        path.canonicalize().expect("canonicalize temp root")
+    }
+
+    fn safe_create_workspace_dir(root: &Path, path: impl AsRef<Path>) {
+        let path = crate::migrate::common::resolve_write_workspace_path(root, path.as_ref())
+            .expect("resolve workspace dir");
+        crate::migrate::common::create_workspace_parent_dirs(root, path.join(".keep"))
+            .expect("create workspace dir");
+    }
+
+    fn safe_write_workspace_file(root: &Path, path: impl AsRef<Path>, contents: &str) {
+        crate::migrate::common::write_workspace_file(root, path.as_ref(), contents.as_bytes())
+            .expect("write workspace file");
+    }
+
+    fn safe_remove_workspace(root: &Path) {
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let root_canon = crate::migrate::common::resolve_existing_workspace_path(&temp_canon, root)
+            .expect("canonicalize workspace root");
+        assert!(
+            root_canon.starts_with(&temp_canon),
+            "remove_dir_all refused: workspace path escapes temp directory"
+        );
+        let temp_canon = std::env::temp_dir()
+            .canonicalize()
+            .expect("canonicalize temp dir");
+        let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, &root_canon);
     }
 
     #[test]
@@ -527,9 +588,9 @@ mod tests {
     #[test]
     fn scan_filesystem_finds_two_buckets() {
         let root = temp_root("two");
-        fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
-        fs::create_dir_all(root.join("migrations/main/_global_")).unwrap();
-        fs::create_dir_all(root.join("migrations/crud_log/audit")).unwrap();
+        safe_create_workspace_dir(&root, root.join("migrations/main/billing"));
+        safe_create_workspace_dir(&root, root.join("migrations/main/_global_"));
+        safe_create_workspace_dir(&root, root.join("migrations/crud_log/audit"));
         let buckets = scan_filesystem(&root).expect("ok");
         let expect: BTreeSet<FilesystemBucket> = [
             FilesystemBucket {
@@ -548,16 +609,16 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(buckets, expect);
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
     fn scan_filesystem_skips_files_and_hidden_dirs() {
         let root = temp_root("hidden");
-        fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
-        fs::create_dir_all(root.join("migrations/.git/objects")).unwrap();
-        fs::write(root.join("migrations/README.md"), "noop").unwrap();
-        fs::write(root.join("migrations/main/billing/V1__init.sql"), "").unwrap();
+        safe_create_workspace_dir(&root, root.join("migrations/main/billing"));
+        safe_create_workspace_dir(&root, root.join("migrations/.git/objects"));
+        safe_write_workspace_file(&root, root.join("migrations/README.md"), "noop");
+        safe_write_workspace_file(&root, root.join("migrations/main/billing/V1__init.sql"), "");
         let buckets = scan_filesystem(&root).expect("ok");
         // `.git` starts with `.`; filter rejects.
         // `README.md` is a file at top level, not a directory; skipped.
@@ -570,7 +631,7 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(buckets, expect);
-        let _ = fs::remove_dir_all(&root);
+        safe_remove_workspace(&root);
     }
 
     #[test]
@@ -622,9 +683,17 @@ mod tests {
     fn scan_filesystem_accepts_sdjql_extension() {
         let root = temp_root("sdjql-accept");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__test.down.sdjql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.sdjql"),
+            "SELECT 1;",
+        );
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.down.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None).unwrap();
         let bk = BucketKey {
@@ -639,8 +708,12 @@ mod tests {
     fn scan_filesystem_rejects_legacy_sql_schema_migration_files() {
         let root = temp_root("legacy-sql-reject");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__legacy.sql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__legacy.sql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None);
         assert!(
@@ -658,10 +731,14 @@ mod tests {
     fn scan_filesystem_detects_duplicate_same_version_artifacts() {
         let root = temp_root("duplicate-detect");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
+        safe_create_workspace_dir(&root, &bucket);
         // Same version, different extensions — invalid state
-        fs::write(bucket.join("V20260425010203__test.sql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__test.sdjql"), "SELECT 1;").unwrap();
+        safe_write_workspace_file(&root, bucket.join("V20260425010203__test.sql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__test.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None);
         assert!(
@@ -679,11 +756,19 @@ mod tests {
     fn scan_filesystem_skips_down_side_for_sdjql() {
         let root = temp_root("skip-down-sdjql");
         let bucket = root.join("migrations/main/myapp");
-        fs::create_dir_all(&bucket).unwrap();
-        fs::write(bucket.join("V20260425010203__a.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010203__a.down.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010204__b.sdjql"), "SELECT 1;").unwrap();
-        fs::write(bucket.join("V20260425010204__b.down.sdjql"), "SELECT 1;").unwrap();
+        safe_create_workspace_dir(&root, &bucket);
+        safe_write_workspace_file(&root, bucket.join("V20260425010203__a.sdjql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010203__a.down.sdjql"),
+            "SELECT 1;",
+        );
+        safe_write_workspace_file(&root, bucket.join("V20260425010204__b.sdjql"), "SELECT 1;");
+        safe_write_workspace_file(
+            &root,
+            bucket.join("V20260425010204__b.down.sdjql"),
+            "SELECT 1;",
+        );
 
         let result = scan_filesystem_with_files(&root, None).unwrap();
         let bk = BucketKey {

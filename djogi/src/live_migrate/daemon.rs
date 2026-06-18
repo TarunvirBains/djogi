@@ -610,14 +610,15 @@ async fn resume_backfill_for_candidate(
     })?;
 
     let slug = &candidate.slug;
+    let migrations_root = daemon_cfg.workspace_root.join("migrations");
     let path = crate::live_migrate::plan_file::plan_path(
-        &daemon_cfg.workspace_root.join("migrations"),
+        &migrations_root,
         &candidate.target_database,
         plan_id,
         slug,
     );
 
-    let plan = read_plan(&path).map_err(|e| {
+    let plan = read_plan(&migrations_root, &path).map_err(|e| {
         DaemonError::Database(DjogiError::Db(DbError::other(format!(
             "failed to read plan file {}: {}",
             path.display(),

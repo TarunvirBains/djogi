@@ -1306,9 +1306,18 @@ fn emit_rls_side_channel(
     // We mirror the outbox pattern and write relative to the workspace root
     // by locating the Cargo manifest directory.
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned());
-    let rls_dir = std::path::Path::new(&manifest_dir)
-        .join("target")
-        .join("djogi_rls");
+    let manifest_canonical = std::path::Path::new(&manifest_dir)
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(&manifest_dir));
+    let rls_dir = manifest_canonical.join("target").join("djogi_rls");
+
+    if !rls_dir.starts_with(&manifest_canonical) {
+        eprintln!(
+            "djogi-macros: refusing to write RLS DDL outside workspace root: {}",
+            rls_dir.display()
+        );
+        return;
+    }
 
     if let Err(e) = std::fs::create_dir_all(&rls_dir) {
         eprintln!(
@@ -1318,6 +1327,13 @@ fn emit_rls_side_channel(
     }
 
     let rls_path = rls_dir.join(format!("{table}_rls.sql"));
+    if !rls_path.starts_with(&manifest_canonical) {
+        eprintln!(
+            "djogi-macros: refusing to write RLS DDL outside workspace root: {}",
+            rls_path.display()
+        );
+        return;
+    }
     if let Err(e) = std::fs::write(&rls_path, &sql) {
         eprintln!("djogi-macros: could not write {}: {e}", rls_path.display());
     }
