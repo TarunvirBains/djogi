@@ -8066,11 +8066,12 @@ mod tests {
     /// --reason without --fake is accepted (silently ignored).
     #[test]
     fn reason_without_fake_is_accepted() {
+        let work = temp_workspace("reason-without-fake");
         // This should NOT exit 2; it will proceed to config load which
-        // may fail on nonexistent workspace, but the --reason flag itself
+        // may fail on an incomplete workspace, but the --reason flag itself
         // is accepted. We verify the function does not early-exit with code 2.
         let result = apply_cmd(
-            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
+            Some(work),
             false, // NOT fake
             Some("test reason".to_string()),
             None, // node_id — identity resolution is tested separately;
