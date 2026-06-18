@@ -155,7 +155,8 @@ fn reason_is_empty(reason: &[u8]) -> bool {
 }
 
 fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(root)? {
+    let canonical_root = root.canonicalize()?;
+    for entry in fs::read_dir(&canonical_root)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;

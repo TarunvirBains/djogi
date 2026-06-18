@@ -464,7 +464,15 @@ fn collect_filesystem_repo_files(
     dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+    let canonical_dir = match dir.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Ok(()),
+    };
+    if !canonical_dir.starts_with(canonical_root) {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&canonical_dir)? {
         let entry = entry?;
         let path = entry.path();
 
