@@ -45,7 +45,7 @@ pub fn run(dry_run: bool) -> ExitCode {
         }
     };
 
-    let cache_ids = match read_cache_ids(&cache_root) {
+    let cache_ids = match read_cache_ids_from_validated_root(&cache_root) {
         Ok(set) => set,
         Err(error) => {
             eprintln!(
@@ -193,12 +193,8 @@ fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
     Ok(ids)
 }
 
-fn read_cache_ids(root: &Path) -> io::Result<BTreeSet<String>> {
+fn read_cache_ids_from_validated_root(root: &Path) -> io::Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root.to_path_buf());
-    let root = validate_cache_root_within_home(&home, root).map_err(io::Error::other)?;
     for entry in fs::read_dir(&root)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -229,7 +225,7 @@ fn worktree_id(absolute_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_cache_ids, worktree_id};
+    use super::{read_cache_ids_from_validated_root, worktree_id};
     #[test]
     fn worktree_id_is_stable_12_hex_chars() {
         let id = worktree_id("/home/dev/projects/djogi/.worktrees/c1");
@@ -269,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn read_cache_ids_collects_subdirs_only() {
+    fn read_cache_ids_from_validated_root_collects_subdirs_only() {
         let tmp_name = format!(
             "djogi-gc-test-{}-{}",
             std::process::id(),
@@ -293,7 +289,7 @@ mod tests {
         djogi::migrate::create_workspace_dir_all(&tmp, &def).unwrap();
         djogi::migrate::write_workspace_file(&tmp, tmp.join("not-a-dir"), b"ignored").unwrap();
 
-        let ids = read_cache_ids(&tmp).expect("read");
+        let ids = read_cache_ids_from_validated_root(&tmp).expect("read");
         assert!(ids.contains("abc123def456"));
         assert!(ids.contains("789abc012def"));
         assert!(!ids.contains("not-a-dir"));
