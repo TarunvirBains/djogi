@@ -9,11 +9,10 @@ error[E0599]: the method `gt` exists for struct `ExplicitPgPredicateField<Blob, 
 794 | pub struct ExplicitPgPredicateField<M: Model, V> {
     | ------------------------------------------------ doesn't satisfy `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
     |
-   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
-    |
-438 | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
-    | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<u8>: ExplicitPgOrderable`
-    |
+   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs
+   |
+   | $RUST_SRC
+   |
     = note: the following trait bounds were not satisfied:
             `Vec<u8>: ExplicitPgOrderable`
             `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`

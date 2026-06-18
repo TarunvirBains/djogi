@@ -1352,9 +1352,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "sassi"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "363e1486e6b8d3b40611f5e2bff45690e05c5902ede15902d6a78e447849c59b"
+checksum = "1868fe33ddb017d89a23d9d7cca296474cca021e3bf151ae276d4eac3c8c510f"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1376,9 +1376,9 @@ dependencies = [
 
 [[package]]
 name = "sassi-codegen"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfdec00b0ff7d2c21c6b149dfb558bfbf191260c35436927420742ca617fd285"
+checksum = "810fc94b4eab1e7e457f1ce38be5da8ef72925fdc9fc34e66f7a06cbd5631b03"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1388,9 +1388,9 @@ dependencies = [
 
 [[package]]
 name = "sassi-macros"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d607e4cecffd8c4af8b16fb09626ae90f591d3f1d390e30de085cd26cf57736"
+checksum = "593ae15bf182d4c651411f2e6523bc034e5c8e7de33f8c2e7d1d3cc0e2a465b1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

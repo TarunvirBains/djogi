@@ -161,7 +161,7 @@ heeranjid.workspace = true
 # routes its `MirJzSON` codec through (#195). Sassi owns the
 # numeric carrier-selection rules and the structural-equality contract;
 # Djogi never reimplements them.
-sassi = { version = "0.1.0-beta.3", features = ["watermark-time", "serde-json-bridge"] }
+sassi = { version = "0.1.0-beta.5", features = ["watermark-time", "serde-json-bridge"] }
 tokio-postgres.workspace = true
 postgres-types.workspace = true
 deadpool-postgres.workspace = true

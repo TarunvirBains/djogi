@@ -647,9 +647,9 @@ v0.1.0 ships when **both** are true: (1) djogi Phase 8 complete through 8η plus
 
 #### Rust-trait half (non-SQL-projectable derivations — bridges to 8f)
 
-- [ ] `#[djogi::trait_impl]` macro on a trait impl block — registers the impl in the cross-type trait registry
-- [ ] `Sassi::all_impl::<Trait>()` — query across every Punnu whose type registered an impl of `Trait`; returns `Vec<Arc<dyn Trait>>`
-- [ ] `Punnu::scope().filter_impl::<Trait>()` — single-type trait queries restricted to entries impl-ing `Trait`
+- [x] `#[djogi::trait_impl]` macro on a trait impl block — registers the impl in the cross-type trait registry
+- [x] `Sassi::all_impl::<Trait>()` — query across every Punnu whose type registered an impl of `Trait`; returns `Vec<Arc<dyn Trait>>`
+- [x] `Punnu::scope().filter_impl::<Trait>()` — single-type trait queries restricted to entries impl-ing `Trait` (shipped in sassi 0.1.0-beta.5; see sassi #37)
 - [ ] Documentation: when to choose 8d-SQL vs 8d-Trait
   - SQL-projectable: depends only on existing columns; runs equally on backend (DB-side) and frontend (struct value)
   - Rust-trait: depends on Rust logic that can't be expressed in SQL; runs only on materialized objects via `.cache(&punnu)`
@@ -718,6 +718,16 @@ typed in-memory pool with cross-runtime predicate semantics via the sassi siblin
 > publish, so beta.2 (or its successor) can ship as a single bundled release;
 > the eventual `sassi = "0.1"` crates.io flip in `djogi`'s `Cargo.toml`
 > happens at the start of 8.5 publish housekeeping, not before.
+
+> **Trait/computed integration close-out (2026-06-17, djogi #337).** The
+> three-method trait integration trio is complete: `#[djogi::trait_impl]` +
+> `djogi::trait_registry::iter_for_trait` (descriptor-level, Djogi-owned),
+> `#[sassi::trait_impl]` + `Sassi::all_impl::<dyn T>()` (cross-type,
+> materialized `Arc<dyn T>` across pools), and
+> `Punnu::scope().filter_impl::<dyn T>()` (single-type, compile-time
+> trait-narrowed; shipped in sassi 0.1.0-beta.5, sassi #37). `all_impl`'s
+> round-trip-to-trait-object was already shipped and tested; `filter_impl`
+> was the lone gap and was built in sassi per sibling-repo ownership.
 
 ### Predicate Portability
 

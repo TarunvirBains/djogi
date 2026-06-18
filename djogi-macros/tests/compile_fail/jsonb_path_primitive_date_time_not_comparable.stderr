@@ -14,10 +14,9 @@ error[E0599]: the method `eq` exists for struct `JsonbPathRef<Doc, PrimitiveDate
 79 |   pub struct JsonbPathRef<M, V> {
    |   ----------------------------- doesn't satisfy `JsonbPathRef<Doc, PrimitiveDateTime>: Iterator`
    |
-  ::: $CARGO/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.47/src/primitive_date_time.rs:28:1
+  ::: $CARGO/registry/src/$CARGO_HASH/time-0.3.47/src/primitive_date_time.rs
    |
-28 |   pub struct PrimitiveDateTime {
-   |   ---------------------------- doesn't satisfy `PrimitiveDateTime: JsonbPathComparable`
+   | $CARGO_SRC
    |
    = note: the following trait bounds were not satisfied:
            `PrimitiveDateTime: JsonbPathComparable`

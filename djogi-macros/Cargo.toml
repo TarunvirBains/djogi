@@ -102,7 +102,7 @@ time.workspace = true
 # Lihaaf is the **sole** macro-fixture gate; trybuild has been removed
 # from djogi entirely.
 #
-# CI installs lihaaf via `cargo install lihaaf --version 0.1.2
+# CI installs lihaaf via `cargo install lihaaf --version 0.2.0
 # --locked` and runs `cargo lihaaf --manifest-path djogi-macros/Cargo.toml
 # -j 2`. The currently 202 compile_fail `.stderr` snapshots under
 # `tests/compile_fail/` ARE committed so CI succeeds without `--bless`.
