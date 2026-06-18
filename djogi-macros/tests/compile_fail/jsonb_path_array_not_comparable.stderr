@@ -9,11 +9,10 @@ error[E0599]: the method `eq` exists for struct `JsonbPathRef<Doc, Vec<i32>>`, b
     | |_____________|
     |
     |
-   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs:438:1
-    |
-438 |   pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
-    |   ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<i32>: JsonbPathComparable`
-    |
+   ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs
+   |
+   | $RUST_SRC
+   |
    ::: djogi/src/jsonb/path.rs:79:1
     |
  79 |   pub struct JsonbPathRef<M, V> {

@@ -11,10 +11,9 @@ error[E0599]: `EmployeePublic` is not an iterator
            `EmployeePublic: Iterator`
            which is required by `&mut EmployeePublic: Iterator`
 note: the trait `Iterator` must be implemented
-  --> $RUST/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs:42:1
+  --> $RUST/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs
    |
-42 | pub const trait Iterator {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   | $RUST_SRC
    = help: items from traits can only be used if the trait is implemented and in scope
    = note: the following traits define an item `filter`, perhaps you need to implement one of them:
            candidate $TYPEID: `Iterator`

@@ -52,11 +52,10 @@ note: inside `djogi::ident::const_assert_user_supplied_ident`
 265 |     const_assert_plain_ident(value, role);
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_plain_ident`
-   --> $RUST/lib/rustlib/src/rust/library/core/src/panic.rs:62:9
-    |
- 62 |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
-    |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
-    |
+   --> $RUST/lib/rustlib/src/rust/library/core/src/panic.rs
+   |
+   | $RUST_SRC
+   |
    ::: djogi/src/ident.rs:213:9
     |
 213 | /         assert!(

@@ -124,7 +124,7 @@ Djogi's design intent is explicit: **Rust-first** (idiomatic Rust where user cod
 | Async-Rust idiom alignment | Yes — Tokio-native | Yes — Tokio-native | Mixed — Tokio is the active runtime path; the async-std runtime flag persists but is deprecated upstream | Sync-only core; an async addon ships separately |
 | Public algebra in Rust types (not strings) | Yes — `Q<T>` enum w/ `&` `\|` `^` `!` overloads; bare-ident PK syntax (no string PK names) | Internal condition tree | Builder-style API | No public algebra |
 | Typed JSONB / arrays / spatial | Yes — `Jsonb<T>` + `#[derive(JsonbSchema)]`; `Vec<V>` w/ native operators; EWKB-typed | Untyped | `serde_json::Value` only | Untyped |
-| Cross-type trait registry | Yes — `#[djogi::trait_impl]` + `djogi::trait_registry::iter_for_trait::<dyn T>()` (Punnu-integrated sibling: `#[sassi::trait_impl]` + `Sassi::all_impl::<dyn T>()`) | Not surfaced | Not surfaced | Not surfaced |
+| Cross-type trait registry | Yes — `#[djogi::trait_impl]` + `djogi::trait_registry::iter_for_trait::<dyn T>()` (Punnu-integrated siblings: `#[sassi::trait_impl]` + `Sassi::all_impl::<dyn T>()` for cross-type, `Punnu::scope().filter_impl::<dyn T>()` for single-type) | Not surfaced | Not surfaced | Not surfaced |
 
 **Concessions where Djogi steps away from the strict Rust-first ideal:**
 
