@@ -18,17 +18,20 @@ fn safe_workspace(workspace: &Path) -> PathBuf {
         .expect("current directory exists")
         .canonicalize()
         .expect("canonicalize current directory");
-    let parent = workspace.parent().expect("workspace parent");
-    let parent_canon = parent
-        .canonicalize()
-        .unwrap_or_else(|err| panic!("canonicalize workspace parent {}: {err}", parent.display()));
-    let canon = parent_canon.join(workspace.file_name().expect("workspace path filename"));
-    if !canon.starts_with(&temp) && !canon.starts_with(&cwd) {
+    if !workspace.starts_with(&temp) && !workspace.starts_with(&cwd) {
         panic!(
             "workspace path {} is outside temp directory and current directory",
-            canon.display()
+            workspace.display()
         );
     }
+    let anchor = if workspace.starts_with(&temp) {
+        &temp
+    } else {
+        &cwd
+    };
+    djogi::migrate::create_workspace_parent_dirs(anchor, workspace.join(".keep"))
+        .unwrap_or_else(|err| panic!("create workspace {}: {err}", workspace.display()));
+    let canon = workspace.canonicalize().expect("canonicalize workspace");
     let canon = canon.canonicalize().expect("canonicalize workspace");
     if !canon.starts_with(&temp) && !canon.starts_with(&cwd) {
         panic!(
