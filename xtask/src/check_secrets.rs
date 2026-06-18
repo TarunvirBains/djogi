@@ -61,6 +61,8 @@ use std::{
     process::{Command, ExitCode, Stdio},
 };
 
+use djogi::migrate::{read_workspace_dir, read_workspace_file_to_string};
+
 // ===== public surface =====
 
 /// Where the scanner reads its input from.
@@ -318,7 +320,7 @@ fn scan_repo() -> Result<Vec<Finding>, String> {
         if !canonical.starts_with(&cwd) {
             continue;
         }
-        let Some(content) = read_text_file(&canonical) else {
+        let Some(content) = read_text_file(&cwd, &canonical) else {
             continue;
         };
         scan_text(&content, Some(&path), &mut findings);
@@ -472,7 +474,7 @@ fn collect_filesystem_repo_files(
         return Ok(());
     }
 
-    for entry in fs::read_dir(&canonical_dir)? {
+    for entry in read_workspace_dir(canonical_root, &canonical_dir)? {
         let entry = entry?;
         let path = entry.path();
 
@@ -516,12 +518,12 @@ fn should_skip_file(path: &Path) -> bool {
     )
 }
 
-fn read_text_file(path: &Path) -> Option<String> {
+fn read_text_file(workspace_root: &Path, path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > SCAN_SIZE_LIMIT {
         return None;
     }
-    fs::read_to_string(path).ok()
+    read_workspace_file_to_string(workspace_root, path).ok()
 }
 
 // ===== git plumbing =====

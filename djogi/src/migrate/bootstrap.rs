@@ -83,7 +83,6 @@
 //!   by `migrations compose` and `db reset`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -775,8 +774,8 @@ pub fn ensure_phase_zero_emitted(
         // the pending dir, then write all three files.
         // These calls are placed after the containment checks above so
         // no filesystem operations run on unvalidated paths.
-        ensure_parent(&up_path)?;
-        ensure_parent(&pending_path)?;
+        ensure_parent(workspace_root, &up_path)?;
+        ensure_parent(workspace_root, &pending_path)?;
         crate::migrate::common::write_workspace_file(workspace_root, &up_path, up_sql.as_bytes())
             .map_err(|e| AutoEmitError::Io {
             path: up_path.clone(),
@@ -900,55 +899,17 @@ fn extensions_for_database(
 /// Canonicalizes the resolved parent path before creating directories,
 /// so symlinks in the caller-supplied path cannot redirect the operation
 /// to an arbitrary location.
-fn ensure_parent(path: &Path) -> Result<(), AutoEmitError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
+fn ensure_parent(workspace_root: &Path, path: &Path) -> Result<(), AutoEmitError> {
+    if path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
     {
-        // Canonicalize the parent (or its existing ancestor) so symlinks
-        // cannot redirect the directory creation. If the parent does not
-        // yet exist, canonicalize the deepest existing ancestor and
-        // re-append the remaining components.
-        let parent_canon = if parent.exists() {
-            parent.canonicalize().map_err(|e| AutoEmitError::Io {
-                path: parent.to_path_buf(),
+        crate::migrate::common::create_workspace_parent_dirs(workspace_root, path).map_err(
+            |e| AutoEmitError::Io {
+                path: path.to_path_buf(),
                 source: e,
-            })?
-        } else {
-            let mut existing = PathBuf::from(parent);
-            loop {
-                match existing.canonicalize() {
-                    Ok(base) => {
-                        let suffix =
-                            parent
-                                .strip_prefix(&existing)
-                                .map_err(|_| AutoEmitError::Io {
-                                    path: parent.to_path_buf(),
-                                    source: io::Error::new(
-                                        io::ErrorKind::InvalidInput,
-                                        "parent path cannot be resolved",
-                                    ),
-                                })?;
-                        break base.join(suffix);
-                    }
-                    Err(_) => {
-                        match existing.parent() {
-                            Some(p) if !p.as_os_str().is_empty() => {
-                                existing = PathBuf::from(p);
-                            }
-                            _ => {
-                                // Reached root without finding an existing ancestor.
-                                // Fallback to the original parent path.
-                                break parent.to_path_buf();
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        fs::create_dir_all(&parent_canon).map_err(|e| AutoEmitError::Io {
-            path: parent_canon,
-            source: e,
-        })?;
+            },
+        )?;
     }
     Ok(())
 }
@@ -1841,7 +1802,7 @@ mod tests {
             pending_json_path(&work, &bucket),
         )
         .expect("resolve legacy bootstrap pending");
-        ensure_parent(&legacy_path).unwrap();
+        ensure_parent(&work, &legacy_path).unwrap();
         crate::migrate::common::write_workspace_file(
             &work,
             legacy_path,
@@ -1856,7 +1817,7 @@ mod tests {
         .expect("resolve hidden bootstrap pending");
         let mut invalid_hidden_pending = valid_legacy_pending.clone();
         invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
-        ensure_parent(&hidden_path).unwrap();
+        ensure_parent(&work, &hidden_path).unwrap();
         crate::migrate::common::write_workspace_file(
             &work,
             &hidden_path,

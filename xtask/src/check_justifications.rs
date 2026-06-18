@@ -1,13 +1,13 @@
 use std::{
     collections::BTreeSet,
-    fs, io,
+    io,
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use syn::{Attribute, Item, spanned::Spanned};
 
-use djogi::migrate::read_workspace_file_to_string;
+use djogi::migrate::{read_workspace_dir, read_workspace_file_to_string};
 
 use crate::check_test_surface::{contains_identifier, strip_comments_and_literals};
 
@@ -158,7 +158,7 @@ fn reason_is_empty(reason: &[u8]) -> bool {
 
 fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     let canonical_root = root.canonicalize()?;
-    for entry in fs::read_dir(&canonical_root)? {
+    for entry in read_workspace_dir(root, &canonical_root)? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
