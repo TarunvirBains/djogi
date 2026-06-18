@@ -2131,7 +2131,7 @@ mod tests {
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
         let sidecar = dir.join(committed_replay_plan_filename(version));
-        fs::write(&sidecar, "{}").unwrap();
+        crate::migrate::write_workspace_file(&root, &sidecar, b"{}").unwrap();
 
         delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("delete sidecar");
         assert!(
