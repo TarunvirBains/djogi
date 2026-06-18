@@ -1484,7 +1484,8 @@ mod tests {
         assert!(emitted[0].pending_json_path.exists());
         // Up SQL contains HeeRanjID install; no node seed in production emit.
         assert!(emitted[0].up_sql_path.starts_with(&work));
-        let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
+        let up =
+            crate::migrate::read_workspace_file_to_string(&work, &emitted[0].up_sql_path).unwrap();
         assert!(up.contains("HeeRanjID base schema"));
         // Production emit: no node-seed section, no database-level defaults.
         assert!(!up.contains("current_database()"));
@@ -1493,12 +1494,14 @@ mod tests {
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
         assert!(emitted[0].down_sql_path.starts_with(&work));
-        let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();
+        let down = crate::migrate::read_workspace_file_to_string(&work, &emitted[0].down_sql_path)
+            .unwrap();
         assert!(down.contains("bootstrap migration — down"));
         assert!(!down.contains("DROP "), "down must not contain real DDL");
         // Pending JSON parses cleanly.
         assert!(emitted[0].pending_json_path.starts_with(&work));
-        let pending_bytes = fs::read(&emitted[0].pending_json_path).unwrap();
+        let pending_bytes =
+            crate::migrate::read_workspace_file(&work, &emitted[0].pending_json_path).unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
         assert_eq!(pending.version, PHASE_ZERO_VERSION);
         assert_eq!(pending.bucket_database, "main");
@@ -1627,7 +1630,8 @@ mod tests {
 
         // Up SQL for main contains CREATE EXTENSION postgis but NOT pg_trgm.
         assert!(main_emit.up_sql_path.starts_with(&work));
-        let main_up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        let main_up =
+            crate::migrate::read_workspace_file_to_string(&work, &main_emit.up_sql_path).unwrap();
         assert!(main_up.contains("CREATE EXTENSION IF NOT EXISTS \"postgis\""));
         assert!(
             !main_up.contains("\"pg_trgm\""),
@@ -1636,7 +1640,8 @@ mod tests {
 
         // Up SQL for crud_log contains CREATE EXTENSION pg_trgm but NOT postgis.
         assert!(crud_emit.up_sql_path.starts_with(&work));
-        let crud_up = fs::read_to_string(&crud_emit.up_sql_path).unwrap();
+        let crud_up =
+            crate::migrate::read_workspace_file_to_string(&work, &crud_emit.up_sql_path).unwrap();
         assert!(crud_up.contains("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""));
         assert!(
             !crud_up.contains("\"postgis\""),
@@ -1680,7 +1685,8 @@ mod tests {
             "EXCLUDE-derived btree_gist must surface in bootstrap-migration extensions",
         );
         assert!(main_emit.up_sql_path.starts_with(&work));
-        let up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        let up =
+            crate::migrate::read_workspace_file_to_string(&work, &main_emit.up_sql_path).unwrap();
         assert!(
             up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
             "bootstrap-migration up SQL must auto-install btree_gist: {up}",
