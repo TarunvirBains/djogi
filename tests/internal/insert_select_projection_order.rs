@@ -1,25 +1,25 @@
 use djogi::prelude::*;
 
-#[model(table = "c4b_projection_sources", pk = HeerIdRecencyBiased)]
+#[model(table = "projection_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct C4bProjectionSource {
+pub struct ProjectionSource {
     pub value: i32,
 }
 
-#[model(table = "c4b_projection_targets", pk = HeerIdRecencyBiased)]
+#[model(table = "projection_targets", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
-pub struct C4bProjectionTarget {
+pub struct ProjectionTarget {
     pub value: i32,
 }
 
 #[djogi::deliberately_bypass_convention_with_raw_sql]
 // JUSTIFICATION (djogi#106): this fixture deliberately recreates the target table in non-canonical column order to prove insert-select RETURNING decodes through Djogi's canonical projection rather than physical table order.
 async fn recreate_projection_target_noncanonical_order(ctx: &mut djogi::DjogiContext) {
-    ctx.raw_ddl("DROP TABLE IF EXISTS c4b_projection_targets")
+    ctx.raw_ddl("DROP TABLE IF EXISTS projection_targets")
         .await
         .expect("target projection table drop should succeed");
     ctx.raw_ddl(
-        "CREATE TABLE c4b_projection_targets (
+        "CREATE TABLE projection_targets (
             id BIGINT PRIMARY KEY DEFAULT generate_id(),
             value INTEGER NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -31,17 +31,17 @@ async fn recreate_projection_target_noncanonical_order(ctx: &mut djogi::DjogiCon
 }
 
 #[djogi::djogi_test(sync_models = [
-    C4bProjectionSource,
-    C4bProjectionTarget
+    ProjectionSource,
+    ProjectionTarget
 ])]
 async fn insert_select_execute_returning_uses_canonical_projection_for_noncanonical_ddl(
     mut ctx: djogi::DjogiContext,
 ) {
     recreate_projection_target_noncanonical_order(&mut ctx).await;
 
-    let source_row = C4bProjectionSource::create(
+    let source_row = ProjectionSource::create(
         &mut ctx,
-        C4bProjectionSource {
+        ProjectionSource {
             value: 101,
             ..Default::default()
         },
@@ -49,9 +49,9 @@ async fn insert_select_execute_returning_uses_canonical_projection_for_noncanoni
     .await
     .expect("source row should be created");
 
-    let returned = C4bProjectionSource::objects()
+    let returned = ProjectionSource::objects()
         .filter(|f| f.id().eq(source_row.id))
-        .insert_into::<C4bProjectionTarget, _, _>(|t, s| {
+        .insert_into::<ProjectionTarget, _, _>(|t, s| {
             vec![t.value().copy_from(s.value().as_insert_source())]
         })
         .execute_returning(&mut ctx)

@@ -216,7 +216,7 @@ async fn db_reset_replays_phase_zero_against_virgin_database() {
         migrate_config: MigrateConfig::default(),
         // Replay coverage does not assert audit-row behaviour;
         // dedicated coverage lives in
-        // `tests/internal/sources/c2_118_*` per issue #118.
+        // `tests/internal/sources/reset_writes_audit_rows` per issue #118.
         audit_pool: None,
         runner_identity: Some(RunnerIdentity::SingleNodeDev),
     };

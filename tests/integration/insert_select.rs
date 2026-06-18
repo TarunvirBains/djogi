@@ -17,7 +17,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "c4b_sources", pk = HeerIdRecencyBiased)]
+#[model(table = "insert_select_sources", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct C4bSource {
     pub label: String,
@@ -25,7 +25,7 @@ pub struct C4bSource {
     pub view_count: i32,
 }
 
-#[model(table = "c4b_archives", pk = HeerIdRecencyBiased)]
+#[model(table = "insert_select_archives", pk = HeerIdRecencyBiased)]
 #[derive(Debug, Clone)]
 pub struct C4bArchive {
     /// Source row's id, preserved as a user column rather than the

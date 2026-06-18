@@ -1,20 +1,20 @@
 use djogi::prelude::*;
 
-#[model(table = "c4b_lateral_parents", pk = HeerId)]
+#[model(table = "lateral_parents", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Parent {
     pub name: String,
     pub active: bool,
 }
 
-#[model(table = "c4b_lateral_children", pk = HeerId)]
+#[model(table = "lateral_children", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Child {
     pub parent_id: HeerId,
     pub score: i64,
 }
 
-#[model(table = "c4b_lateral_other_parents", pk = HeerId)]
+#[model(table = "lateral_other_parents", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OtherParent {
     pub name: String,
@@ -44,7 +44,7 @@ fn test_inner_lateral_shape() {
         sql
     );
     assert!(
-        sql.contains("FROM c4b_lateral_parents WHERE active = $1"),
+        sql.contains("FROM lateral_parents WHERE active = $1"),
         "outer filter must stay inside derived source: {}",
         sql
     );
@@ -54,7 +54,7 @@ fn test_inner_lateral_shape() {
         sql
     );
     assert!(sql.contains("JOIN LATERAL ("), "inner join lateral: {}", sql);
-    assert!(sql.contains("FROM c4b_lateral_children"), "inner from: {}", sql);
+    assert!(sql.contains("FROM lateral_children"), "inner from: {}", sql);
     assert!(sql.contains("WHERE parent_id = l.id"), "outer ref correlation: {}", sql);
     assert!(
         sql.contains("ORDER BY score DESC LIMIT $2"),
@@ -102,7 +102,7 @@ fn test_left_lateral_none_inner_forces_empty_subquery() {
         sql
     );
     assert!(
-        sql.contains("FROM c4b_lateral_children WHERE FALSE"),
+        sql.contains("FROM lateral_children WHERE FALSE"),
         "none() inner must force an empty subquery: {}",
         sql
     );
@@ -172,7 +172,7 @@ fn test_nested_subquery_in_lateral_inner_keeps_outer_ref_scope() {
 
     assert!(
         sql.contains(
-            "EXISTS (SELECT 1 FROM c4b_lateral_children WHERE parent_id = l.id)"
+            "EXISTS (SELECT 1 FROM lateral_children WHERE parent_id = l.id)"
         ),
         "nested subquery should still see lateral outer alias: {}",
         sql
@@ -197,7 +197,7 @@ fn test_count_lateral_shape() {
     assert!(sql.ends_with(")"), "count closes parens: {}", sql);
     assert!(
         sql.contains(
-            "FROM c4b_lateral_parents ORDER BY name ASC LIMIT $1 OFFSET $2) AS l"
+            "FROM lateral_parents ORDER BY name ASC LIMIT $1 OFFSET $2) AS l"
         ),
         "outer order/limit/offset must survive inside derived source: {}",
         sql
@@ -227,7 +227,7 @@ fn test_outer_distinct_on_is_preserved_inside_derived_source() {
         sql
     );
     assert!(
-        sql.contains("FROM c4b_lateral_parents ORDER BY name ASC) AS l"),
+        sql.contains("FROM lateral_parents ORDER BY name ASC) AS l"),
         "outer DISTINCT ON ordering must stay in source subquery: {}",
         sql
     );
@@ -244,7 +244,7 @@ fn test_outer_binds_precede_inner_binds_after_renumbering() {
     let sql = outer.join_lateral(inner).__sql_for_test().unwrap();
 
     assert!(
-        sql.contains("FROM c4b_lateral_parents WHERE active = $1 LIMIT $2"),
+        sql.contains("FROM lateral_parents WHERE active = $1 LIMIT $2"),
         "outer binds must start at $1/$2 inside derived source: {}",
         sql
     );
@@ -274,7 +274,7 @@ fn test_inner_distinct_is_preserved() {
         sql
     );
     assert!(
-        sql.contains("FROM c4b_lateral_children"),
+        sql.contains("FROM lateral_children"),
         "inner lateral source table present: {}",
         sql
     );

@@ -29,7 +29,7 @@
 // ## Running
 //
 // ```bash
-// cargo test --test zero_tree_query_bench -p djogi --all-features \
+// cargo test --test tree_query_bench -p djogi --all-features \
 //     --release -- --test-threads=1 --nocapture
 // ```
 //
@@ -38,7 +38,7 @@
 //
 // ## Why `tests/`, not `benches/`
 //
-// Same rationale as `zero_pool_bench`: cargo's `[[bench]]`
+// Same rationale as `pool_bench`: cargo's `[[bench]]`
 // harness pulls in nightly criterion-style infra we don't want for a
 // v0.1.0 smoke check. Stuffing the timing logic into ordinary
 // `#[djogi_test]` bodies keeps the test surface single-tracked and

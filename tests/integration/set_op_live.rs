@@ -1,6 +1,6 @@
 // #101 — typed set operations: live Postgres tests.
 //
-// Pairs with the SQL-shape-only `c4b_set_op_sql_shape` test by
+// Pairs with the SQL-shape-only `set_op_sql_shape` test by
 // proving the four set operators produce the row sets Postgres
 // semantics promise, against a real database:
 //
@@ -23,7 +23,7 @@
 use djogi::auth::AuthContext;
 use djogi::prelude::*;
 
-#[model(table = "c4b_set_op_animals", pk = HeerId)]
+#[model(table = "set_op_animals", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Animal {
     pub name: String,
@@ -40,7 +40,7 @@ pub struct Animal {
 // Used exclusively by `set_op_invalid_arm_rejects_before_tenant_set`
 // to pin that an invalid arm short-circuits BEFORE `auto_set_tenant`
 // could issue any GUC SET statement.
-#[model(table = "c4b_set_op_tenant_widgets", pk = HeerId, tenant_key = "org_id")]
+#[model(table = "set_op_tenant_widgets", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct TenantWidget {
     pub org_id: String,

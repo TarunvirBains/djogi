@@ -1,7 +1,7 @@
-// PR 7 — Live integration tests for `EXCLUDE` constraints
+// Live integration tests for `EXCLUDE` constraints
 // and stored-generated columns under a real Postgres 18.
 //
-// Three tests cover the v3 plan's PR 7 surface:
+// Three tests cover the constraints surface:
 //
 // 1. **`empty_table_exclusion_emits_and_enforces`** — apply the SQL
 //    emitted by `lower_operation` for an `AddTable` carrying a
@@ -43,8 +43,8 @@ use djogi::migrate::schema::{
 };
 use djogi::migrate::sql::lower_delta;
 
-const BOOKINGS_TABLE: &str = "pr7_bookings";
-const USERS_TABLE: &str = "pr7_users";
+const BOOKINGS_TABLE: &str = "bookings";
+const USERS_TABLE: &str = "users";
 
 fn lower_single_op(op: SchemaOperation) -> djogi::migrate::sql::OperationSql {
     let delta = SchemaDelta {
@@ -136,7 +136,7 @@ fn bookings_table_with_exclusion() -> TableSchema {
             // tests in `djogi/src/migrate/bootstrap.rs`.
             extension_dependency: Some("btree_gist".to_string()),
             initially_deferred: false,
-            name: "pr7_bookings_no_overlap".to_string(),
+            name: "bookings_no_overlap".to_string(),
             using: "gist".to_string(),
             where_clause: None,
         }],
@@ -229,7 +229,7 @@ async fn empty_table_exclusion_emits_and_enforces(mut ctx: DjogiContext) {
              JOIN pg_class t ON c.conrelid = t.oid \
              WHERE t.relname = $1 AND c.contype = 'x' \
                AND c.conname = $2",
-            &[&BOOKINGS_TABLE, &"pr7_bookings_no_overlap"],
+            &[&BOOKINGS_TABLE, &"bookings_no_overlap"],
         )
         .await
         .expect("query pg_constraint for exclusion");

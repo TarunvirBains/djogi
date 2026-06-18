@@ -39,7 +39,7 @@
 // harness's `#[djogi_test]` per-test DB lives at `djogi_test_<uuid>`
 // — dropping it from inside the test would yank the connection the
 // test is using. We follow the established
-// `zero_db_reset_replays_phase_zero` pattern: open an
+// `db_reset_replays_bootstrap` pattern: open an
 // independent admin connection, `CREATE DATABASE` a sibling
 // `replay_<stamp>`, run reset against it, then
 // drop the virgin DB in cleanup.

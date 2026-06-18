@@ -43,9 +43,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 // ── Test model — one column per network type, plus nullable counterparts ──
 
-#[model(table = "c4_213_network_rows", pk = HeerId, no_default)]
+#[model(table = "network_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct C4213NetworkRow {
+pub struct NetworkRow {
     pub host: IpAddr,
     pub maybe_host: Option<IpAddr>,
     pub net: CidrAddr,
@@ -57,15 +57,15 @@ pub struct C4213NetworkRow {
 
 // ── Round-trip — IPv4 inet, IPv4 cidr, EUI-48 macaddr ───────────────────────
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_ipv4_round_trip(mut ctx: djogi::DjogiContext) {
     let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5));
     let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("valid CIDR");
     let mac = MacAddr::new([0x01, 0x23, 0x45, 0x67, 0x89, 0xab]);
 
-    let row = C4213NetworkRow::create(
+    let row = NetworkRow::create(
         &mut ctx,
-        C4213NetworkRow {
+        NetworkRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -89,7 +89,7 @@ async fn network_ipv4_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.maybe_mac, Some(mac));
 
     // Re-fetch through Model::get to exercise the full decode path.
-    let fetched = C4213NetworkRow::get(&mut ctx, row.id)
+    let fetched = NetworkRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get round-trip");
     assert_eq!(fetched.host, host);
@@ -99,7 +99,7 @@ async fn network_ipv4_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── Round-trip — IPv6 ───────────────────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_ipv6_round_trip(mut ctx: djogi::DjogiContext) {
     // 2001:db8::1 — a unicast IPv6 host address. The /128 prefix is
     // implicit in IpAddr (host-address case).
@@ -110,9 +110,9 @@ async fn network_ipv6_round_trip(mut ctx: djogi::DjogiContext) {
         .expect("valid CIDR");
     let mac = MacAddr::new([0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe]);
 
-    let row = C4213NetworkRow::create(
+    let row = NetworkRow::create(
         &mut ctx,
-        C4213NetworkRow {
+        NetworkRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -132,7 +132,7 @@ async fn network_ipv6_round_trip(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.net, net);
     assert_eq!(row.mac, mac);
 
-    let fetched = C4213NetworkRow::get(&mut ctx, row.id)
+    let fetched = NetworkRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get round-trip");
     assert_eq!(fetched.host, host);
@@ -142,15 +142,15 @@ async fn network_ipv6_round_trip(mut ctx: djogi::DjogiContext) {
 
 // ── Round-trip — nullable columns with None ─────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
     let host = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).expect("valid 0.0.0.0/0");
     let mac = MacAddr::default();
 
-    let row = C4213NetworkRow::create(
+    let row = NetworkRow::create(
         &mut ctx,
-        C4213NetworkRow {
+        NetworkRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -169,7 +169,7 @@ async fn network_null_round_trips_as_none(mut ctx: djogi::DjogiContext) {
     assert_eq!(row.maybe_net, None);
     assert_eq!(row.maybe_mac, None);
 
-    let fetched = C4213NetworkRow::get(&mut ctx, row.id)
+    let fetched = NetworkRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get on nullable network row");
     assert_eq!(fetched.maybe_host, None);
@@ -199,7 +199,7 @@ fn cidraddr_construction_rejects_oversized_prefix() {
 
 // ── Runtime filter execution — INET, CIDR, MACADDR ──────────────────────────
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_filter_by_inet_returns_matching_row(mut ctx: djogi::DjogiContext) {
     let target_host = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let other_host = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -207,9 +207,9 @@ async fn network_filter_by_inet_returns_matching_row(mut ctx: djogi::DjogiContex
     let mac = MacAddr::default();
 
     for (host, label) in [(target_host, "filter-target"), (other_host, "filter-other")] {
-        C4213NetworkRow::create(
+        NetworkRow::create(
             &mut ctx,
-            C4213NetworkRow {
+            NetworkRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -226,7 +226,7 @@ async fn network_filter_by_inet_returns_matching_row(mut ctx: djogi::DjogiContex
         .expect("create row for INET filter");
     }
 
-    let results = C4213NetworkRow::objects()
+    let results = NetworkRow::objects()
         .filter(|f| f.host().eq(target_host))
         .fetch_all(&mut ctx)
         .await
@@ -237,7 +237,7 @@ async fn network_filter_by_inet_returns_matching_row(mut ctx: djogi::DjogiContex
     assert_eq!(results[0].host, target_host);
 }
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_filter_by_cidr_returns_matching_row(mut ctx: djogi::DjogiContext) {
     let target_net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).unwrap();
     let other_net = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16).unwrap();
@@ -245,9 +245,9 @@ async fn network_filter_by_cidr_returns_matching_row(mut ctx: djogi::DjogiContex
     let mac = MacAddr::default();
 
     for (net, label) in [(target_net, "cidr-target"), (other_net, "cidr-other")] {
-        C4213NetworkRow::create(
+        NetworkRow::create(
             &mut ctx,
-            C4213NetworkRow {
+            NetworkRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -264,7 +264,7 @@ async fn network_filter_by_cidr_returns_matching_row(mut ctx: djogi::DjogiContex
         .expect("create row for CIDR filter");
     }
 
-    let results = C4213NetworkRow::objects()
+    let results = NetworkRow::objects()
         .filter(|f| f.net().eq(target_net))
         .fetch_all(&mut ctx)
         .await
@@ -275,7 +275,7 @@ async fn network_filter_by_cidr_returns_matching_row(mut ctx: djogi::DjogiContex
     assert_eq!(results[0].net, target_net);
 }
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_filter_by_macaddr_returns_matching_row(mut ctx: djogi::DjogiContext) {
     let target_mac = MacAddr::new([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
     let other_mac = MacAddr::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
@@ -283,9 +283,9 @@ async fn network_filter_by_macaddr_returns_matching_row(mut ctx: djogi::DjogiCon
     let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).unwrap();
 
     for (mac, label) in [(target_mac, "mac-target"), (other_mac, "mac-other")] {
-        C4213NetworkRow::create(
+        NetworkRow::create(
             &mut ctx,
-            C4213NetworkRow {
+            NetworkRow {
                 id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
                 created_at: ::djogi::types::DateTime::UNIX_EPOCH,
                 updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -302,7 +302,7 @@ async fn network_filter_by_macaddr_returns_matching_row(mut ctx: djogi::DjogiCon
         .expect("create row for MACADDR filter");
     }
 
-    let results = C4213NetworkRow::objects()
+    let results = NetworkRow::objects()
         .filter(|f| f.mac().eq(target_mac))
         .fetch_all(&mut ctx)
         .await
@@ -315,16 +315,16 @@ async fn network_filter_by_macaddr_returns_matching_row(mut ctx: djogi::DjogiCon
 
 // ── Bulk-update execution — host SET ────────────────────────────────────────
 
-#[djogi::djogi_test(sync_models = [C4213NetworkRow])]
+#[djogi::djogi_test(sync_models = [NetworkRow])]
 async fn network_bulk_update_sets_host(mut ctx: djogi::DjogiContext) {
     let initial_host = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
     let updated_host = IpAddr::V4(Ipv4Addr::new(192, 168, 100, 1));
     let net = CidrAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).unwrap();
     let mac = MacAddr::default();
 
-    let row = C4213NetworkRow::create(
+    let row = NetworkRow::create(
         &mut ctx,
-        C4213NetworkRow {
+        NetworkRow {
             id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -340,7 +340,7 @@ async fn network_bulk_update_sets_host(mut ctx: djogi::DjogiContext) {
     .await
     .expect("create row for bulk-update INET");
 
-    let n = C4213NetworkRow::objects()
+    let n = NetworkRow::objects()
         .filter(|f| f.host().eq(initial_host))
         .update(|f| f.host().set(updated_host))
         .execute(&mut ctx)
@@ -349,7 +349,7 @@ async fn network_bulk_update_sets_host(mut ctx: djogi::DjogiContext) {
 
     assert_eq!(n, 1, "exactly one row should be updated");
 
-    let fetched = C4213NetworkRow::get(&mut ctx, row.id)
+    let fetched = NetworkRow::get(&mut ctx, row.id)
         .await
         .expect("re-fetch after bulk update");
 

@@ -4,7 +4,7 @@
 // # What this file pins
 //
 // The compile-pass fixture
-// (`djogi-macros/tests/compile_pass/g0_range_field.rs`) proves
+// (`djogi-macros/tests/compile_pass/range_field.rs`) proves
 // the descriptor surface for `Range<T>` columns lowers to the right
 // `FieldSqlType::Range { subtype: … }`, and the unit tests in
 // `djogi/src/pg_types.rs` exercise the wire codec end-to-end against
@@ -58,7 +58,7 @@ use time::{OffsetDateTime, PrimitiveDateTime};
 /// Discrete-integer range column. Postgres canonicalises every
 /// `int4range` write to lower-inclusive / upper-exclusive storage
 /// form; the Rust round-trip reflects the canonicalised shape.
-#[model(table = "g0_range_i32_rows", pk = HeerId, no_default)]
+#[model(table = "range_i32_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0RangeI32Row {
     pub span: Range<i32>,
@@ -67,7 +67,7 @@ pub struct G0RangeI32Row {
 
 /// Discrete 64-bit integer range column. Postgres canonicalises
 /// `int8range` the same way it canonicalises `int4range`.
-#[model(table = "g0_range_i64_rows", pk = HeerId, no_default)]
+#[model(table = "range_i64_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0RangeI64Row {
     pub span64: Range<i64>,
@@ -77,7 +77,7 @@ pub struct G0RangeI64Row {
 /// Continuous timezone-aware temporal range column. Postgres does NOT
 /// canonicalise `tstzrange` storage; the bound shape round-trips as
 /// written.
-#[model(table = "g0_range_tstz_rows", pk = HeerId, no_default)]
+#[model(table = "range_tstz_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0RangeTstzRow {
     pub booking_window: Range<DateTime>,
@@ -98,7 +98,7 @@ pub struct RangeTsRow {
 /// `decode_bound` chain hands each finite endpoint to
 /// `rust_decimal::Decimal::from_sql`; the round-trip preserves the
 /// rust_decimal coefficient + scale verbatim.
-#[model(table = "g0_range_decimal_rows", pk = HeerId, no_default)]
+#[model(table = "range_decimal_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0RangeDecimalRow {
     pub money: Range<Decimal>,
@@ -107,7 +107,7 @@ pub struct G0RangeDecimalRow {
 
 /// Discrete date range column. Postgres canonicalises `daterange` to
 /// lower-inclusive / upper-exclusive storage form.
-#[model(table = "g0_range_date_rows", pk = HeerId, no_default)]
+#[model(table = "range_date_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0RangeDateRow {
     pub span_date: Range<time::Date>,
@@ -115,7 +115,7 @@ pub struct G0RangeDateRow {
 }
 
 /// Nullable range column used to pin the present-only predicate surface.
-#[model(table = "g0_range_nullable_i64_rows", pk = HeerId, no_default)]
+#[model(table = "range_nullable_i64_rows", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct G0NullableRangeI64Row {
     pub maybe_span64: Option<Range<i64>>,

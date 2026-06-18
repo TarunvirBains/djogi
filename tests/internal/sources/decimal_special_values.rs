@@ -60,7 +60,7 @@ use rust_decimal_macros::dec;
 
 /// Scalar `Decimal` column — exercises the inline `decimal_repr_expr`
 /// CHECK with the `({qcol}) IS NULL OR (...)` outer pass-through wrap.
-#[model(table = "g0_decimal_special_scalar", pk = HeerId, no_default)]
+#[model(table = "decimal_special_scalar", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecimalSpecialScalarRow {
     pub amount: Decimal,
@@ -71,7 +71,7 @@ pub struct DecimalSpecialScalarRow {
 /// The descriptor lowers to `numrange`, and the projection emits the
 /// same `decimal_repr_expr` on `lower(<col>)` / `upper(<col>)` via
 /// `range_endpoint_checks`.
-#[model(table = "g0_decimal_special_range", pk = HeerId, no_default)]
+#[model(table = "decimal_special_range", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecimalSpecialRangeRow {
     pub bounds: Range<Decimal>,
@@ -81,7 +81,7 @@ pub struct DecimalSpecialRangeRow {
 /// `Vec<Decimal>` column — exercises the
 /// `djogi.__djogi_numeric_array_is_rust_decimal_v1` helper CHECK with
 /// the per-element `pg_catalog.scale(value) IS NOT NULL` guard.
-#[model(table = "g0_decimal_special_array", pk = HeerId, no_default)]
+#[model(table = "decimal_special_array", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecimalSpecialArrayRow {
     pub amounts: Vec<Decimal>,
@@ -94,7 +94,7 @@ pub struct DecimalSpecialArrayRow {
 async fn scalar_decimal_check_rejects_nan(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_scalar (amount, label) \
+            "INSERT INTO decimal_special_scalar (amount, label) \
              VALUES (NUMERIC 'NaN', 'scalar-nan')",
             &[],
         )
@@ -103,7 +103,7 @@ async fn scalar_decimal_check_rejects_nan(mut ctx: djogi::DjogiContext) {
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_scalar_amount_check"),
+        msg.contains("decimal_special_scalar_amount_check"),
         "NaN INSERT error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -112,7 +112,7 @@ async fn scalar_decimal_check_rejects_nan(mut ctx: djogi::DjogiContext) {
 async fn scalar_decimal_check_rejects_positive_infinity(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_scalar (amount, label) \
+            "INSERT INTO decimal_special_scalar (amount, label) \
              VALUES (NUMERIC 'Infinity', 'scalar-pos-inf')",
             &[],
         )
@@ -121,7 +121,7 @@ async fn scalar_decimal_check_rejects_positive_infinity(mut ctx: djogi::DjogiCon
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_scalar_amount_check"),
+        msg.contains("decimal_special_scalar_amount_check"),
         "+Infinity INSERT error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -130,7 +130,7 @@ async fn scalar_decimal_check_rejects_positive_infinity(mut ctx: djogi::DjogiCon
 async fn scalar_decimal_check_rejects_negative_infinity(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_scalar (amount, label) \
+            "INSERT INTO decimal_special_scalar (amount, label) \
              VALUES (NUMERIC '-Infinity', 'scalar-neg-inf')",
             &[],
         )
@@ -139,7 +139,7 @@ async fn scalar_decimal_check_rejects_negative_infinity(mut ctx: djogi::DjogiCon
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_scalar_amount_check"),
+        msg.contains("decimal_special_scalar_amount_check"),
         "-Infinity INSERT error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -189,7 +189,7 @@ async fn numrange_check_rejects_nan_in_lower_endpoint(mut ctx: djogi::DjogiConte
     // CHECK fires as intended.
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange('NaN'::numeric, NULL, '[)'), 'range-lower-nan')",
             &[],
         )
@@ -198,7 +198,7 @@ async fn numrange_check_rejects_nan_in_lower_endpoint(mut ctx: djogi::DjogiConte
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "NaN lower-endpoint error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -212,7 +212,7 @@ async fn numrange_check_rejects_nan_in_upper_endpoint(mut ctx: djogi::DjogiConte
     // `scale(NaN)` returns NULL, and `IS NOT NULL` evaluates to FALSE.
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange(0::numeric, 'NaN'::numeric, '[)'), 'range-upper-nan')",
             &[],
         )
@@ -221,7 +221,7 @@ async fn numrange_check_rejects_nan_in_upper_endpoint(mut ctx: djogi::DjogiConte
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "NaN upper-endpoint error must reference the structural CHECK constraint name: {msg}"
     );
 }
@@ -230,7 +230,7 @@ async fn numrange_check_rejects_nan_in_upper_endpoint(mut ctx: djogi::DjogiConte
 async fn numrange_check_rejects_infinity_in_upper_endpoint(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange(0::numeric, 'Infinity'::numeric, '[]'), 'range-upper-inf')",
             &[],
         )
@@ -239,7 +239,7 @@ async fn numrange_check_rejects_infinity_in_upper_endpoint(mut ctx: djogi::Djogi
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "+Infinity upper-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -256,7 +256,7 @@ async fn numrange_check_rejects_infinity_in_lower_endpoint(mut ctx: djogi::Djogi
     // lower endpoint.
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange('Infinity'::numeric, NULL, '[)'), 'range-lower-inf')",
             &[],
         )
@@ -265,7 +265,7 @@ async fn numrange_check_rejects_infinity_in_lower_endpoint(mut ctx: djogi::Djogi
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "+Infinity lower-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -275,7 +275,7 @@ async fn numrange_check_rejects_infinity_in_lower_endpoint(mut ctx: djogi::Djogi
 async fn numrange_check_rejects_negative_infinity_in_lower_endpoint(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange('-Infinity'::numeric, 1000::numeric, '[)'), 'range-lower-neg-inf')",
             &[],
         )
@@ -284,7 +284,7 @@ async fn numrange_check_rejects_negative_infinity_in_lower_endpoint(mut ctx: djo
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "-Infinity lower-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -301,7 +301,7 @@ async fn numrange_check_rejects_negative_infinity_in_upper_endpoint(mut ctx: djo
     // upper endpoint.
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_range (bounds, label) \
+            "INSERT INTO decimal_special_range (bounds, label) \
              VALUES (numrange(NULL, '-Infinity'::numeric, '(]'), 'range-upper-neg-inf')",
             &[],
         )
@@ -310,7 +310,7 @@ async fn numrange_check_rejects_negative_infinity_in_upper_endpoint(mut ctx: djo
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_range_bounds_check"),
+        msg.contains("decimal_special_range_bounds_check"),
         "-Infinity upper-endpoint error must reference the structural CHECK constraint name: \
          {msg}"
     );
@@ -370,7 +370,7 @@ async fn numrange_check_accepts_unbounded_range(mut ctx: djogi::DjogiContext) {
 async fn numeric_array_helper_rejects_nan_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_array (amounts, label) \
+            "INSERT INTO decimal_special_array (amounts, label) \
              VALUES (ARRAY[1::numeric, 'NaN'::numeric, 3::numeric]::numeric[], 'arr-nan')",
             &[],
         )
@@ -382,7 +382,7 @@ async fn numeric_array_helper_rejects_nan_element(mut ctx: djogi::DjogiContext) 
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_array_amounts_check"),
+        msg.contains("decimal_special_array_amounts_check"),
         "NaN-element error must reference the array CHECK constraint name: {msg}"
     );
 }
@@ -391,7 +391,7 @@ async fn numeric_array_helper_rejects_nan_element(mut ctx: djogi::DjogiContext) 
 async fn numeric_array_helper_rejects_infinity_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_array (amounts, label) \
+            "INSERT INTO decimal_special_array (amounts, label) \
              VALUES (ARRAY[42::numeric, 'Infinity'::numeric]::numeric[], 'arr-inf')",
             &[],
         )
@@ -403,7 +403,7 @@ async fn numeric_array_helper_rejects_infinity_element(mut ctx: djogi::DjogiCont
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_array_amounts_check"),
+        msg.contains("decimal_special_array_amounts_check"),
         "+Infinity-element error must reference the array CHECK constraint name: {msg}"
     );
 }
@@ -412,7 +412,7 @@ async fn numeric_array_helper_rejects_infinity_element(mut ctx: djogi::DjogiCont
 async fn numeric_array_helper_rejects_negative_infinity_element(mut ctx: djogi::DjogiContext) {
     let err = ctx
         .raw_execute(
-            "INSERT INTO g0_decimal_special_array (amounts, label) \
+            "INSERT INTO decimal_special_array (amounts, label) \
              VALUES (ARRAY[0::numeric, '-Infinity'::numeric, 7::numeric]::numeric[], 'arr-neg-inf')",
             &[],
         )
@@ -424,7 +424,7 @@ async fn numeric_array_helper_rejects_negative_infinity_element(mut ctx: djogi::
 
     let msg = format!("{err:?}");
     assert!(
-        msg.contains("g0_decimal_special_array_amounts_check"),
+        msg.contains("decimal_special_array_amounts_check"),
         "-Infinity-element error must reference the array CHECK constraint name: {msg}"
     );
 }

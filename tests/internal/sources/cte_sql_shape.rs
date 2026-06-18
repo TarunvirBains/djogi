@@ -7,7 +7,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "c442_cte_nodes", pk = HeerId)]
+#[model(table = "cte_nodes", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Node {
     pub label: String,
@@ -75,7 +75,7 @@ fn recursive_cte_with_cycle_shape() {
     let sql = cte.__sql_for_test().expect("sql");
     assert!(sql.starts_with("WITH RECURSIVE walk AS ("), "{sql}");
     assert!(
-        sql.contains("FROM c442_cte_nodes t JOIN walk cte ON t.parent_id = cte.id"),
+        sql.contains("FROM cte_nodes t JOIN walk cte ON t.parent_id = cte.id"),
         "{sql}"
     );
     assert!(sql.contains(") CYCLE id SET is_cycle USING cycle_path"), "{sql}");

@@ -2,7 +2,7 @@
 
 use djogi::prelude::*;
 
-#[model(table = "c442_cte_live_nodes", pk = HeerId)]
+#[model(table = "cte_live_nodes", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Node {
     pub label: String,
@@ -93,7 +93,7 @@ async fn non_recursive_cte_exists_and_first_match(mut ctx: djogi::DjogiContext) 
     assert_eq!(first.label, "alpha");
 }
 
-#[model(table = "c442_cte_live_tree", pk = HeerId)]
+#[model(table = "cte_live_tree", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct TreeNode {
     pub name: String,
