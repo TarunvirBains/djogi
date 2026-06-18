@@ -1611,7 +1611,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             path: snap_path.clone(),
             source: std::io::Error::other(e.to_string()),
         })?;
-        ensure_parent(&snap_path)?;
+        ensure_parent(&workspace_root, &snap_path)?;
         let snap_tmp = atomic_write(&snap_path, &snap_bytes)?;
         let snap_backup = promote_tmp_with_backup(&snap_tmp, &snap_path)?;
         // We intentionally do NOT enrol these in the rollback guard: a
@@ -1892,8 +1892,8 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             check_pending_path_compatible(&workspace_root, &pending_path, &delta.bucket)?;
 
             // Stage tmp siblings.
-            ensure_parent(&up_path)?;
-            ensure_parent(&pending_path)?;
+            ensure_parent(&workspace_root, &up_path)?;
+            ensure_parent(&workspace_root, &pending_path)?;
             let up_tmp = atomic_write(&up_path, up_sql.as_bytes())?;
             rollback.track_tmp(up_tmp.clone());
 
@@ -1965,7 +1965,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // same `rollback` guard so a mid-loop failure rolls back every
     // already-moved entry too.
     for (from_dir, to_dir) in &pending_folder_renames {
-        rename_old_bucket_folder(from_dir, to_dir, &mut rollback)?;
+        rename_old_bucket_folder(&workspace_root, from_dir, to_dir, &mut rollback)?;
     }
 
     // All work succeeded — release the rollback guard. This deletes
@@ -2116,6 +2116,7 @@ fn sql_escape_string(s: &str) -> String {
 ///   files of the same name. The operator must resolve the collision
 ///   manually before re-running compose.
 fn rename_old_bucket_folder(
+    workspace_root: &Path,
     from_dir: &Path,
     to_dir: &Path,
     rollback: &mut WriteRollback,
@@ -2131,7 +2132,7 @@ fn rename_old_bucket_folder(
         // single move with the rollback guard so a later failure
         // (none today, but the hook keeps the contract symmetric)
         // would unwind it.
-        ensure_parent(to_dir)?;
+        ensure_parent(workspace_root, to_dir)?;
         fs::rename(from_dir, to_dir).map_err(|e| ComposeError::Io {
             path: to_dir.to_path_buf(),
             source: e,
@@ -2142,7 +2143,7 @@ fn rename_old_bucket_folder(
     // NEW dir already exists (compose just wrote artifacts there).
     // Walk OLD, plan each move, fail-fast on any collision, then
     // execute the moves while tracking each on the rollback guard.
-    let entries: Vec<PathBuf> = fs::read_dir(from_dir)
+    let entries: Vec<PathBuf> = common::read_workspace_dir(workspace_root, from_dir)
         .map_err(|e| ComposeError::Io {
             path: from_dir.to_path_buf(),
             source: e,
@@ -2182,10 +2183,11 @@ fn rename_old_bucket_folder(
     // Drop OLD — best-effort; we surface an Io error if it fails so
     // operators see the dangling directory. The OLD dir should be
     // empty by now (every entry got moved above).
-    fs::remove_dir_all(from_dir).map_err(|e| ComposeError::Io {
+    common::remove_workspace_dir_all(workspace_root, from_dir).map_err(|e| ComposeError::Io {
         path: from_dir.to_path_buf(),
         source: e,
-    })
+    })?;
+    Ok(())
 }
 
 /// Format the [`PendingPlan`] as pretty-printed JSON with a trailing
@@ -2559,13 +2561,15 @@ pub(crate) fn tstz_array_helper_operation() -> OperationSql {
 
 // ── Atomic write helpers ───────────────────────────────────────────────────
 
-fn ensure_parent(path: &Path) -> Result<(), ComposeError> {
+fn ensure_parent(workspace_root: &Path, path: &Path) -> Result<(), ComposeError> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent).map_err(|e| ComposeError::Io {
-            path: parent.to_path_buf(),
-            source: e,
+        common::create_workspace_parent_dirs(workspace_root, path).map_err(|e| {
+            ComposeError::Io {
+                path: parent.to_path_buf(),
+                source: e,
+            }
         })?;
     }
     Ok(())
@@ -2689,10 +2693,12 @@ fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathB
 /// for callers that want to confirm the workspace is writable.
 pub fn prepare_pending_dirs(workspace_root: &Path, bucket: &BucketKey) -> Result<(), ComposeError> {
     let dir = pending_database_dir(workspace_root, &bucket.database);
-    fs::create_dir_all(&dir).map_err(|e| ComposeError::Io {
-        path: dir,
-        source: e,
-    })
+    common::create_workspace_dir_all(workspace_root, &dir)
+        .map(|_| ())
+        .map_err(|e| ComposeError::Io {
+            path: dir,
+            source: e,
+        })
 }
 
 fn check_pending_path_compatible(
