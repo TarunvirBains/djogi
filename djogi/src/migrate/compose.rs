@@ -2777,8 +2777,12 @@ mod tests {
             .unwrap()
             .as_nanos();
         let p = std::env::temp_dir().join(format!("djogi-compose-{tag}-{nanos}-{n}"));
-        fs::create_dir_all(&p).unwrap();
+        crate::migrate::common::create_workspace_dir_all(&std::env::temp_dir(), &p).unwrap();
         p
+    }
+
+    fn cleanup_workspace(work: &Path) {
+        let _ = crate::migrate::common::remove_workspace_dir_all(&std::env::temp_dir(), work);
     }
 
     fn lock_for(workspace: &Path) -> WorkspaceGuard {
@@ -3034,7 +3038,7 @@ mod tests {
             pending.checksum_up, runner_style_checksum,
             "compose pending checksum must match runner-plan checksum when NumericArray helper is injected"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3125,8 +3129,7 @@ mod tests {
             date_sql_pos < tstz_sql_pos,
             "date helper prelude must precede tstz helper prelude in SQL file"
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3209,8 +3212,7 @@ mod tests {
             built.plan.segments[0].statements[0].up,
             NUMERIC_ARRAY_HELPER_PRELUDE
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3242,7 +3244,7 @@ mod tests {
         };
         let err = compose(req).expect_err("noop");
         assert!(matches!(err, ComposeError::NothingToCompose));
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3304,7 +3306,7 @@ mod tests {
         assert_eq!(pending.bucket_database, "main");
         assert!(pending.checksum_up.starts_with("V1:"));
         assert!(pending.version.starts_with("V20260425010203__"));
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3403,7 +3405,7 @@ mod tests {
         let dir = bucket_dir(&work, &bucket);
         let count = fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
         assert_eq!(count, 0, "no SQL written on destructive refusal");
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3495,7 +3497,7 @@ mod tests {
         };
         let report = compose(req).expect("compose");
         assert_eq!(report.composed_buckets.len(), 1);
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3541,7 +3543,7 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3629,7 +3631,7 @@ mod tests {
         );
         assert!(up.contains("oldname"));
         assert!(up.contains("newname"));
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3687,7 +3689,7 @@ mod tests {
         let pending2 = fs::read(&r2.composed_buckets[0].pending_json_path).unwrap();
         assert_eq!(up1, up2, "up SQL must be byte-identical");
         assert_eq!(pending1, pending2, "pending JSON must be byte-identical");
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -3763,7 +3765,7 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Second compose with the SAME inputs but a hand edit to the up
@@ -3883,7 +3885,7 @@ mod tests {
             after_force, original,
             "force-overwrite must restore canonical SQL"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Round-trip rename app. Compose with `renamed_from = "oldname"`
@@ -3985,7 +3987,7 @@ mod tests {
             !up.contains("DROP TABLE \"widgets\""),
             "rename must not emit DROP TABLE for widgets: {up}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Pending JSON with future `format_version` surfaces
@@ -4217,7 +4219,7 @@ mod tests {
         );
         // Sentinel inside the blocking directory is preserved.
         assert!(blocked_down.join("sentinel").exists());
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// `WriteRollback` must restore original bytes when a tmp was
@@ -4319,7 +4321,7 @@ mod tests {
             bak_files.is_empty(),
             "backup files must be cleaned after restore: {bak_files:?}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// `WriteRollback` must restore BOTH the up and the down bytes
@@ -4456,7 +4458,7 @@ mod tests {
             bak_files.is_empty(),
             "backup files must be cleaned after restore: {bak_files:?}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// D013 also fires when ONLY the down SQL was hand-edited. The
@@ -4546,7 +4548,7 @@ mod tests {
         // The hand-edited down file is preserved on disk.
         let after = fs::read_to_string(&down_path).unwrap();
         assert_eq!(after, edited_down);
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// D013 fires when BOTH up and down were edited. The diagnostic
@@ -4634,7 +4636,7 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Rename app with multiple existing tables must succeed WITHOUT
@@ -4767,7 +4769,7 @@ mod tests {
         }
         // The RenameApp ledger UPDATE is still there.
         assert!(up.contains("UPDATE djogi_schema_migrations"));
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// `rename_old_bucket_folder` refuses fail-fast when the
@@ -4844,7 +4846,7 @@ mod tests {
             fs::read_to_string(new_dir.join("V20260101010101__init.sdjql")).unwrap(),
             "from-new"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// `classify_bucket_with_pending` route through the same
@@ -4988,7 +4990,7 @@ mod tests {
                 !new_dir.join("V20260101010101__a.sdjql").exists(),
                 "movable entry must NOT have been promoted into NEW"
             );
-            let _ = fs::remove_dir_all(&work);
+            cleanup_workspace(&work);
         }
 
         // Shape 2 — file-vs-directory collision. The OLD entry is a
@@ -5063,7 +5065,7 @@ mod tests {
                     .exists(),
                 "blocking directory's contents must be preserved"
             );
-            let _ = fs::remove_dir_all(&work);
+            cleanup_workspace(&work);
         }
     }
 
@@ -5823,7 +5825,7 @@ mod tests {
             matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "billing"),
             "expected LinkageDropWithoutModels for billing, got: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -5877,7 +5879,7 @@ mod tests {
                 // guard does NOT fire.
             }
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -5935,7 +5937,7 @@ mod tests {
                 // without triggering the linkage guard.
             }
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -5982,7 +5984,7 @@ mod tests {
             matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label.is_empty()),
             "expected LinkageDropWithoutModels for global bucket, got: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     #[test]
@@ -6026,7 +6028,7 @@ mod tests {
             matches!(err, ComposeError::LinkageDropWithoutModels { ref app_label, .. } if app_label == "orphan"),
             "expected LinkageDropWithoutModels for orphan, got: {err}"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Cross-bucket FK ordering tests (#398) ──────────────────────
@@ -6267,7 +6269,7 @@ mod tests {
             users.depends_on.is_empty(),
             "users should have no dependencies"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Unit tests for helper functions ────────────────────────────
@@ -6525,7 +6527,7 @@ mod tests {
             }
             _ => panic!("expected CrossBucketForeignKeyCycle, got: {err:?}"),
         }
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Cross-database FK filtering ────────────────────────────────
@@ -6654,7 +6656,7 @@ mod tests {
             events.depends_on.is_empty(),
             "events should have no depends_on (cross-database FK to main/users is filtered out)"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Pre-existing target exclusion ──────────────────────────────
@@ -6742,7 +6744,7 @@ mod tests {
             system.depends_on.is_empty(),
             "system should have no depends_on (FK target 'users' not in projection)"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Within-bucket FK exclusion ─────────────────────────────────
@@ -6882,7 +6884,7 @@ mod tests {
             orders.depends_on.is_empty(),
             "orders should have no depends_on (within-bucket FK is excluded)"
         );
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     // ── Enum reconciliation tests (GH #396, Stage 3) ──────────────
@@ -7019,8 +7021,7 @@ mod tests {
             !beta_down.contains("DROP TYPE"),
             "non-owner beta down-SQL must not DROP the shared enum type; beta_down:\n{beta_down}"
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// REQ-396-11: Two buckets that both add the same new enum variant
@@ -7258,8 +7259,7 @@ mod tests {
             matches!(err, ComposeError::NothingToCompose),
             "recompose after enum dedup should be a no-op, got: {err}"
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Bucket A's snapshot already records `mood`; bucket B newly
@@ -7355,8 +7355,7 @@ mod tests {
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Pre-fix shape: Bucket A references `mood` (snapshot has it,
@@ -7458,8 +7457,7 @@ mod tests {
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// No bucket references `mood` anymore; both have DropEnum.
@@ -7556,8 +7554,7 @@ mod tests {
             "beta should emit DROP TYPE. beta_up:\n{}",
             beta_up
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// AddEnumVariant interaction test (REQ-396-12): bucket A owns
@@ -7654,8 +7651,7 @@ mod tests {
             beta_pending.depends_on.contains(&"alpha".to_string()),
             "beta should depend on alpha for enum ownership"
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Classification re-derivation test: delta with DropEnum
@@ -7765,8 +7761,7 @@ mod tests {
             }
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Regression test: enum owner selection must follow FK-based topological
@@ -7966,8 +7961,7 @@ mod tests {
             "alpha should depend on beta (FK + enum ownership). depends_on: {:?}",
             alpha_pending.depends_on
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 
     /// Stale snapshot convergence: a bucket whose only op is a `DropEnum`
@@ -8106,7 +8100,6 @@ mod tests {
                 .any(|cb| cb.bucket == beta_bucket),
             "beta should NOT appear in composed_buckets (only snapshot was advanced)"
         );
-
-        let _ = fs::remove_dir_all(&work);
+        cleanup_workspace(&work);
     }
 }
