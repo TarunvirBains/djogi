@@ -1708,25 +1708,37 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+        let bucket_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, dir.join(".keep"))
+                .expect("resolve seed bucket dir");
+        crate::migrate::common::write_workspace_file(&work, bucket_keep, b"")
             .expect("seed bucket dir");
         let pend_db_dir = crate::migrate::target::pending_database_dir(&work, "main");
         assert!(pend_db_dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, pend_db_dir.join(".keep"), b"")
+        let pend_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, pend_db_dir.join(".keep"))
+                .expect("resolve seed pending dir");
+        crate::migrate::common::write_workspace_file(&work, pend_keep, b"")
             .expect("seed pending dir");
-        let up_write = dir.join(up_filename(PHASE_ZERO_VERSION));
-        assert!(up_write.starts_with(&work));
+        let up_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve existing bootstrap up");
         crate::migrate::common::write_workspace_file(
             &work,
-            &up_write,
+            up_write,
             b"-- existing bootstrap-migration up",
         )
         .unwrap();
-        let down_write = dir.join(down_filename(PHASE_ZERO_VERSION));
-        assert!(down_write.starts_with(&work));
+        let down_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(down_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve existing bootstrap down");
         crate::migrate::common::write_workspace_file(
             &work,
-            &down_write,
+            down_write,
             b"-- existing bootstrap-migration down",
         )
         .unwrap();
@@ -1743,11 +1755,14 @@ mod tests {
             composed_at: format_rfc3339_seconds(fixed_now()),
             depends_on: Vec::new(),
         };
-        let legacy_write = pending_json_path(&work, &bucket);
-        assert!(legacy_write.starts_with(&work));
+        let legacy_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            pending_json_path(&work, &bucket),
+        )
+        .expect("resolve legacy bootstrap pending");
         crate::migrate::common::write_workspace_file(
             &work,
-            &legacy_write,
+            legacy_write,
             &serde_json::to_vec_pretty(&legacy_pending).unwrap(),
         )
         .unwrap();
@@ -1784,14 +1799,23 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+        let bucket_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, dir.join(".keep"))
+                .expect("resolve seed bucket dir");
+        crate::migrate::common::write_workspace_file(&work, bucket_keep, b"")
             .expect("seed bucket dir");
-        let up_w = dir.join(up_filename(PHASE_ZERO_VERSION));
-        assert!(up_w.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, &up_w, b"-- old up").unwrap();
-        let down_w = dir.join(down_filename(PHASE_ZERO_VERSION));
-        assert!(down_w.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, &down_w, b"-- old down").unwrap();
+        let up_w = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve old up");
+        crate::migrate::common::write_workspace_file(&work, up_w, b"-- old up").unwrap();
+        let down_w = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(down_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve old down");
+        crate::migrate::common::write_workspace_file(&work, down_w, b"-- old down").unwrap();
 
         let valid_legacy_pending = PendingPlan {
             format_version: PENDING_FORMAT_VERSION.to_string(),
@@ -1806,20 +1830,26 @@ mod tests {
             composed_at: format_rfc3339_seconds(fixed_now()),
             depends_on: Vec::new(),
         };
-        let legacy_path = pending_json_path(&work, &bucket);
-        assert!(legacy_path.starts_with(&work));
+        let legacy_path = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            pending_json_path(&work, &bucket),
+        )
+        .expect("resolve legacy bootstrap pending");
         ensure_parent(&legacy_path).unwrap();
         crate::migrate::common::write_workspace_file(
             &work,
-            &legacy_path,
+            legacy_path,
             &serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
         )
         .unwrap();
 
-        let hidden_path = phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
+        let hidden_path = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION),
+        )
+        .expect("resolve hidden bootstrap pending");
         let mut invalid_hidden_pending = valid_legacy_pending.clone();
         invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
-        assert!(hidden_path.starts_with(&work));
         ensure_parent(&hidden_path).unwrap();
         crate::migrate::common::write_workspace_file(
             &work,
