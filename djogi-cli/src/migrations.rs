@@ -1072,29 +1072,9 @@ pub fn apply_cmd(
     let workspace = resolve_workspace(workspace);
 
     // Validate --fake / --reason pairing before doing any expensive work.
-    let mode = if fake {
-        match reason {
-            Some(r) if !r.trim().is_empty() => FakeMode::Fake { reason: r },
-            Some(_) => {
-                eprintln!(
-                    "djogi migrations apply --fake: --reason must not be empty; \
-                     supply a non-empty reason why these migrations are being \
-                     faked (e.g. 'schema pre-exists from prior tooling')"
-                );
-                return ExitCode::from(2);
-            }
-            None => {
-                eprintln!(
-                    "djogi migrations apply --fake: --reason is required; \
-                     supply a reason why these migrations are being faked \
-                     (e.g. 'schema pre-exists from prior tooling'). \
-                     This is recorded in the ledger audit trail."
-                );
-                return ExitCode::from(2);
-            }
-        }
-    } else {
-        FakeMode::Real
+    let mode = match validate_fake_mode(fake, reason) {
+        Ok(mode) => mode,
+        Err(code) => return code,
     };
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -1111,6 +1091,33 @@ pub fn apply_cmd(
     let exit =
         runtime.block_on(async { run_apply(&workspace, &mode, node_id, single_node_dev).await });
     ExitCode::from(exit as u8)
+}
+
+fn validate_fake_mode(fake: bool, reason: Option<String>) -> Result<FakeMode, ExitCode> {
+    if fake {
+        match reason {
+            Some(r) if !r.trim().is_empty() => Ok(FakeMode::Fake { reason: r }),
+            Some(_) => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason must not be empty; \
+                     supply a non-empty reason why these migrations are being \
+                     faked (e.g. 'schema pre-exists from prior tooling')"
+                );
+                Err(ExitCode::from(2))
+            }
+            None => {
+                eprintln!(
+                    "djogi migrations apply --fake: --reason is required; \
+                     supply a reason why these migrations are being faked \
+                     (e.g. 'schema pre-exists from prior tooling'). \
+                     This is recorded in the ledger audit trail."
+                );
+                Err(ExitCode::from(2))
+            }
+        }
+    } else {
+        Ok(FakeMode::Real)
+    }
 }
 
 /// Controls whether `apply_one_pending` executes SQL or records a
@@ -8015,15 +8022,9 @@ mod tests {
     /// REQ-326-5: --fake without --reason must exit with code 2.
     #[test]
     fn fake_without_reason_exits_code_2() {
-        let result = apply_cmd(
-            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            true,
-            None,
-            None,  // node_id
-            false, // single_node_dev
-        );
+        let result = validate_fake_mode(true, None);
         assert_eq!(
-            result,
+            result.unwrap_err(),
             ExitCode::from(2),
             "--fake without --reason must exit 2"
         );
@@ -8032,15 +8033,9 @@ mod tests {
     /// REQ-326-5: --fake with blank reason must exit with code 2.
     #[test]
     fn fake_with_empty_reason_exits_code_2() {
-        let result = apply_cmd(
-            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            true,
-            Some(String::new()),
-            None,  // node_id
-            false, // single_node_dev
-        );
+        let result = validate_fake_mode(true, Some(String::new()));
         assert_eq!(
-            result,
+            result.unwrap_err(),
             ExitCode::from(2),
             "--fake with empty reason must exit 2"
         );
@@ -8049,15 +8044,9 @@ mod tests {
     /// REQ-326-5: --fake with whitespace-only reason must exit with code 2.
     #[test]
     fn fake_with_whitespace_reason_exits_code_2() {
-        let result = apply_cmd(
-            Some(std::path::PathBuf::from("/tmp/nonexistent_djogi_ws")),
-            true,
-            Some("   ".to_string()),
-            None,  // node_id
-            false, // single_node_dev
-        );
+        let result = validate_fake_mode(true, Some("   ".to_string()));
         assert_eq!(
-            result,
+            result.unwrap_err(),
             ExitCode::from(2),
             "--fake with whitespace reason must exit 2"
         );
@@ -8066,22 +8055,10 @@ mod tests {
     /// --reason without --fake is accepted (silently ignored).
     #[test]
     fn reason_without_fake_is_accepted() {
-        let work = temp_workspace("reason-without-fake");
-        // This should NOT exit 2; it will proceed to config load which
-        // may fail on an incomplete workspace, but the --reason flag itself
-        // is accepted. We verify the function does not early-exit with code 2.
-        let result = apply_cmd(
-            Some(work),
-            false, // NOT fake
-            Some("test reason".to_string()),
-            None, // node_id — identity resolution is tested separately;
-            true, // single_node_dev — provide explicit dev mode to bypass resolver
-        );
-        // Should be 1 (config error) not 2 (refusal)
-        assert_ne!(
-            result,
-            ExitCode::from(2),
-            "--reason without --fake should not refuse"
+        let result = validate_fake_mode(false, Some("test reason".to_string()));
+        assert!(
+            matches!(result, Ok(FakeMode::Real)),
+            "--reason without --fake should be accepted and ignored"
         );
     }
 
