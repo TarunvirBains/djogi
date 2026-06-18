@@ -740,7 +740,7 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
             )),
         });
     }
-    let bytes = fs::read(&path).map_err(|e| PendingLoadError::Parse {
+    let bytes = common::read_workspace_file(&base, &path).map_err(|e| PendingLoadError::Parse {
         path: Some(path.to_path_buf()),
         source: serde_json::Error::io(e),
     })?;
@@ -1881,6 +1881,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             // re-derivation.
             if !req.force_overwrite {
                 check_no_hand_edit(
+                    &workspace_root,
                     &up_path,
                     up_sql.as_bytes(),
                     &down_path,
@@ -2005,17 +2006,18 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 /// - Both files do not exist (first compose for this bucket).
 /// - The existing files' bytes both match the freshly-emitted bytes.
 fn check_no_hand_edit(
+    workspace_root: &Path,
     up_path: &Path,
     fresh_up_bytes: &[u8],
     down_path: &Path,
     fresh_down_bytes: &[u8],
     bucket: &BucketKey,
 ) -> Result<(), ComposeError> {
-    let up_edited = match fs::read(up_path) {
+    let up_edited = match common::read_workspace_file(workspace_root, up_path) {
         Ok(existing) => existing != fresh_up_bytes,
         Err(_) => false, // file missing — fresh compose, no clobber risk.
     };
-    let down_edited = match fs::read(down_path) {
+    let down_edited = match common::read_workspace_file(workspace_root, down_path) {
         Ok(existing) => existing != fresh_down_bytes,
         Err(_) => false,
     };
@@ -2713,13 +2715,14 @@ fn check_pending_path_compatible(
         path: pending_path.to_path_buf(),
         source: e,
     })?;
-    let pending = load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
-        path: pending_path.to_path_buf(),
-        text: format!(
-            "pending JSON would be overwritten at {}: existing file is not a compatible pending artifact ({e})",
-            pending_path.display()
-        ),
-    })?;
+    let pending =
+        load_pending(pending_path).map_err(|e| ComposeError::PendingJsonWouldBeOverwritten {
+            path: pending_path.to_path_buf(),
+            text: format!(
+                "pending JSON would be overwritten at {}: existing file is not a compatible pending artifact ({e})",
+                pending_path.display()
+            ),
+        })?;
     let same_bucket =
         pending.bucket_database == bucket.database && pending.bucket_app == bucket.app;
     let is_legacy_phase_zero =
