@@ -534,6 +534,10 @@ mod tests {
     //!   audit row carries 64 zero hex characters → exit 0.
 
     use super::*;
+    use djogi::migrate::{
+        create_workspace_dir_all, remove_workspace_dir_all, remove_workspace_file,
+        write_workspace_file,
+    };
     // Imported in the test module only — `AuditUrlError` is referenced
     // by the `audit_url_self_audit_maps_to_verify_config_with_actionable_message`
     // test below to construct a sample resolver-side error, but the
@@ -600,7 +604,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn verify_rejects_symlink_snapshot() {
-        use std::fs;
         use std::os::unix::fs::symlink;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -611,7 +614,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let workspace = std::env::temp_dir().join(format!("djogi-cli-verify-symlink-{nanos}-{n}"));
-        fs::create_dir_all(&workspace).unwrap();
+        create_workspace_dir_all(&std::env::temp_dir(), &workspace).unwrap();
 
         // Create a target file OUTSIDE the workspace — the canonical
         // attack shape is a symlink pointing at /etc/passwd, but a
@@ -620,20 +623,25 @@ mod tests {
         // be permitted to read.
         let outside_target =
             std::env::temp_dir().join(format!("djogi-cli-verify-outside-{nanos}-{n}.txt"));
-        fs::write(&outside_target, b"attacker-controlled bytes").unwrap();
+        write_workspace_file(
+            &std::env::temp_dir(),
+            &outside_target,
+            b"attacker-controlled bytes",
+        )
+        .unwrap();
 
         // Lay down `migrations/main/_global_/schema_snapshot.json`
         // as a SYMLINK to the outside file.
         let app_dir = workspace.join("migrations/main/_global_");
-        fs::create_dir_all(&app_dir).unwrap();
+        create_workspace_dir_all(&workspace, &app_dir).unwrap();
         let snapshot_link = app_dir.join("schema_snapshot.json");
         symlink(&outside_target, &snapshot_link).unwrap();
 
         let result = read_snapshot_bytes(&snapshot_link);
 
         // Cleanup before assertion so a panic doesn't leak temp files.
-        let _ = fs::remove_file(&outside_target);
-        let _ = fs::remove_dir_all(&workspace);
+        let _ = remove_workspace_file(&std::env::temp_dir(), &outside_target);
+        let _ = remove_workspace_dir_all(&workspace, &workspace);
 
         match result {
             Err(VerifyError::SymlinkSnapshot { path }) => {
@@ -690,7 +698,6 @@ mod tests {
     /// refactor cannot regress it.
     #[test]
     fn read_snapshot_bytes_returns_bytes_for_regular_file() {
-        use std::fs;
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -699,9 +706,9 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("djogi-cli-verify-regular-{nanos}-{n}.json"));
-        fs::write(&path, b"{\"x\":1}").unwrap();
+        write_workspace_file(&std::env::temp_dir(), &path, b"{\"x\":1}").unwrap();
         let result = read_snapshot_bytes(&path);
-        let _ = fs::remove_file(&path);
+        let _ = remove_workspace_file(&std::env::temp_dir(), &path);
         match result {
             Ok(Some(bytes)) => assert_eq!(bytes, b"{\"x\":1}"),
             other => panic!("expected Ok(Some(bytes)), got: {other:?}"),
