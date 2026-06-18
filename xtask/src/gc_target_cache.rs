@@ -195,7 +195,7 @@ fn active_worktree_ids() -> Result<BTreeSet<String>, String> {
 
 fn read_cache_ids_from_validated_root(root: &Path) -> io::Result<BTreeSet<String>> {
     let mut ids = BTreeSet::new();
-    for entry in fs::read_dir(&root)? {
+    for entry in fs::read_dir(root)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if !file_type.is_dir() {
