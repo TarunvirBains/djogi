@@ -404,12 +404,14 @@ mod tests {
     fn acquire_writes_pid_to_lock_file() {
         let path = temp_lock_path();
         let guard = acquire(&path, Duration::from_secs(1)).expect("acquire");
-        let contents = std::fs::read_to_string(&path).expect("read");
+        let contents =
+            crate::migrate::common::read_workspace_file_to_string(&std::env::temp_dir(), &path)
+                .expect("read");
         let trimmed = contents.trim();
         let pid: i32 = trimmed.parse().expect("parse pid");
         assert_eq!(pid, std::process::id() as i32);
         drop(guard);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
@@ -446,7 +448,7 @@ mod tests {
         // Release the holder and join.
         release.store(true, Ordering::Release);
         holder_thread.join().expect("holder thread join");
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
@@ -457,40 +459,43 @@ mod tests {
         } // drop releases the lock
         let g = acquire(&path, Duration::from_millis(200)).expect("second acquire");
         drop(g);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
     fn read_pid_accepts_trailing_newline() {
         let path = temp_lock_path();
-        std::fs::write(&path, "12345\n").unwrap();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"12345\n")
+            .unwrap();
         assert_eq!(read_pid(&path).unwrap(), 12345);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
     fn read_pid_accepts_no_trailing_newline() {
         let path = temp_lock_path();
-        std::fs::write(&path, "12345").unwrap();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"12345")
+            .unwrap();
         assert_eq!(read_pid(&path).unwrap(), 12345);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
     fn read_pid_rejects_non_digit() {
         let path = temp_lock_path();
-        std::fs::write(&path, "12a45").unwrap();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"12a45")
+            .unwrap();
         let err = read_pid(&path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 
     #[test]
     fn read_pid_rejects_empty() {
         let path = temp_lock_path();
-        std::fs::write(&path, "").unwrap();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"").unwrap();
         let err = read_pid(&path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 }

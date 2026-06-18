@@ -2128,9 +2128,18 @@ deleted file mode 100644
         }
 
         fn workflow_yaml() -> String {
-            std::fs::read_to_string(workflow_path()).unwrap_or_else(|err| {
-                panic!("failed to read {}: {err}", workflow_path().display(),);
-            })
+            let workflow_path = workflow_path();
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask crate has a workspace-root parent");
+            let rel_path = workflow_path
+                .strip_prefix(workspace_root)
+                .expect("workflow path must stay inside the workspace root");
+            djogi::migrate::read_workspace_file_to_string(workspace_root, rel_path).unwrap_or_else(
+                |err| {
+                    panic!("failed to read {}: {err}", workflow_path.display(),);
+                },
+            )
         }
 
         /// Return the slice of `yaml` that constitutes the body of the
