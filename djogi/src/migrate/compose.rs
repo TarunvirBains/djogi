@@ -3018,7 +3018,11 @@ mod tests {
         let report = compose(req).expect("compose should succeed");
         assert_eq!(report.composed_buckets.len(), 1);
 
-        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending_bytes = crate::migrate::read_workspace_file(
+            &work,
+            &report.composed_buckets[0].pending_json_path,
+        )
+        .unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
 
         let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
@@ -3085,7 +3089,11 @@ mod tests {
         let report = compose(req).expect("compose should succeed");
         assert_eq!(report.composed_buckets.len(), 1);
 
-        let pending_bytes = fs::read(&report.composed_buckets[0].pending_json_path).unwrap();
+        let pending_bytes = crate::migrate::read_workspace_file(
+            &work,
+            &report.composed_buckets[0].pending_json_path,
+        )
+        .unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse pending");
 
         let deltas = diff_bucket_maps(&snapshots, &models).expect("diff for expected checksum");
@@ -3110,8 +3118,11 @@ mod tests {
         // Additionally verify that the three helpers appear in the on-disk SQL
         // file in compose order (numeric → date → tstz). The SQL file is the
         // operator-visible artifact and must reflect actual execution order.
-        let up_sql =
-            fs::read_to_string(&report.composed_buckets[0].up_sql_path).expect("read up SQL");
+        let up_sql = crate::migrate::read_workspace_file_to_string(
+            &work,
+            &report.composed_buckets[0].up_sql_path,
+        )
+        .expect("read up SQL");
         let numeric_sql_pos = up_sql
             .find("__djogi_numeric_array_is_rust_decimal_v1")
             .expect("numeric helper in SQL file");
@@ -3167,15 +3178,18 @@ mod tests {
         assert_eq!(report.composed_buckets.len(), 1);
         let composed = &report.composed_buckets[0];
 
-        let pending: PendingPlan =
-            serde_json::from_slice(&fs::read(&composed.pending_json_path).unwrap())
-                .expect("parse pending");
+        let pending: PendingPlan = serde_json::from_slice(
+            &crate::migrate::read_workspace_file(&work, &composed.pending_json_path).unwrap(),
+        )
+        .expect("parse pending");
 
         // Read the RENDERED files back from disk — the builder input is
         // the committed SQL text, never the sidecar (this is the no-sidecar
         // path; the sidecar compose wrote is deliberately ignored here).
-        let up_sql = fs::read_to_string(&composed.up_sql_path).unwrap();
-        let down_sql = fs::read_to_string(&composed.down_sql_path).unwrap();
+        let up_sql =
+            crate::migrate::read_workspace_file_to_string(&work, &composed.up_sql_path).unwrap();
+        let down_sql =
+            crate::migrate::read_workspace_file_to_string(&work, &composed.down_sql_path).unwrap();
         assert!(
             up_sql.contains(NUMERIC_ARRAY_HELPER_PRELUDE),
             "fixture must carry the injected helper prelude: {up_sql}"
@@ -3282,10 +3296,11 @@ mod tests {
         assert!(cb.replay_plan_path.exists());
         assert!(cb.pending_json_path.exists());
         // Up SQL must contain CREATE TABLE.
-        let up = fs::read_to_string(&cb.up_sql_path).unwrap();
+        let up = crate::migrate::read_workspace_file_to_string(&work, &cb.up_sql_path).unwrap();
         assert!(up.contains("CREATE TABLE \"widgets\""));
         // Pending JSON must round-trip through PendingPlan.
-        let pending_bytes = fs::read(&cb.pending_json_path).unwrap();
+        let pending_bytes =
+            crate::migrate::read_workspace_file(&work, &cb.pending_json_path).unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
         match replay_plan::load_committed_replay_plan(
             &work,
@@ -3403,7 +3418,9 @@ mod tests {
         ));
         // No file should have been written.
         let dir = bucket_dir(&work, &bucket);
-        let count = fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
+        let count = crate::migrate::read_workspace_dir(&work, &dir)
+            .map(|d| d.count())
+            .unwrap_or(0);
         assert_eq!(count, 0, "no SQL written on destructive refusal");
         cleanup_workspace(&work);
     }
@@ -3624,7 +3641,7 @@ mod tests {
             .iter()
             .find(|c| c.bucket == new_bucket)
             .expect("destination composed");
-        let up = fs::read_to_string(&dest.up_sql_path).unwrap();
+        let up = crate::migrate::read_workspace_file_to_string(&work, &dest.up_sql_path).unwrap();
         assert!(
             up.contains("RenameApp"),
             "up SQL must label the RenameApp op: {up}"
@@ -3663,8 +3680,11 @@ mod tests {
             skip_phase_zero_auto_emit: true,
         };
         let r1 = compose(req1).expect("first");
-        let up1 = fs::read(&r1.composed_buckets[0].up_sql_path).unwrap();
-        let pending1 = fs::read(&r1.composed_buckets[0].pending_json_path).unwrap();
+        let up1 = crate::migrate::read_workspace_file(&work, &r1.composed_buckets[0].up_sql_path)
+            .unwrap();
+        let pending1 =
+            crate::migrate::read_workspace_file(&work, &r1.composed_buckets[0].pending_json_path)
+                .unwrap();
         // Second run with the same inputs and the same `now`.
         let req2 = ComposeRequest {
             workspace_root: &work,
@@ -3685,8 +3705,11 @@ mod tests {
             skip_phase_zero_auto_emit: true,
         };
         let r2 = compose(req2).expect("second");
-        let up2 = fs::read(&r2.composed_buckets[0].up_sql_path).unwrap();
-        let pending2 = fs::read(&r2.composed_buckets[0].pending_json_path).unwrap();
+        let up2 = crate::migrate::read_workspace_file(&work, &r2.composed_buckets[0].up_sql_path)
+            .unwrap();
+        let pending2 =
+            crate::migrate::read_workspace_file(&work, &r2.composed_buckets[0].pending_json_path)
+                .unwrap();
         assert_eq!(up1, up2, "up SQL must be byte-identical");
         assert_eq!(pending1, pending2, "pending JSON must be byte-identical");
         cleanup_workspace(&work);
@@ -3803,9 +3826,9 @@ mod tests {
         let r1 = compose(req1).expect("first");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
         // Operator hand-edits the up SQL.
-        let original = fs::read_to_string(&up_path).unwrap();
+        let original = crate::migrate::read_workspace_file_to_string(&work, &up_path).unwrap();
         let edited = original.clone() + "\n-- operator hand-edit\n";
-        fs::write(&up_path, &edited).unwrap();
+        crate::migrate::write_workspace_file(&work, &up_path, edited.as_bytes()).unwrap();
 
         // Second compose without --force-overwrite must refuse.
         let req2 = ComposeRequest {
@@ -3856,7 +3879,7 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         // The hand-edited file is preserved on disk.
-        let after_refusal = fs::read_to_string(&up_path).unwrap();
+        let after_refusal = crate::migrate::read_workspace_file_to_string(&work, &up_path).unwrap();
         assert_eq!(after_refusal, edited, "must not have been clobbered");
 
         // Third compose WITH --force-overwrite succeeds and discards
@@ -3880,7 +3903,7 @@ mod tests {
             skip_phase_zero_auto_emit: true,
         };
         compose(req3).expect("force-overwrite succeeds");
-        let after_force = fs::read_to_string(&up_path).unwrap();
+        let after_force = crate::migrate::read_workspace_file_to_string(&work, &up_path).unwrap();
         assert_eq!(
             after_force, original,
             "force-overwrite must restore canonical SQL"
@@ -3918,8 +3941,13 @@ mod tests {
         // Pre-populate the OLD app's directory with a fake prior
         // artifact so the post-rename folder existence is verifiable.
         let old_dir = bucket_dir(&work, &old_bucket);
-        fs::create_dir_all(&old_dir).unwrap();
-        fs::write(old_dir.join("V20260101010101__init.sdjql"), "-- init").unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &old_dir).unwrap();
+        crate::migrate::write_workspace_file(
+            &work,
+            old_dir.join("V20260101010101__init.sdjql"),
+            b"-- init",
+        )
+        .unwrap();
         // Save the snapshot at the old bucket. The CLI reads this;
         // the lib-side test passes it through `snapshots`.
         let mut snapshots = BTreeMap::new();
@@ -3958,8 +3986,9 @@ mod tests {
             .iter()
             .find(|c| c.bucket == new_bucket)
             .expect("destination composed");
-        let up = fs::read_to_string(&dest.up_sql_path).unwrap();
-        let down = fs::read_to_string(&dest.down_sql_path).unwrap();
+        let up = crate::migrate::read_workspace_file_to_string(&work, &dest.up_sql_path).unwrap();
+        let down =
+            crate::migrate::read_workspace_file_to_string(&work, &dest.down_sql_path).unwrap();
         // 1. UPDATE goes forward in up.
         assert!(
             up.contains("UPDATE djogi_schema_migrations"),
@@ -4164,11 +4193,12 @@ mod tests {
         let version = version_id(&prefix, &sanitize_slug("add widgets"));
         let down_filename_str = down_filename(&version);
         let bucket_directory = bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_directory).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &bucket_directory).unwrap();
         let blocked_down = bucket_directory.join(&down_filename_str);
-        fs::create_dir_all(&blocked_down).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &blocked_down).unwrap();
         // Drop a sentinel so removing the directory would matter.
-        fs::write(blocked_down.join("sentinel"), b"keep").unwrap();
+        crate::migrate::write_workspace_file(&work, blocked_down.join("sentinel"), b"keep")
+            .unwrap();
 
         let req = ComposeRequest {
             workspace_root: &work,
@@ -4195,7 +4225,7 @@ mod tests {
         // files anywhere, and the up SQL was rolled back. The
         // pre-existing blocking directory is intentionally untouched.
         let mut tmp_files = Vec::new();
-        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+        if let Ok(entries) = crate::migrate::read_workspace_dir(&work, &bucket_directory) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.contains(".tmp.") {
@@ -4250,15 +4280,15 @@ mod tests {
         let prefix = version_prefix(now);
         let version = version_id(&prefix, &sanitize_slug("add widgets"));
         let bucket_directory = bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_directory).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &bucket_directory).unwrap();
         // Pre-existing up SQL — operator's prior content. The
         // promote will overwrite this; the rollback must restore it.
         let up_path = bucket_directory.join(up_filename(&version));
-        fs::write(&up_path, b"old up content").unwrap();
+        crate::migrate::write_workspace_file(&work, &up_path, b"old up content").unwrap();
         // Block the down promote so the sequence fails after the up
         // promote has already overwritten the existing up file.
         let blocked_down = bucket_directory.join(down_filename(&version));
-        fs::create_dir_all(&blocked_down).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &blocked_down).unwrap();
 
         let req = ComposeRequest {
             workspace_root: &work,
@@ -4286,7 +4316,7 @@ mod tests {
 
         // (a) tmp files cleaned up.
         let mut tmp_files: Vec<String> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+        if let Ok(entries) = crate::migrate::read_workspace_dir(&work, &bucket_directory) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.contains(".tmp.") {
@@ -4300,7 +4330,8 @@ mod tests {
         );
 
         // (b) up file's content is still the original `"old up content"`.
-        let after = fs::read_to_string(&up_path).expect("up still exists");
+        let after = crate::migrate::read_workspace_file_to_string(&work, &up_path)
+            .expect("up still exists");
         assert_eq!(
             after, "old up content",
             "rollback must restore original up bytes from the backup"
@@ -4309,7 +4340,7 @@ mod tests {
         // (c) No `.bak.<pid>.<n>` files remain anywhere in the
         // bucket directory.
         let mut bak_files: Vec<String> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+        if let Ok(entries) = crate::migrate::read_workspace_dir(&work, &bucket_directory) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.contains(".bak.") {
@@ -4362,7 +4393,7 @@ mod tests {
         let prefix = version_prefix(now);
         let version = version_id(&prefix, &sanitize_slug("add widgets"));
         let bucket_directory = bucket_dir(&work, &bucket);
-        fs::create_dir_all(&bucket_directory).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &bucket_directory).unwrap();
 
         // (1) + (2) — pre-existing operator content on BOTH SQL files.
         // Each promote will overwrite these; the rollback must restore
@@ -4371,14 +4402,15 @@ mod tests {
         let down_path = bucket_directory.join(down_filename(&version));
         let original_up = b"operator up content";
         let original_down = b"operator down content";
-        fs::write(&up_path, original_up).unwrap();
-        fs::write(&down_path, original_down).unwrap();
+        crate::migrate::write_workspace_file(&work, &up_path, original_up).unwrap();
+        crate::migrate::write_workspace_file(&work, &down_path, original_down).unwrap();
 
         // (3) — block the THIRD promote (replay-plan sidecar) by
         // pre-creating its destination as a non-empty directory.
         let replay_plan_path = committed_replay_plan_path(&work, &bucket, &version);
-        fs::create_dir_all(&replay_plan_path).unwrap();
-        fs::write(replay_plan_path.join("sentinel"), b"keep").unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &replay_plan_path).unwrap();
+        crate::migrate::write_workspace_file(&work, replay_plan_path.join("sentinel"), b"keep")
+            .unwrap();
 
         let req = ComposeRequest {
             workspace_root: &work,
@@ -4414,13 +4446,15 @@ mod tests {
         // `WriteRollback::drop` runs the down restore first, then
         // the up restore — but we only observe the final state,
         // which must match the pre-compose state byte-for-byte.
-        let after_up = fs::read(&up_path).expect("up file still present");
+        let after_up =
+            crate::migrate::read_workspace_file(&work, &up_path).expect("up file still present");
         assert_eq!(
             after_up.as_slice(),
             original_up,
             "up file must be restored to original operator content"
         );
-        let after_down = fs::read(&down_path).expect("down file still present");
+        let after_down = crate::migrate::read_workspace_file(&work, &down_path)
+            .expect("down file still present");
         assert_eq!(
             after_down.as_slice(),
             original_down,
@@ -4429,7 +4463,7 @@ mod tests {
 
         // (b) No `.tmp.<pid>.<n>` files remain in the bucket directory.
         let mut tmp_files: Vec<String> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+        if let Ok(entries) = crate::migrate::read_workspace_dir(&work, &bucket_directory) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.contains(".tmp.") {
@@ -4446,7 +4480,7 @@ mod tests {
         // directory. The LIFO restore renames each backup back
         // over its final path, leaving zero backup siblings.
         let mut bak_files: Vec<String> = Vec::new();
-        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+        if let Ok(entries) = crate::migrate::read_workspace_dir(&work, &bucket_directory) {
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.contains(".bak.") {
@@ -4494,9 +4528,10 @@ mod tests {
         };
         let r1 = compose(req1).expect("first compose");
         let down_path = r1.composed_buckets[0].down_sql_path.clone();
-        let original_down = fs::read_to_string(&down_path).unwrap();
+        let original_down =
+            crate::migrate::read_workspace_file_to_string(&work, &down_path).unwrap();
         let edited_down = original_down.clone() + "\n-- operator hand-edit on down only\n";
-        fs::write(&down_path, &edited_down).unwrap();
+        crate::migrate::write_workspace_file(&work, &down_path, edited_down.as_bytes()).unwrap();
 
         let req2 = ComposeRequest {
             workspace_root: &work,
@@ -4546,7 +4581,7 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         // The hand-edited down file is preserved on disk.
-        let after = fs::read_to_string(&down_path).unwrap();
+        let after = crate::migrate::read_workspace_file_to_string(&work, &down_path).unwrap();
         assert_eq!(after, edited_down);
         cleanup_workspace(&work);
     }
@@ -4584,8 +4619,8 @@ mod tests {
         let r1 = compose(req1).expect("first compose");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
         let down_path = r1.composed_buckets[0].down_sql_path.clone();
-        fs::write(&up_path, b"-- hand edit up\n").unwrap();
-        fs::write(&down_path, b"-- hand edit down\n").unwrap();
+        crate::migrate::write_workspace_file(&work, &up_path, b"-- hand edit up\n").unwrap();
+        crate::migrate::write_workspace_file(&work, &down_path, b"-- hand edit down\n").unwrap();
 
         let req2 = ComposeRequest {
             workspace_root: &work,
@@ -4758,7 +4793,7 @@ mod tests {
             .iter()
             .find(|c| c.bucket == new_bucket)
             .expect("destination bucket composed");
-        let up = fs::read_to_string(&dest.up_sql_path).unwrap();
+        let up = crate::migrate::read_workspace_file_to_string(&work, &dest.up_sql_path).unwrap();
         // No DropTable for any of the three table names.
         for name in ["invoices", "customers", "line_items"] {
             let drop_text = format!("DROP TABLE \"{name}\"");
@@ -4792,13 +4827,23 @@ mod tests {
         };
         let old_dir = bucket_dir(&work, &old_bucket);
         let new_dir = bucket_dir(&work, &new_bucket);
-        fs::create_dir_all(&old_dir).unwrap();
-        fs::create_dir_all(&new_dir).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &old_dir).unwrap();
+        crate::migrate::create_workspace_dir_all(&work, &new_dir).unwrap();
         // Both directories contain a file of the SAME name with
         // DIFFERENT content — a collision the prior merge loop would
         // silently swallow.
-        fs::write(old_dir.join("V20260101010101__init.sdjql"), "from-old").unwrap();
-        fs::write(new_dir.join("V20260101010101__init.sdjql"), "from-new").unwrap();
+        crate::migrate::write_workspace_file(
+            &work,
+            old_dir.join("V20260101010101__init.sdjql"),
+            b"from-old",
+        )
+        .unwrap();
+        crate::migrate::write_workspace_file(
+            &work,
+            new_dir.join("V20260101010101__init.sdjql"),
+            b"from-new",
+        )
+        .unwrap();
         let mut snapshots = BTreeMap::new();
         snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
         let mut models = BTreeMap::new();
@@ -4839,11 +4884,19 @@ mod tests {
         // The pre-existing files are left untouched (no partial
         // merge state).
         assert_eq!(
-            fs::read_to_string(old_dir.join("V20260101010101__init.sdjql")).unwrap(),
+            crate::migrate::read_workspace_file_to_string(
+                &work,
+                old_dir.join("V20260101010101__init.sdjql"),
+            )
+            .unwrap(),
             "from-old"
         );
         assert_eq!(
-            fs::read_to_string(new_dir.join("V20260101010101__init.sdjql")).unwrap(),
+            crate::migrate::read_workspace_file_to_string(
+                &work,
+                new_dir.join("V20260101010101__init.sdjql"),
+            )
+            .unwrap(),
             "from-new"
         );
         cleanup_workspace(&work);
@@ -4932,17 +4985,32 @@ mod tests {
             };
             let old_dir = bucket_dir(&work, &old_bucket);
             let new_dir = bucket_dir(&work, &new_bucket);
-            fs::create_dir_all(&old_dir).unwrap();
-            fs::create_dir_all(&new_dir).unwrap();
+            crate::migrate::create_workspace_dir_all(&work, &old_dir).unwrap();
+            crate::migrate::create_workspace_dir_all(&work, &new_dir).unwrap();
             // Two entries on the OLD side; the SECOND one collides on
             // the NEW side. If the pre-flight check were ever loosened
             // to skip later entries, the first move would land and the
             // second would fail mid-loop — which is the scenario we
             // want to make unreachable. Today the pre-flight inspects
             // every entry up-front and refuses fail-fast.
-            fs::write(old_dir.join("V20260101010101__a.sdjql"), "movable").unwrap();
-            fs::write(old_dir.join("V20260101010102__b.sdjql"), "from-old").unwrap();
-            fs::write(new_dir.join("V20260101010102__b.sdjql"), "from-new").unwrap();
+            crate::migrate::write_workspace_file(
+                &work,
+                old_dir.join("V20260101010101__a.sdjql"),
+                b"movable",
+            )
+            .unwrap();
+            crate::migrate::write_workspace_file(
+                &work,
+                old_dir.join("V20260101010102__b.sdjql"),
+                b"from-old",
+            )
+            .unwrap();
+            crate::migrate::write_workspace_file(
+                &work,
+                new_dir.join("V20260101010102__b.sdjql"),
+                b"from-new",
+            )
+            .unwrap();
             let mut snapshots = BTreeMap::new();
             snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
             let mut models = BTreeMap::new();
@@ -5011,15 +5079,25 @@ mod tests {
             };
             let old_dir = bucket_dir(&work, &old_bucket);
             let new_dir = bucket_dir(&work, &new_bucket);
-            fs::create_dir_all(&old_dir).unwrap();
-            fs::create_dir_all(&new_dir).unwrap();
+            crate::migrate::create_workspace_dir_all(&work, &old_dir).unwrap();
+            crate::migrate::create_workspace_dir_all(&work, &new_dir).unwrap();
             // OLD has a file at `V20260101010101__init.sdjql`. NEW has
             // a DIRECTORY at the same path. Without the pre-flight,
             // `fs::rename(<file>, <existing-dir>)` would fail
             // mid-loop with EISDIR.
-            fs::write(old_dir.join("V20260101010101__init.sdjql"), "movable").unwrap();
-            fs::create_dir_all(new_dir.join("V20260101010101__init.sdjql")).unwrap();
-            fs::write(
+            crate::migrate::write_workspace_file(
+                &work,
+                old_dir.join("V20260101010101__init.sdjql"),
+                b"movable",
+            )
+            .unwrap();
+            crate::migrate::create_workspace_dir_all(
+                &work,
+                new_dir.join("V20260101010101__init.sdjql"),
+            )
+            .unwrap();
+            crate::migrate::write_workspace_file(
+                &work,
                 new_dir.join("V20260101010101__init.sdjql").join("sentinel"),
                 b"keep",
             )
@@ -6172,7 +6250,12 @@ mod tests {
     }
 
     /// Read a PendingPlan from the composed report for a given bucket.
-    fn read_written_pending(report: &ComposeReport, database: &str, app: &str) -> PendingPlan {
+    fn read_written_pending(
+        work: &Path,
+        report: &ComposeReport,
+        database: &str,
+        app: &str,
+    ) -> PendingPlan {
         let bucket = BucketKey {
             database: database.to_string(),
             app: app.to_string(),
@@ -6182,7 +6265,7 @@ mod tests {
             .iter()
             .find(|c| c.bucket == bucket)
             .unwrap_or_else(|| panic!("composed bucket for {database}/{app}"));
-        let bytes = fs::read(&cb.pending_json_path)
+        let bytes = crate::migrate::read_workspace_file(work, &cb.pending_json_path)
             .unwrap_or_else(|_| panic!("read pending for {database}/{app}"));
         parse_pending_bytes(&bytes, Some(cb.pending_json_path.clone()))
             .unwrap_or_else(|e| panic!("parse pending for {database}/{app}: {e}"))
@@ -6258,8 +6341,8 @@ mod tests {
         };
 
         let report = compose(req).expect("composes");
-        let system = read_written_pending(&report, "main", "system");
-        let users = read_written_pending(&report, "main", "users");
+        let system = read_written_pending(&work, &report, "main", "system");
+        let users = read_written_pending(&work, &report, "main", "users");
         assert_eq!(
             system.depends_on,
             vec!["users".to_string()],
@@ -6651,7 +6734,7 @@ mod tests {
         };
 
         let report = compose(req).expect("composes");
-        let events = read_written_pending(&report, "analytics", "events");
+        let events = read_written_pending(&work, &report, "analytics", "events");
         assert!(
             events.depends_on.is_empty(),
             "events should have no depends_on (cross-database FK to main/users is filtered out)"
@@ -6739,7 +6822,7 @@ mod tests {
         };
 
         let report = compose(req).expect("composes");
-        let system = read_written_pending(&report, "main", "system");
+        let system = read_written_pending(&work, &report, "main", "system");
         assert!(
             system.depends_on.is_empty(),
             "system should have no depends_on (FK target 'users' not in projection)"
@@ -6879,7 +6962,7 @@ mod tests {
         };
 
         let report = compose(req).expect("composes");
-        let orders = read_written_pending(&report, "main", "orders");
+        let orders = read_written_pending(&work, &report, "main", "orders");
         assert!(
             orders.depends_on.is_empty(),
             "orders should have no depends_on (within-bucket FK is excluded)"
@@ -6969,7 +7052,8 @@ mod tests {
         let report = compose(req).expect("composes");
 
         // Read up SQL for each bucket.
-        let alpha_up = fs::read_to_string(
+        let alpha_up = crate::migrate::read_workspace_file_to_string(
+            &work,
             &report
                 .composed_buckets
                 .iter()
@@ -6978,7 +7062,8 @@ mod tests {
                 .up_sql_path,
         )
         .unwrap();
-        let beta_up = fs::read_to_string(
+        let beta_up = crate::migrate::read_workspace_file_to_string(
+            &work,
             &report
                 .composed_buckets
                 .iter()
@@ -6999,7 +7084,7 @@ mod tests {
         );
 
         // Non-owner (beta) depends on owner (alpha).
-        let beta_pending = read_written_pending(&report, "main", "beta");
+        let beta_pending = read_written_pending(&work, &report, "main", "beta");
         assert_eq!(
             beta_pending.depends_on,
             vec!["alpha".to_string()],
@@ -7008,7 +7093,8 @@ mod tests {
 
         // REQ-396-6: non-owner beta had AddEnum removed by dedup, so its
         // down migration must NOT drop the shared type.
-        let beta_down = fs::read_to_string(
+        let beta_down = crate::migrate::read_workspace_file_to_string(
+            &work,
             &report
                 .composed_buckets
                 .iter()
@@ -7236,7 +7322,7 @@ mod tests {
         // into a new BTreeMap to use as the baseline for recompose.
         let mut model_snapshots: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
         for cb in &report.composed_buckets {
-            let pending = read_written_pending(&report, &cb.bucket.database, &cb.bucket.app);
+            let pending = read_written_pending(&work, &report, &cb.bucket.database, &cb.bucket.app);
             model_snapshots.insert(cb.bucket.clone(), pending.model_snapshot);
         }
 
@@ -7341,7 +7427,8 @@ mod tests {
         match result {
             Ok(report) => {
                 for cb in &report.composed_buckets {
-                    let up = fs::read_to_string(&cb.up_sql_path).unwrap();
+                    let up = crate::migrate::read_workspace_file_to_string(&work, &cb.up_sql_path)
+                        .unwrap();
                     assert!(
                         !up.contains("CREATE TYPE"),
                         "No CREATE TYPE expected when snapshot already has enum. Bucket {:?}:\n{}",
@@ -7442,7 +7529,8 @@ mod tests {
         match result {
             Ok(report) => {
                 for cb in &report.composed_buckets {
-                    let up = fs::read_to_string(&cb.up_sql_path).unwrap();
+                    let up = crate::migrate::read_workspace_file_to_string(&work, &cb.up_sql_path)
+                        .unwrap();
                     assert!(
                         !up.contains("DROP TYPE"),
                         "No DROP TYPE expected when another bucket still references enum. Bucket {:?}:\n{}",
@@ -7539,7 +7627,8 @@ mod tests {
         );
 
         // Read up SQL for beta (the keeper — last in topological order).
-        let beta_up = fs::read_to_string(
+        let beta_up = crate::migrate::read_workspace_file_to_string(
+            &work,
             &report
                 .composed_buckets
                 .iter()
@@ -7646,7 +7735,7 @@ mod tests {
         let report = compose(req).expect("composes");
 
         // Beta depends on alpha (enum ownership edge for same-run AddEnum + AddEnumVariant).
-        let beta_pending = read_written_pending(&report, "main", "beta");
+        let beta_pending = read_written_pending(&work, &report, "main", "beta");
         assert!(
             beta_pending.depends_on.contains(&"alpha".to_string()),
             "beta should depend on alpha for enum ownership"
@@ -7926,7 +8015,8 @@ mod tests {
         let report = compose(req).expect("compose should succeed without cycle error");
 
         // 2. Beta's SQL contains CREATE TYPE (beta is the enum owner — first in topo order).
-        let beta_up = fs::read_to_string(
+        let beta_up = crate::migrate::read_workspace_file_to_string(
+            &work,
             &report
                 .composed_buckets
                 .iter()
@@ -7947,7 +8037,8 @@ mod tests {
             .iter()
             .find(|c| c.bucket == alpha_bucket)
             .expect("alpha should be in composed_buckets");
-        let alpha_up = fs::read_to_string(&alpha_cb.up_sql_path).unwrap();
+        let alpha_up =
+            crate::migrate::read_workspace_file_to_string(&work, &alpha_cb.up_sql_path).unwrap();
         assert!(
             !alpha_up.contains("CREATE TYPE"),
             "alpha should NOT emit CREATE TYPE (deduplicated). alpha_up:\n{}",
@@ -7955,7 +8046,7 @@ mod tests {
         );
 
         // 4. Alpha depends on beta (from both FK edge and enum ownership edge).
-        let alpha_pending = read_written_pending(&report, "main", "alpha");
+        let alpha_pending = read_written_pending(&work, &report, "main", "alpha");
         assert!(
             alpha_pending.depends_on.contains(&"beta".to_string()),
             "alpha should depend on beta (FK + enum ownership). depends_on: {:?}",
@@ -8082,7 +8173,7 @@ mod tests {
 
         // 3. The snapshot does NOT contain the mood enum (beta no longer
         //    projects it — the scoped snapshot reflects current beta models).
-        let snap_bytes = fs::read(&snap_path).unwrap();
+        let snap_bytes = crate::migrate::read_workspace_file(&work, &snap_path).unwrap();
         let snap: crate::migrate::schema::AppliedSchema =
             serde_json::from_slice(&snap_bytes).expect("valid snapshot JSON");
         assert!(
