@@ -7,6 +7,8 @@ use std::{
 
 use syn::{Attribute, Item, spanned::Spanned};
 
+use djogi::migrate::read_workspace_file_to_string;
+
 use crate::check_test_surface::{contains_identifier, strip_comments_and_literals};
 
 const BYPASS_ATTR: &str = "deliberately_bypass_convention_with_raw_sql";
@@ -176,7 +178,10 @@ fn collect_rs_files(root: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
 }
 
 fn scan_file(path: &Path, stats: &mut Stats, violations: &mut Vec<Violation>) {
-    let source = match fs::read_to_string(path) {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("xtask crate must live under the workspace root");
+    let source = match read_workspace_file_to_string(workspace_root, path) {
         Ok(source) => source,
         Err(error) => {
             violations.push(Violation {
