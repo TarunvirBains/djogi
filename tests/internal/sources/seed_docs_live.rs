@@ -28,12 +28,11 @@
 // part of `db reset`; the post-gate path is a thin wrapper around
 // the already-tested `apply_plan`.
 
-use std::fs;
 use std::path::PathBuf;
 
 use djogi::migrate::{
-    SeedError, SeedOutcome, derive_per_database_url, read_workspace_file_to_string,
-    remove_workspace_dir_all, run_seeds, write_workspace_file,
+    SeedError, SeedOutcome, create_workspace_dir_all, derive_per_database_url,
+    read_workspace_file_to_string, remove_workspace_dir_all, run_seeds, write_workspace_file,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -47,7 +46,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let p = std::env::temp_dir().join(format!("djogi-t8-{tag}-{stamp}-{n}"));
-    fs::create_dir_all(&p).unwrap();
+    create_workspace_dir_all(&std::env::temp_dir(), &p).unwrap();
     p
 }
 
@@ -99,7 +98,7 @@ async fn seed_runner_applies_seeds_and_records_in_ledger(mut ctx: djogi::DjogiCo
     let work = temp_workspace("seed_apply");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     // Two SQL seed files. The seeds create + populate a small
     // reference table; we cleanly assert post-state.
@@ -192,7 +191,7 @@ async fn seed_runner_refuses_on_checksum_drift(mut ctx: djogi::DjogiContext) {
     let work = temp_workspace("seed_drift");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     // First run — apply a seed.
     let seed_path = seeds_dir.join("01_init.sql");
@@ -297,7 +296,7 @@ async fn seed_runner_rejects_concurrent_first_run(mut ctx: djogi::DjogiContext) 
     let work = temp_workspace("seed_concurrent");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     ctx.raw_ddl("CREATE TABLE seed_concurrent (id BIGINT NOT NULL)")
         .await
@@ -357,7 +356,7 @@ async fn seed_runner_leaves_stale_claim_on_finalize_failure(mut ctx: djogi::Djog
     let work = temp_workspace("seed_stale_claim");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     ctx.raw_ddl("CREATE TABLE seed_stale_claim (id BIGINT NOT NULL)")
         .await
@@ -436,7 +435,7 @@ async fn seed_runner_marks_failed_claim_and_refuses_retry(mut ctx: djogi::DjogiC
     let work = temp_workspace("seed_failed_claim");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     write_workspace_file(
         &work,
@@ -496,7 +495,7 @@ async fn seed_runner_explicit_transaction_failure_surfaces_failed_claim_on_rerun
     let work = temp_workspace("seed_explicit_tx_failed_claim");
     let database = current_database(&mut ctx).await;
     let seeds_dir = work.join("seeds").join(&database);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
 
     write_workspace_file(
         &work,
@@ -787,7 +786,7 @@ async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiCo
     // `<workspace>/seeds/<second_db>/`.
     let work = temp_workspace("u_partial_seed_route");
     let seeds_dir = work.join("seeds").join(&second_db);
-    fs::create_dir_all(&seeds_dir).unwrap();
+    create_workspace_dir_all(&work, &seeds_dir).unwrap();
     write_workspace_file(
         &work,
         seeds_dir.join("01_route_proof.sql"),
