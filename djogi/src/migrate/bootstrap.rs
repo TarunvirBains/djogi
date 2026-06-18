@@ -1745,9 +1745,10 @@ mod tests {
         };
         let legacy_write = pending_json_path(&work, &bucket);
         assert!(legacy_write.starts_with(&work));
-        fs::write(
+        crate::migrate::common::write_workspace_file(
+            &work,
             &legacy_write,
-            serde_json::to_vec_pretty(&legacy_pending).unwrap(),
+            &serde_json::to_vec_pretty(&legacy_pending).unwrap(),
         )
         .unwrap();
 
@@ -1808,9 +1809,10 @@ mod tests {
         let legacy_path = pending_json_path(&work, &bucket);
         assert!(legacy_path.starts_with(&work));
         ensure_parent(&legacy_path).unwrap();
-        fs::write(
+        crate::migrate::common::write_workspace_file(
+            &work,
             &legacy_path,
-            serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
+            &serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
         )
         .unwrap();
 
@@ -1819,9 +1821,10 @@ mod tests {
         invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
         assert!(hidden_path.starts_with(&work));
         ensure_parent(&hidden_path).unwrap();
-        fs::write(
+        crate::migrate::common::write_workspace_file(
+            &work,
             &hidden_path,
-            serde_json::to_vec_pretty(&invalid_hidden_pending).unwrap(),
+            &serde_json::to_vec_pretty(&invalid_hidden_pending).unwrap(),
         )
         .unwrap();
 
