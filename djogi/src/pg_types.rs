@@ -1404,6 +1404,26 @@ impl ToSql for InetAddr {
     to_sql_checked!();
 }
 
+#[cfg(feature = "network")]
+impl<'a> FromSql<'a> for InetAddr {
+    fn from_sql(_ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn Error + Sync + Send>> {
+        // INET permits host bits past the prefix, so — unlike CidrAddr —
+        // there is no host-bits-zero re-check here. read_inet_payload
+        // already validates the header (family, prefix bound, length).
+        let (addr, prefix) = read_inet_payload(raw)?;
+        Ok(InetAddr { addr, prefix })
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::INET
+    }
+}
+
+#[cfg(feature = "network")]
+impl crate::descriptor::DjogiSqlType for InetAddr {
+    const SQL_TYPE: &'static str = "INET";
+}
+
 /// Shared INET/CIDR wire encoder. The on-wire format is identical for
 /// INET and CIDR; only the Postgres type OID and the `is_cidr` byte
 /// differ. `CidrAddr::to_sql` sets `is_cidr = 1`; future INET typed
@@ -2316,5 +2336,50 @@ mod tests {
         assert!(<InetAddr as ToSql>::accepts(&Type::INET));
         assert!(!<InetAddr as ToSql>::accepts(&Type::CIDR));
         assert!(!<InetAddr as ToSql>::accepts(&Type::INT8));
+    }
+
+    // ── InetAddr FromSql + DjogiSqlType tests ────────────────────
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_round_trip_preserves_host_bits_and_prefix() {
+        use std::net::{IpAddr, Ipv4Addr};
+        // Host bits set: 192.168.1.5/24. CIDR would reject this on decode;
+        // INET must preserve it byte-for-byte.
+        let inet = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).unwrap();
+        let mut buf = BytesMut::new();
+        inet.to_sql(&Type::INET, &mut buf).unwrap();
+        let decoded = InetAddr::from_sql(&Type::INET, &buf).unwrap();
+        assert_eq!(decoded, inet);
+        assert_eq!(decoded.prefix(), 24);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_round_trip_ipv6() {
+        use std::net::{IpAddr, Ipv6Addr};
+        let inet = InetAddr::new(
+            IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
+            64,
+        )
+        .unwrap();
+        let mut buf = BytesMut::new();
+        inet.to_sql(&Type::INET, &mut buf).unwrap();
+        let decoded = InetAddr::from_sql(&Type::INET, &buf).unwrap();
+        assert_eq!(decoded, inet);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_from_sql_accepts_only_inet_type() {
+        assert!(<InetAddr as FromSql>::accepts(&Type::INET));
+        assert!(!<InetAddr as FromSql>::accepts(&Type::CIDR));
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_djogi_sql_type_is_inet() {
+        use crate::descriptor::DjogiSqlType;
+        assert_eq!(<InetAddr as DjogiSqlType>::SQL_TYPE, "INET");
     }
 }
