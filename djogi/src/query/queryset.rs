@@ -1104,30 +1104,27 @@ impl<T: Model> QuerySet<T> {
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
     /// Takes `u64` at the API boundary so negative values are not
     /// representable — the builder can never be put into an invalid state.
-    /// Internally stored as `Option<i64>` to match `tokio_postgres`'s BIGINT
-    /// bind type; the cast is guarded by a `debug_assert!` so any pathological
-    /// `n > i64::MAX` case (impossible at query scale in practice) trips
-    /// in debug builds.
+    /// Panics if `n > i64::MAX` — Postgres bind type for `LIMIT` is `BIGINT`,
+    /// so values above `i64::MAX` cannot round-trip. The check uses
+    /// `try_from` (not `debug_assert!`) so release builds also panic
+    /// rather than silently truncate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn limit(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "QuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.limit = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("QuerySet::limit(n = {n}) overflows i64"));
+        self.limit = Some(n);
         self
     }
 
     /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
     /// Takes `u64` for the same reason as [`QuerySet::limit`] — negative
     /// offsets are meaningless and now impossible to construct.
+    /// Panics if `n > i64::MAX` — see [`Self::limit`] for the rationale.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn offset(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "QuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.offset = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("QuerySet::offset(n = {n}) overflows i64"));
+        self.offset = Some(n);
         self
     }
 
@@ -3899,5 +3896,17 @@ mod tests {
         // The recovered queryset still carries the legacy condition so the
         // caller can rewrite it without losing the original filter.
         assert!(matches!(&recovered.condition, Q::Condition(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "QuerySet::limit(n = 18446744073709551615) overflows i64")]
+    fn queryset_limit_over_i64_max_panics() {
+        let _ = QuerySet::<Fake>::new().limit(u64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "QuerySet::offset(n = 18446744073709551615) overflows i64")]
+    fn queryset_offset_over_i64_max_panics() {
+        let _ = QuerySet::<Fake>::new().offset(u64::MAX);
     }
 }
