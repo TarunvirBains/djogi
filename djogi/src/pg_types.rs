@@ -1385,6 +1385,25 @@ impl std::fmt::Display for InetAddr {
     }
 }
 
+#[cfg(feature = "network")]
+impl ToSql for InetAddr {
+    fn to_sql(
+        &self,
+        _ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn Error + Sync + Send>> {
+        // INET shares CIDR's wire layout; the is_cidr byte is 0 for INET.
+        write_inet_payload(self.addr, self.prefix, /*is_cidr=*/ 0, out);
+        Ok(IsNull::No)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::INET
+    }
+
+    to_sql_checked!();
+}
+
 /// Shared INET/CIDR wire encoder. The on-wire format is identical for
 /// INET and CIDR; only the Postgres type OID and the `is_cidr` byte
 /// differ. `CidrAddr::to_sql` sets `is_cidr = 1`; future INET typed
@@ -2271,5 +2290,31 @@ mod tests {
         use std::net::{IpAddr, Ipv4Addr};
         let inet = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
         assert_eq!(inet.to_string(), "10.0.0.1/8");
+    }
+
+    // ── InetAddr ToSql tests ────────────────────────────────────
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_to_sql_writes_is_cidr_zero_header() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).unwrap();
+        let mut buf = BytesMut::new();
+        inet.to_sql(&Type::INET, &mut buf).unwrap();
+        // family(2) prefix(24) is_cidr(0) len(4) + 4 addr bytes
+        assert_eq!(buf.len(), 8);
+        assert_eq!(buf[0], PGSQL_AF_INET);
+        assert_eq!(buf[1], 24);
+        assert_eq!(buf[2], 0, "is_cidr byte MUST be 0 for INET");
+        assert_eq!(buf[3], 4);
+        assert_eq!(&buf[4..], &[192, 168, 1, 5]);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_to_sql_accepts_only_inet_type() {
+        assert!(<InetAddr as ToSql>::accepts(&Type::INET));
+        assert!(!<InetAddr as ToSql>::accepts(&Type::CIDR));
+        assert!(!<InetAddr as ToSql>::accepts(&Type::INT8));
     }
 }
