@@ -602,10 +602,18 @@ fn reconcile_arm_tenants(
     Ok(())
 }
 
-/// Validate that each arm's column count matches the decode target `R`.
+/// Validate that each arm's column **count** matches the decode target `R`.
 /// Postgres compares set-op arms positionally, so a mismatch produces
 /// a silent misdecode in release mode. This check catches it at
 /// SQL-build time before any tenant wiring or SQL emission.
+///
+/// Scope: this is a count-only check. It does **not** catch arms that share
+/// the same column count but project them in a different order (same arity,
+/// wrong positional alignment), which still relies on the Postgres decode
+/// step to surface a type error — or silently misdecodes when the
+/// out-of-order columns happen to share a type. A column name-order
+/// comparison plus an `R::COLUMN_COUNT` compile-time arity guard is tracked
+/// as follow-up work (djogi#498).
 fn validate_arm_columns<R: FromPgRow>(
     left: &dyn CrossArm<R>,
     right: &dyn CrossArm<R>,
