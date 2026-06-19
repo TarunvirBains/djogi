@@ -58,6 +58,33 @@ pub enum Condition {
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::overlap`].
     ArrayOverlap(crate::array::ArrayOverlapLeaf),
 
+    /// `col >> $1` — INET contains. The LHS network contains the RHS
+    /// address or network.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contains`].
+    #[cfg(feature = "network")]
+    InetContains(crate::inet::InetContainsLeaf),
+
+    /// `col << $1` — INET contained by. The LHS address is within the
+    /// RHS network.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contained_by`].
+    #[cfg(feature = "network")]
+    InetContainedBy(crate::inet::InetContainedByLeaf),
+
+    /// `col >>= $1` — INET contains or equals.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contains_or_equals`].
+    #[cfg(feature = "network")]
+    InetContainsEq(crate::inet::InetContainsEqLeaf),
+
+    /// `col <<= $1` — INET contained by or equals.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contained_by_or_equals`].
+    #[cfg(feature = "network")]
+    InetContainedByEq(crate::inet::InetContainedByEqLeaf),
+
+    /// `col && $1` — INET overlap. LHS and RHS share at least one address.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::overlaps`].
+    #[cfg(feature = "network")]
+    InetOverlap(crate::inet::InetOverlapLeaf),
+
     /// Postgres range predicate (`@>`, `<@`, `&&`, `<<`, `>>`, `&<`, `&>`,
     /// `-|-`) over a `Range<T>` column.
     /// Produced by the SQL-only range methods on

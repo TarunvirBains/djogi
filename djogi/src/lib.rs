@@ -61,6 +61,8 @@ pub mod fts_query;
 pub mod geo;
 pub mod hooks;
 pub(crate) mod ident;
+#[cfg(feature = "network")]
+pub mod inet;
 pub mod intent;
 pub mod jsonb;
 pub mod live_migrate;

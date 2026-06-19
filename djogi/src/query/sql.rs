@@ -776,6 +776,46 @@ pub(crate) fn emit_condition(
             push_filter_value_ref(acc, &leaf.values);
             Ok(())
         }
+        // ── INET containment operators ────────────────────────
+        // All five operators emit `col OP $n` where `$n` is a bound
+        // inet/cidr/ipaddr parameter. Postgres allows any of the three
+        // network types as the RHS; the typed `DjogiField<M, InetAddr>`
+        // API accepts all three via the sealed trait in `field.rs`.
+        #[cfg(feature = "network")]
+        Condition::InetContains(leaf) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" >> ");
+            push_filter_value_ref(acc, &leaf.value);
+            Ok(())
+        }
+        #[cfg(feature = "network")]
+        Condition::InetContainedBy(leaf) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" << ");
+            push_filter_value_ref(acc, &leaf.value);
+            Ok(())
+        }
+        #[cfg(feature = "network")]
+        Condition::InetContainsEq(leaf) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" >>= ");
+            push_filter_value_ref(acc, &leaf.value);
+            Ok(())
+        }
+        #[cfg(feature = "network")]
+        Condition::InetContainedByEq(leaf) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" <<= ");
+            push_filter_value_ref(acc, &leaf.value);
+            Ok(())
+        }
+        #[cfg(feature = "network")]
+        Condition::InetOverlap(leaf) => {
+            push_qualified_col(acc, leaf.column, parent_table);
+            acc.push_sql(" && ");
+            push_filter_value_ref(acc, &leaf.value);
+            Ok(())
+        }
         // ── Range operators ──────────────────────────────────
         // All range predicates emit `col OP $n`; the RHS bind is either a
         // range value or, for `contains(element)`, the range element type.
