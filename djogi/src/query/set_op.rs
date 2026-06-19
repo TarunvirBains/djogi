@@ -817,16 +817,18 @@ impl<T: Model> SetOpQuerySet<T> {
     /// pre-merge row count. The outer limit caps the post-merge total.
     /// Takes `u64` at the API boundary so negative values are not
     /// representable. Stored internally as `Option<i64>` to match
-    /// `tokio_postgres`'s `BIGINT` bind type; the cast is guarded by a
-    /// `debug_assert!` so any pathological `n > i64::MAX` case
-    /// (impossible at realistic query scale) trips in debug builds.
+    /// `tokio_postgres`'s `BIGINT` bind type.
+    /// # Panics
+    /// Panics if `n > i64::MAX`. Postgres's `LIMIT` bind type is
+    /// `BIGINT`, so values above `i64::MAX` cannot round-trip; such a
+    /// value is a programming error, not a runtime condition. The check
+    /// uses `i64::try_from` (not `debug_assert!`) so release builds also
+    /// panic rather than silently truncate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn limit(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "SetOpQuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.limit = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("SetOpQuerySet::limit(n = {n}) overflows i64"));
+        self.limit = Some(n);
         self
     }
 
@@ -834,14 +836,15 @@ impl<T: Model> SetOpQuerySet<T> {
     /// any prior outer offset.
     /// Takes `u64` for the same reason as
     /// [`SetOpQuerySet::limit`] — negative offsets are meaningless
-    /// and now impossible to construct.
+    /// and impossible to construct.
+    /// # Panics
+    /// Panics if `n > i64::MAX` — see [`SetOpQuerySet::limit`] for the
+    /// rationale.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn offset(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "SetOpQuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.offset = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("SetOpQuerySet::offset(n = {n}) overflows i64"));
+        self.offset = Some(n);
         self
     }
 
@@ -1047,7 +1050,59 @@ mod tests {
     //! keyword.
 
     use super::*;
+    use crate::descriptor::ModelDescriptor;
     use crate::DjogiError;
+
+    // Minimal DB-free `Model` impl for set-op builder panic tests. Mirrors
+    // the `Fake` model in `queryset`/`sql` unit tests so these stay
+    // independent of `#[model]` macro expansion. Only the methods the
+    // builder path touches are reachable; the rest are `unreachable!`.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!("not called in set-op panic tests")
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!("not called in set-op panic tests")
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: Self::Pk,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unreachable!() }
+        }
+    }
 
     #[test]
     fn set_op_kind_keyword_renders_postgres_tokens() {
@@ -1084,5 +1139,24 @@ mod tests {
         assert!(msg.contains("phase8_5_c4b_dogs"), "{msg}");
         assert!(msg.contains("right"), "{msg}");
         assert!(msg.contains("row-level lock"), "{msg}");
+    }
+
+    #[test]
+    #[should_panic(expected = "SetOpQuerySet::limit(n = 18446744073709551615) overflows i64")]
+    fn set_op_limit_over_i64_max_panics() {
+        // u64::MAX is 2^64-1, far above i64::MAX (2^63-1). A LIMIT that
+        // large is nonsensical and indicates a programming error; the
+        // guard must panic in every build profile, not silently truncate.
+        let _ = QuerySet::<Fake>::new()
+            .union(QuerySet::<Fake>::new())
+            .limit(u64::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "SetOpQuerySet::offset(n = 18446744073709551615) overflows i64")]
+    fn set_op_offset_over_i64_max_panics() {
+        let _ = QuerySet::<Fake>::new()
+            .union(QuerySet::<Fake>::new())
+            .offset(u64::MAX);
     }
 }
