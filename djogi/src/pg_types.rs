@@ -2296,11 +2296,17 @@ mod tests {
         use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
         assert_eq!(
             InetAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 33),
-            Err(InetAddrError::PrefixTooLarge { prefix: 33, max: 32 })
+            Err(InetAddrError::PrefixTooLarge {
+                prefix: 33,
+                max: 32
+            })
         );
         assert_eq!(
             InetAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 129),
-            Err(InetAddrError::PrefixTooLarge { prefix: 129, max: 128 })
+            Err(InetAddrError::PrefixTooLarge {
+                prefix: 129,
+                max: 128
+            })
         );
     }
 
@@ -2358,11 +2364,8 @@ mod tests {
     #[test]
     fn inet_addr_round_trip_ipv6() {
         use std::net::{IpAddr, Ipv6Addr};
-        let inet = InetAddr::new(
-            IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
-            64,
-        )
-        .unwrap();
+        let inet =
+            InetAddr::new(IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()), 64).unwrap();
         let mut buf = BytesMut::new();
         inet.to_sql(&Type::INET, &mut buf).unwrap();
         let decoded = InetAddr::from_sql(&Type::INET, &buf).unwrap();

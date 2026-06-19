@@ -600,6 +600,8 @@ impl ExplicitPgOrderable for std::net::IpAddr {}
 impl ExplicitPgOrderable for crate::CidrAddr {}
 #[cfg(feature = "network")]
 impl ExplicitPgOrderable for crate::MacAddr {}
+#[cfg(feature = "network")]
+impl ExplicitPgOrderable for crate::InetAddr {}
 
 mod visage_scalar_seal {
     pub trait Sealed {}
@@ -674,7 +676,7 @@ impl_djogi_visage_scalar!(
 );
 
 #[cfg(feature = "network")]
-impl_djogi_visage_scalar!(crate::CidrAddr, crate::MacAddr);
+impl_djogi_visage_scalar!(crate::CidrAddr, crate::InetAddr, crate::MacAddr);
 #[cfg(feature = "network")]
 impl visage_scalar_seal::Sealed for std::net::IpAddr {}
 #[cfg(feature = "network")]
@@ -1967,6 +1969,72 @@ impl<M: Model> DjogiField<M, Option<crate::CidrAddr>> {
 }
 
 #[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, crate::InetAddr> {
+    /// `inet_column = value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `inet_column <> value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `inet_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `inet_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, Option<crate::InetAddr>> {
+    /// Nullable `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `INET` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `INET IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+}
+
+#[cfg(feature = "network")]
 impl<M: Model> DjogiField<M, crate::MacAddr> {
     /// `macaddr_column = value` using PostgreSQL `MACADDR` equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -2140,6 +2208,44 @@ impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
     pub fn not_in<I>(self, values: I) -> Condition
     where
         I: IntoIterator<Item = crate::MacAddr>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiPresentField<M, crate::InetAddr> {
+    /// Present-only nullable `INET = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `INET <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `INET IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
     {
         let mut values = values.into_iter().peekable();
         if values.peek().is_none() {
@@ -4332,6 +4438,12 @@ impl IntoFilterValue for std::net::IpAddr {
 impl IntoFilterValue for crate::CidrAddr {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Cidr(self)
+    }
+}
+#[cfg(feature = "network")]
+impl IntoFilterValue for crate::InetAddr {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::InetTyped(self)
     }
 }
 #[cfg(feature = "network")]
@@ -9898,5 +10010,17 @@ mod distance_tests {
             FilterValue::Decimal(v) => assert_eq!(v, rust_decimal::Decimal::from(u64::MAX)),
             other => panic!("expected Decimal, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_into_filter_value_is_inet_typed() {
+        use super::IntoFilterValue;
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = crate::InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
+        assert!(matches!(
+            inet.into_filter_value(),
+            FilterValue::InetTyped(_)
+        ));
     }
 }

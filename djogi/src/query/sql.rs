@@ -124,6 +124,10 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
             acc.push_bind(addr);
         }
         #[cfg(feature = "network")]
+        FilterValue::InetTyped(inet) => {
+            acc.push_bind(inet);
+        }
+        #[cfg(feature = "network")]
         FilterValue::Cidr(cidr) => {
             acc.push_bind(cidr);
         }
@@ -277,6 +281,10 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
         #[cfg(feature = "network")]
         FilterValue::Inet(addr) => {
             acc.push_bind(*addr);
+        }
+        #[cfg(feature = "network")]
+        FilterValue::InetTyped(inet) => {
+            acc.push_bind(*inet);
         }
         #[cfg(feature = "network")]
         FilterValue::Cidr(cidr) => {

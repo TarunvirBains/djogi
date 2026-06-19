@@ -600,6 +600,13 @@ pub enum FilterValue {
     /// for the host-address case.
     #[cfg(feature = "network")]
     Inet(std::net::IpAddr),
+    /// Postgres `INET` column values carrying an explicit prefix
+    /// (`network` feature). Carries `djogi::InetAddr { addr, prefix }`
+    /// with construction-time prefix-bound validation. Distinct from
+    /// [`FilterValue::Inet`], which carries a bare `std::net::IpAddr`
+    /// (prefix collapsed to /32 or /128 by the native codec).
+    #[cfg(feature = "network")]
+    InetTyped(crate::InetAddr),
     /// Postgres `CIDR` column values (, `network` feature).
     /// Carries `djogi::CidrAddr { addr, prefix }` with construction-time
     /// host-bit-zero validation.
@@ -865,5 +872,14 @@ mod tests {
             LookupOp::IRegex.source_class(),
             LookupOpSourceClass::SqlOnly
         );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_typed_filter_value_is_constructible() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = crate::InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
+        let fv = FilterValue::InetTyped(inet);
+        assert!(matches!(fv, FilterValue::InetTyped(_)));
     }
 }
