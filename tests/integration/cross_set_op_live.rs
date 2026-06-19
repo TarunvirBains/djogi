@@ -214,3 +214,107 @@ async fn cross_tenant_wiring_sets_guc_and_does_not_poison(mut ctx: djogi::DjogiC
     .await
     .unwrap();
 }
+
+#[djogi::djogi_test(sync_models = [Login, Edit, Activity])]
+async fn cross_filtered_arms_merge_correctly(mut ctx: djogi::DjogiContext) {
+    seed(&mut ctx).await;
+
+    // The motivating example: recent logins (occurred >= 20) merged with
+    // recent edits (occurred >= 40).
+    let recent_logins = Login::objects().filter(|f| f.occurred().gte(20i32));
+    let recent_edits = Edit::objects().filter(|f| f.occurred().gte(40i32));
+
+    let rows: Vec<Activity> =
+        djogi::query::union_all_as::<Activity, _, _>(recent_logins, recent_edits)
+            .fetch_all(&mut ctx)
+            .await
+            .unwrap();
+    let mut actors: Vec<String> = rows.iter().map(|a| a.actor.clone()).collect();
+    actors.sort();
+    // logins occurred>=20: bob(20), cat(30) → {bob, cat}
+    // edits occurred>=40: ann(40), dan(50) → {ann, dan}
+    assert_eq!(actors, vec!["ann", "bob", "cat", "dan"]);
+}
+
+// ── Option F acceptance: a cross-SCHEMA merge of two DIFFERENT source models
+// via their narrowed visages, decoded as one visage. This is the test that
+// proves the feature closes the typed-surface gap for the Message+Reaction
+// activity-feed case. MsgEvent and RxnEvent have DIFFERENT non-exposed columns
+// (`body` vs `emoji`) but a COMMON exposed shape (actor, occurred); their
+// `public` visages therefore project the same column shape and can be unioned.
+#[model(table = "x462_live_msg_events", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct MsgEvent {
+    #[field(expose(public))]
+    pub actor: String,
+    #[field(expose(public))]
+    pub occurred: i32,
+    pub body: String,
+}
+
+#[model(table = "x462_live_rxn_events", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct RxnEvent {
+    #[field(expose(public))]
+    pub actor: String,
+    #[field(expose(public))]
+    pub occurred: i32,
+    pub emoji: String,
+}
+
+#[djogi::djogi_test(sync_models = [MsgEvent, RxnEvent])]
+async fn cross_schema_union_via_visage_arms_merges_and_decodes(mut ctx: djogi::DjogiContext) {
+    // Seed two DIFFERENT-schema source models through the typed CRUD surface.
+    for (actor, occurred, body) in [("ann", 10, "hi"), ("bob", 20, "yo")] {
+        MsgEvent::create(
+            &mut ctx,
+            MsgEvent {
+                actor: actor.to_string(),
+                occurred,
+                body: body.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed MsgEvent");
+    }
+    for (actor, occurred, emoji) in [("ann", 30, "thumbs_up"), ("dan", 40, "fire")] {
+        RxnEvent::create(
+            &mut ctx,
+            RxnEvent {
+                actor: actor.to_string(),
+                occurred,
+                emoji: emoji.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed RxnEvent");
+    }
+
+    // Cross-SCHEMA union via the two `public` visages, decoded as
+    // MsgEventPublic. The visages project the same shape
+    // (id, created_at, updated_at, actor, occurred), so the union aligns and
+    // decodes. 2 msgs + 2 rxns = 4 rows.
+    let feed: Vec<MsgEventPublic> = djogi::query::union_all_as::<MsgEventPublic, _, _>(
+        MsgEventPublic::filter(|f| f.occurred().gte(0i32)),
+        RxnEventPublic::filter(|f| f.occurred().gte(0i32)),
+    )
+    .order_by("occurred", OuterOrder::Asc)
+    .fetch_all(&mut ctx)
+    .await
+    .expect("cross-schema visage union must succeed");
+
+    assert_eq!(
+        feed.len(),
+        4,
+        "2 MsgEvent + 2 RxnEvent merged into the feed"
+    );
+    let occ: Vec<i32> = feed.iter().map(|v| v.occurred).collect();
+    assert_eq!(occ, vec![10, 20, 30, 40], "outer ORDER BY occurred ASC");
+    // The decoded visage carries the exposed `actor` value from whichever
+    // source row produced it — proving the narrowed projection decoded
+    // correctly across two different source schemas.
+    let actors: Vec<&str> = feed.iter().map(|v| v.actor.as_str()).collect();
+    assert_eq!(actors, vec!["ann", "bob", "ann", "dan"]);
+}
