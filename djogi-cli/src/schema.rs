@@ -123,10 +123,17 @@ pub fn run(
 
     match output {
         Some(path) => {
-            std::fs::write(&path, &bytes).map_err(|source| SchemaError::WriteFailed {
-                path: path.clone(),
-                source,
-            })?;
+            let workspace_root =
+                std::env::current_dir().map_err(|source| SchemaError::WriteFailed {
+                    path: path.clone(),
+                    source,
+                })?;
+            djogi::migrate::write_workspace_file(&workspace_root, &path, &bytes).map_err(
+                |source| SchemaError::WriteFailed {
+                    path: path.clone(),
+                    source,
+                },
+            )?;
         }
         None => {
             use std::io::Write;

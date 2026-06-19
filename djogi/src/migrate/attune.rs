@@ -1267,10 +1267,13 @@ async fn insert_recorded_row(
                 source,
             }
         })?;
-    let up_sql = std::fs::read_to_string(&up_sql_path).map_err(|e| AttuneError::SqlReadFailed {
-        path: up_path.to_path_buf(),
-        source: e,
-    })?;
+    let up_sql =
+        common::read_workspace_file_to_string(workspace_root, &up_sql_path).map_err(|e| {
+            AttuneError::SqlReadFailed {
+                path: up_path.to_path_buf(),
+                source: e,
+            }
+        })?;
     let checksum_up = compute_committed_sql_checksum(&up_sql, ResetSqlSide::Up);
     // Try to read the down file too — the version's down checksum is
     // best-effort. Missing down is fine; record a None so the row
@@ -1280,10 +1283,7 @@ async fn insert_recorded_row(
         .map(|p| p.join(super::naming::down_filename(version)));
     let checksum_down = down_path
         .as_ref()
-        .and_then(|p| {
-            let candidate = common::resolve_maybe_missing_workspace_path(workspace_root, p).ok()?;
-            std::fs::read_to_string(&candidate).ok()
-        })
+        .and_then(|p| common::read_workspace_file_to_string(workspace_root, p).ok())
         .and_then(|down_sql| compute_committed_down_sql_checksum(&down_sql));
     let _ = SHA256_HEX_LEN; // use the constant import for documentation; checksum_up enforces shape.
 
@@ -1402,31 +1402,21 @@ async fn run_squash(
     let wrote_down = !combined_down.is_empty();
 
     let new_up_candidate = dir.join(up_filename(from));
-    let new_up_path = common::resolve_write_workspace_path(workspace_root, &new_up_candidate)
+    common::write_workspace_file(workspace_root, &new_up_candidate, combined_up.as_bytes())
         .map_err(|source| AttuneError::SqlWriteFailed {
             path: new_up_candidate.clone(),
             source,
         })?;
-    std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
-        AttuneError::SqlWriteFailed {
-            path: new_up_path.clone(),
-            source: e,
-        }
-    })?;
     if wrote_down {
         let new_down_candidate = dir.join(down_filename(from));
-        let new_down_path =
-            common::resolve_write_workspace_path(workspace_root, &new_down_candidate).map_err(
-                |source| AttuneError::SqlWriteFailed {
-                    path: new_down_candidate.clone(),
-                    source,
-                },
-            )?;
-        std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
-            AttuneError::SqlWriteFailed {
-                path: new_down_path.clone(),
-                source: e,
-            }
+        common::write_workspace_file(
+            workspace_root,
+            &new_down_candidate,
+            combined_down.as_bytes(),
+        )
+        .map_err(|source| AttuneError::SqlWriteFailed {
+            path: new_down_candidate.clone(),
+            source,
         })?;
     }
     delete_replay_plan_sidecar_if_exists(workspace_root, &dir, from)?;
@@ -1551,15 +1541,11 @@ fn build_combined_sql(
     let mut combined_up = String::new();
     let mut combined_down_segments: Vec<String> = Vec::new();
     for (version, path) in to_squash {
-        let up_path = common::resolve_read_workspace_path(workspace_root, path).map_err(|e| {
+        let up_sql = common::read_workspace_file_to_string(workspace_root, path).map_err(|e| {
             AttuneError::SqlReadFailed {
                 path: (*path).clone(),
                 source: e,
             }
-        })?;
-        let up_sql = std::fs::read_to_string(&up_path).map_err(|e| AttuneError::SqlReadFailed {
-            path: (*path).clone(),
-            source: e,
         })?;
         combined_up.push_str(&format!("-- begin {version}\n"));
         combined_up.push_str(&up_sql);
@@ -1567,15 +1553,9 @@ fn build_combined_sql(
             combined_up.push('\n');
         }
         combined_up.push_str(&format!("-- end {version}\n\n"));
-        let down_path = common::resolve_maybe_missing_workspace_path(
-            workspace_root,
-            dir.join(down_filename(version)),
-        )
-        .map_err(|source| AttuneError::SqlReadFailed {
-            path: dir.join(down_filename(version)),
-            source,
-        })?;
-        if let Ok(down_sql) = std::fs::read_to_string(&down_path) {
+        let down_candidate = dir.join(down_filename(version));
+        if let Ok(down_sql) = common::read_workspace_file_to_string(workspace_root, &down_candidate)
+        {
             combined_down_segments.push(format!(
                 "-- begin {version} (reverse)\n{down_sql}\n-- end {version}\n",
             ));
@@ -2131,7 +2111,7 @@ mod tests {
         let dir = root.join("migrations/main/billing");
         fs::create_dir_all(&dir).unwrap();
         let sidecar = dir.join(committed_replay_plan_filename(version));
-        fs::write(&sidecar, "{}").unwrap();
+        crate::migrate::write_workspace_file(&root, &sidecar, b"{}").unwrap();
 
         delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("delete sidecar");
         assert!(

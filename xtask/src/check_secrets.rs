@@ -61,6 +61,8 @@ use std::{
     process::{Command, ExitCode, Stdio},
 };
 
+use djogi::migrate::{read_workspace_dir, read_workspace_file_to_string};
+
 // ===== public surface =====
 
 /// Where the scanner reads its input from.
@@ -318,7 +320,7 @@ fn scan_repo() -> Result<Vec<Finding>, String> {
         if !canonical.starts_with(&cwd) {
             continue;
         }
-        let Some(content) = read_text_file(&canonical) else {
+        let Some(content) = read_text_file(&cwd, &canonical) else {
             continue;
         };
         scan_text(&content, Some(&path), &mut findings);
@@ -464,7 +466,15 @@ fn collect_filesystem_repo_files(
     dir: &Path,
     paths: &mut Vec<PathBuf>,
 ) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+    let canonical_dir = match dir.canonicalize() {
+        Ok(path) => path,
+        Err(_) => return Ok(()),
+    };
+    if !canonical_dir.starts_with(canonical_root) {
+        return Ok(());
+    }
+
+    for entry in read_workspace_dir(canonical_root, &canonical_dir)? {
         let entry = entry?;
         let path = entry.path();
 
@@ -508,12 +518,12 @@ fn should_skip_file(path: &Path) -> bool {
     )
 }
 
-fn read_text_file(path: &Path) -> Option<String> {
+fn read_text_file(workspace_root: &Path, path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     if metadata.len() > SCAN_SIZE_LIMIT {
         return None;
     }
-    fs::read_to_string(path).ok()
+    read_workspace_file_to_string(workspace_root, path).ok()
 }
 
 // ===== git plumbing =====
@@ -2120,9 +2130,18 @@ deleted file mode 100644
         }
 
         fn workflow_yaml() -> String {
-            std::fs::read_to_string(workflow_path()).unwrap_or_else(|err| {
-                panic!("failed to read {}: {err}", workflow_path().display(),);
-            })
+            let workflow_path = workflow_path();
+            let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask crate has a workspace-root parent");
+            let rel_path = workflow_path
+                .strip_prefix(workspace_root)
+                .expect("workflow path must stay inside the workspace root");
+            djogi::migrate::read_workspace_file_to_string(workspace_root, rel_path).unwrap_or_else(
+                |err| {
+                    panic!("failed to read {}: {err}", workflow_path.display(),);
+                },
+            )
         }
 
         /// Return the slice of `yaml` that constitutes the body of the

@@ -689,12 +689,7 @@ mod tests {
         let temp_canon = std::env::temp_dir()
             .canonicalize()
             .expect("canonicalize temp dir");
-        let dir = std::fs::canonicalize(dir).expect("canonicalize docs workspace");
-        assert!(
-            dir.starts_with(&temp_canon),
-            "remove_dir_all refused: workspace path escapes temp directory"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = crate::migrate::common::remove_workspace_dir_all(&temp_canon, dir);
     }
 
     fn fixture_users() -> ModelDescriptor {

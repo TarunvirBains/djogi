@@ -238,7 +238,7 @@ fn scan_filesystem_filtered(
         {
             continue;
         }
-        let database_path = entry.path();
+        let database_path = common::resolve_existing_workspace_path(&workspace_root, entry.path())?;
         let app_entries = match fs::read_dir(&database_path) {
             Ok(e) => e,
             Err(err) if err.kind() == io::ErrorKind::NotFound => continue,

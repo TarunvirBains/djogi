@@ -275,7 +275,10 @@ async fn rls_policy_ddl_uses_bigint_cast(_ctx: djogi::DjogiContext) {
         path.starts_with(&manifest_dir),
         "RLS side-channel path should stay within manifest dir"
     );
-    let contents = std::fs::read_to_string(&path)
+    let rel_path = std::path::Path::new("target")
+        .join("djogi_rls")
+        .join("documents_rls.sql");
+    let contents = djogi::migrate::read_workspace_file_to_string(&manifest_dir, &rel_path)
         .unwrap_or_else(|e| panic!("read RLS side-channel at {}: {e}", path.display()));
     assert!(
         contents.contains("::bigint"),

@@ -47,7 +47,8 @@ use djogi::migrate::{
     RunnerIdentity,
     RunnerError, SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, VerifySeverity, WorkspaceGuard,
     acquire_workspace_lock, advisory_lock_key, apply_plan, attune, compute_checksum,
-    is_localhost_connection, verify_with_policy,
+    create_workspace_dir_all, is_localhost_connection, read_workspace_file_to_string,
+    remove_workspace_dir_all, verify_with_policy, write_workspace_file,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ fn temp_workspace(tag: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     let p = std::env::temp_dir().join(format!("djogi-t7-{tag}-{stamp}-{n}"));
-    std::fs::create_dir_all(&p).unwrap();
+    create_workspace_dir_all(&std::env::temp_dir(), &p).unwrap();
     p
 }
 
@@ -684,10 +685,11 @@ async fn attune_diff_only_does_not_mutate(mut ctx: djogi::DjogiContext) {
     // `current_database()`).
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000001__init.sdjql"),
-        "CREATE TABLE foo();",
+        b"CREATE TABLE foo();",
     )
     .unwrap();
 
@@ -726,7 +728,7 @@ async fn attune_diff_only_does_not_mutate(mut ctx: djogi::DjogiContext) {
         .expect("count");
     assert_eq!(count, 0, "DiffOnly must not insert ledger rows");
 
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── attune Record: inserts row, does NOT execute SQL ──────────────────────
@@ -738,12 +740,13 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
     // (B-2 — the disk scan is scoped to `current_database()`).
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
     // The SQL would create a table; if attune executes it, the table
     // would exist after.
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000002__record.sdjql"),
-        "CREATE TABLE attune_must_not_run_this_table(id INT);",
+        b"CREATE TABLE attune_must_not_run_this_table(id INT);",
     )
     .unwrap();
 
@@ -797,7 +800,7 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
         "Record mode must NOT execute SQL — the asserted-applied table appeared in the catalog"
     );
 
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── attune Squash: refuses on remote DATABASE_URL ─────────────────────────
@@ -829,7 +832,7 @@ async fn attune_squash_refuses_on_remote_db(mut ctx: djogi::DjogiContext) {
         }
         other => panic!("expected SquashNotLocalhost, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── attune Squash: refuses on production profile ──────────────────────────
@@ -861,7 +864,7 @@ async fn attune_squash_refuses_on_production_profile(mut ctx: djogi::DjogiContex
         }
         other => panic!("expected SquashNotDevProfile, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Codex umbrella U-2: --squash refuses when dev_mode is off ─────────────
@@ -897,7 +900,7 @@ async fn u2_attune_squash_refuses_when_dev_mode_off(mut ctx: djogi::DjogiContext
         AttuneError::Refused(AttuneRefusal::SquashDevModeOff) => {}
         other => panic!("expected SquashDevModeOff, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Verifies that `attune --squash` refuses when the `DJOGI_ENV`
@@ -951,7 +954,7 @@ async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::D
         Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
         None => unsafe { std::env::remove_var("DJOGI_ENV") },
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// When MULTIPLE squash gates would refuse, the localhost gate must
@@ -985,7 +988,7 @@ async fn u2_attune_squash_gate_order_localhost_before_others(mut ctx: djogi::Djo
         AttuneError::Refused(AttuneRefusal::SquashNotLocalhost { .. }) => {}
         other => panic!("expected SquashNotLocalhost first, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── attune Squash: refuses on missing --from ──────────────────────────────
@@ -997,10 +1000,11 @@ async fn attune_squash_refuses_on_missing_from_version(mut ctx: djogi::DjogiCont
     // version.
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__seed.sdjql"),
-        "CREATE TABLE foo();",
+        b"CREATE TABLE foo();",
     )
     .unwrap();
 
@@ -1030,7 +1034,7 @@ async fn attune_squash_refuses_on_missing_from_version(mut ctx: djogi::DjogiCont
         }
         other => panic!("expected SquashFromVersionNotFound, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── attune Squash: success path (no --publish) ────────────────────────────
@@ -1040,37 +1044,43 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
     let work = temp_workspace("attune_squash_ok");
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
 
     // Three migrations on disk.
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000000__init.sdjql"),
-        "CREATE TABLE foo();",
+        b"CREATE TABLE foo();",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000000__init.down.sdjql"),
-        "DROP TABLE foo;",
+        b"DROP TABLE foo;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__add_bar.sdjql"),
-        "ALTER TABLE foo ADD COLUMN bar TEXT;",
+        b"ALTER TABLE foo ADD COLUMN bar TEXT;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__add_bar.down.sdjql"),
-        "ALTER TABLE foo DROP COLUMN bar;",
+        b"ALTER TABLE foo DROP COLUMN bar;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260301000000__add_baz.sdjql"),
-        "ALTER TABLE foo ADD COLUMN baz TEXT;",
+        b"ALTER TABLE foo ADD COLUMN baz TEXT;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260301000000__add_baz.down.sdjql"),
-        "ALTER TABLE foo DROP COLUMN baz;",
+        b"ALTER TABLE foo DROP COLUMN baz;",
     )
     .unwrap();
 
@@ -1143,8 +1153,9 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
     );
     // The squash target file must still exist and contain ALL the
     // collapsed up SQL.
-    let squashed = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sdjql"))
-        .expect("squashed up file");
+    let squashed =
+        read_workspace_file_to_string(&work, bucket_dir.join("V20260101000000__init.sdjql"))
+            .expect("squashed up file");
     assert!(squashed.contains("CREATE TABLE foo()"));
     assert!(squashed.contains("ADD COLUMN bar"));
     assert!(squashed.contains("ADD COLUMN baz"));
@@ -1165,8 +1176,9 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
     // must describe the POST-squash file content, not the pre-squash
     // content. Recompute the checksum against the freshly-written
     // squashed file's bytes and confirm parity.
-    let post_up_sql = std::fs::read_to_string(bucket_dir.join("V20260101000000__init.sdjql"))
-        .expect("squashed up file (B-4 read)");
+    let post_up_sql =
+        read_workspace_file_to_string(&work, bucket_dir.join("V20260101000000__init.sdjql"))
+            .expect("squashed up file (B-4 read)");
     let expected_checksum = djogi::migrate::compute_checksum([post_up_sql.as_str()]);
     let actual_checksum: String = ctx
         .raw_scalar(
@@ -1191,7 +1203,7 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
         "retained row's description must mention `squashed`: {actual_desc}"
     );
 
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── B-1 regression: padded `=` in libpq form refuses squash ──────────────
@@ -1229,7 +1241,7 @@ async fn attune_squash_refuses_remote_via_padded_equals(mut ctx: djogi::DjogiCon
         }
         other => panic!("expected SquashNotLocalhost, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── B-3 regression: DiffOnly does NOT bootstrap the ledger ────────────────
@@ -1281,7 +1293,7 @@ async fn attune_diff_only_does_not_bootstrap_ledger(mut ctx: djogi::DjogiContext
         !exists,
         "DiffOnly must NOT create djogi_schema_migrations on a fresh DB"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── B-2 regression: disk scan filters by current_database() ──────────────
@@ -1297,18 +1309,20 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
     let active_db = current_database(&mut ctx).await;
 
     let active_dir = work.join(format!("migrations/{active_db}/users"));
-    std::fs::create_dir_all(&active_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &active_dir).unwrap();
+    write_workspace_file(
+        &work,
         active_dir.join("V20260101000001__active.sdjql"),
-        "CREATE TABLE b2_active(id INT);",
+        b"CREATE TABLE b2_active(id INT);",
     )
     .unwrap();
 
     let other_dir = work.join("migrations/other_database_b2/billing");
-    std::fs::create_dir_all(&other_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &other_dir).unwrap();
+    write_workspace_file(
+        &work,
         other_dir.join("V20260101000002__other.sdjql"),
-        "CREATE TABLE b2_other(id INT);",
+        b"CREATE TABLE b2_other(id INT);",
     )
     .unwrap();
 
@@ -1359,7 +1373,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
         count, 0,
         "ledger must NOT carry rows for files that belong to a different database"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── B-5 regression: squash refuses when --from spans multiple buckets ────
@@ -1375,15 +1389,17 @@ async fn attune_squash_refuses_ambiguous_from_across_buckets(mut ctx: djogi::Djo
 
     let users_dir = work.join(format!("migrations/{active_db}/users"));
     let billing_dir = work.join(format!("migrations/{active_db}/billing"));
-    std::fs::create_dir_all(&users_dir).unwrap();
-    std::fs::create_dir_all(&billing_dir).unwrap();
+    create_workspace_dir_all(&work, &users_dir).unwrap();
+    create_workspace_dir_all(&work, &billing_dir).unwrap();
 
     // Same version in BOTH buckets (a path that historically tripped
     // the pre-B-5 implementation into squashing both).
     let shared_version = "V20260101000000__shared";
     for dir in [&users_dir, &billing_dir] {
-        std::fs::write(dir.join(format!("{shared_version}.sdjql")), "-- shared seed").unwrap();
-        std::fs::write(dir.join("V20260601000000__later.sdjql"), "-- later").unwrap();
+        write_workspace_file(&work, dir.join(format!("{shared_version}.sdjql")), b"-- shared seed")
+            .unwrap();
+        write_workspace_file(&work, dir.join("V20260601000000__later.sdjql"), b"-- later")
+            .unwrap();
     }
 
     djogi::migrate::bootstrap_ledger(&mut ctx)
@@ -1418,7 +1434,7 @@ async fn attune_squash_refuses_ambiguous_from_across_buckets(mut ctx: djogi::Djo
         }
         other => panic!("expected SquashFromVersionAmbiguous, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── B-5: explicit --app scopes the squash to a single bucket ─────────────
@@ -1433,27 +1449,31 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
 
     let users_dir = work.join(format!("migrations/{active_db}/users"));
     let billing_dir = work.join(format!("migrations/{active_db}/billing"));
-    std::fs::create_dir_all(&users_dir).unwrap();
-    std::fs::create_dir_all(&billing_dir).unwrap();
+    create_workspace_dir_all(&work, &users_dir).unwrap();
+    create_workspace_dir_all(&work, &billing_dir).unwrap();
 
-    std::fs::write(
+    write_workspace_file(
+        &work,
         users_dir.join("V20260101000000__users_init.sdjql"),
-        "CREATE TABLE u_init();",
+        b"CREATE TABLE u_init();",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         users_dir.join("V20260201000000__users_later.sdjql"),
-        "ALTER TABLE u_init ADD COLUMN x INT;",
+        b"ALTER TABLE u_init ADD COLUMN x INT;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         billing_dir.join("V20260301000000__billing_init.sdjql"),
-        "CREATE TABLE b_init();",
+        b"CREATE TABLE b_init();",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         billing_dir.join("V20260401000000__billing_later.sdjql"),
-        "ALTER TABLE b_init ADD COLUMN y INT;",
+        b"ALTER TABLE b_init ADD COLUMN y INT;",
     )
     .unwrap();
 
@@ -1499,7 +1519,7 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
             .exists(),
         "billing-later must remain"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── A-1: --publish path against a fixture remote ─────────────────────────
@@ -1542,22 +1562,25 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
     let work = temp_workspace("attune_squash_publish");
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
 
     // Three SQL files so squash has work to do.
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000000__init.sdjql"),
-        "CREATE TABLE foo();",
+        b"CREATE TABLE foo();",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__add_bar.sdjql"),
-        "ALTER TABLE foo ADD COLUMN bar TEXT;",
+        b"ALTER TABLE foo ADD COLUMN bar TEXT;",
     )
     .unwrap();
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260301000000__add_baz.sdjql"),
-        "ALTER TABLE foo ADD COLUMN baz TEXT;",
+        b"ALTER TABLE foo ADD COLUMN baz TEXT;",
     )
     .unwrap();
 
@@ -1569,7 +1592,7 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
             .unwrap()
             .as_nanos()
     ));
-    let _ = std::fs::remove_dir_all(&bare_remote);
+    let _ = remove_workspace_dir_all(&std::env::temp_dir(), &bare_remote);
 
     // Bare remote.
     let bare_init = std::process::Command::new("git")
@@ -1802,8 +1825,8 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
         "auto-commit subject must name the canonical `from` version"
     );
 
-    let _ = std::fs::remove_dir_all(&work);
-    let _ = std::fs::remove_dir_all(&bare_remote);
+    let _ = remove_workspace_dir_all(&work, &work);
+    let _ = remove_workspace_dir_all(&std::env::temp_dir(), &bare_remote);
 }
 
 // ── localhost predicate spot check at integration level ───────────────────
@@ -1903,10 +1926,11 @@ fn init_parent_with_migrations_submodule(work: &std::path::Path, db: &str) -> St
     // something to scan. Commit it so the migrations submodule has a
     // resolvable HEAD SHA.
     let bucket_dir = migrations_root.join(db).join("_global_");
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(work, &bucket_dir).unwrap();
+    write_workspace_file(
+        work,
         bucket_dir.join("V20260101000000__init.sdjql"),
-        "CREATE TABLE u1_target_widget (id BIGINT PRIMARY KEY);",
+        b"CREATE TABLE u1_target_widget (id BIGINT PRIMARY KEY);",
     )
     .unwrap();
     let _ = Command::new("git")
@@ -1992,7 +2016,7 @@ async fn u1_attune_resolves_local_target(mut ctx: djogi::DjogiContext) {
         Some(initial_sha.clone()),
         "resolved_target must echo the local SHA"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-1: a target that does not exist locally AND has
@@ -2034,7 +2058,7 @@ async fn u1_attune_missing_target_surfaces_typed_error(mut ctx: djogi::DjogiCont
         AttuneError::GitFetchFailed { .. } => {}
         other => panic!("expected GitTargetResolveFailed or GitFetchFailed, got {other:?}"),
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-1: `--apply false` must keep Record mode read-only.
@@ -2045,10 +2069,11 @@ async fn u1_attune_record_without_apply_is_dry_run(mut ctx: djogi::DjogiContext)
     let db = current_database(&mut ctx).await;
     // Lay an unrecorded SQL file.
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000003__dry_run.sdjql"),
-        "CREATE TABLE u1_dry_table(id INT);",
+        b"CREATE TABLE u1_dry_table(id INT);",
     )
     .unwrap();
 
@@ -2104,7 +2129,7 @@ async fn u1_attune_record_without_apply_is_dry_run(mut ctx: djogi::DjogiContext)
             .expect("count");
         assert_eq!(count, 0, "dry-run must NOT insert a ledger row");
     }
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-1: `--apply true` mutates as before. Same
@@ -2114,10 +2139,11 @@ async fn u1_attune_record_with_apply_mutates_ledger(mut ctx: djogi::DjogiContext
     let work = temp_workspace("u1_record_apply");
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260101000004__apply.sdjql"),
-        "CREATE TABLE u1_apply_table(id INT);",
+        b"CREATE TABLE u1_apply_table(id INT);",
     )
     .unwrap();
 
@@ -2146,7 +2172,7 @@ async fn u1_attune_record_with_apply_mutates_ledger(mut ctx: djogi::DjogiContext
         .await
         .expect("count");
     assert_eq!(count, 1, "--apply must insert a ledger row");
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-1: `--record --apply` with a resolved target
@@ -2170,9 +2196,10 @@ async fn u1_attune_record_apply_updates_parent_submodule_pointer(mut ctx: djogi:
     // attune the parent to the NEW SHA, distinct from the seeded
     // pointer. Append a second SQL file then commit.
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__second.sdjql"),
-        "CREATE TABLE u1_second(id INT);",
+        b"CREATE TABLE u1_second(id INT);",
     )
     .unwrap();
     let migrations_root = work.join("migrations");
@@ -2237,7 +2264,7 @@ async fn u1_attune_record_apply_updates_parent_submodule_pointer(mut ctx: djogi:
         stdout.contains(&new_sha),
         "parent index must record new_sha {new_sha} at migrations path; got: {stdout}"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-1: `--record` without `--apply` is a dry-run for
@@ -2310,7 +2337,7 @@ async fn u1_attune_record_without_apply_does_not_touch_parent(mut ctx: djogi::Dj
         pre_stdout, post_stdout,
         "parent index entry for `migrations` must be unchanged after a dry-run"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Codex umbrella U-5: dry-run must NOT bootstrap ledger table ───────────
@@ -2334,10 +2361,11 @@ async fn u5_attune_record_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
     let db = current_database(&mut ctx).await;
     // Lay one unrecorded SQL file so the diff has something to walk.
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260501000000__u5_dry.sdjql"),
-        "CREATE TABLE u5_dry_table(id INT);",
+        b"CREATE TABLE u5_dry_table(id INT);",
     )
     .unwrap();
 
@@ -2399,7 +2427,7 @@ async fn u5_attune_record_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
         "must surface LedgerTableMissing on dry-run with no ledger: {:?}",
         report.diagnostics
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-5: `attune --record-ledger --apply` on a fresh DB
@@ -2411,10 +2439,11 @@ async fn u5_attune_record_apply_does_bootstrap_ledger(mut ctx: djogi::DjogiConte
     let work = temp_workspace("u5_record_with_apply");
     let db = current_database(&mut ctx).await;
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260501000001__u5_apply.sdjql"),
-        "CREATE TABLE u5_apply_table(id INT);",
+        b"CREATE TABLE u5_apply_table(id INT);",
     )
     .unwrap();
 
@@ -2458,7 +2487,7 @@ async fn u5_attune_record_apply_does_bootstrap_ledger(mut ctx: djogi::DjogiConte
         post_exists,
         "U-5: Record --apply must bootstrap djogi_schema_migrations"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella U-5: `attune --squash` without `--apply` MUST NOT
@@ -2476,10 +2505,11 @@ async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
     // but we want to exercise the bootstrap-gate path independently
     // from the from-version gate.
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::create_dir_all(&bucket_dir).unwrap();
-    std::fs::write(
+    create_workspace_dir_all(&work, &bucket_dir).unwrap();
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260501000002__u5_squash_dry.sdjql"),
-        "CREATE TABLE u5_squash_dry(id INT);",
+        b"CREATE TABLE u5_squash_dry(id INT);",
     )
     .unwrap();
 
@@ -2536,7 +2566,7 @@ async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
         "must surface DryRunMutationsSkipped(mode=\"Squash\"): {:?}",
         report.diagnostics
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 // ── Codex umbrella U-7: --squash implies recording ───────────────────────
@@ -2577,9 +2607,10 @@ async fn u7_attune_squash_implies_recording_without_explicit_flag(mut ctx: djogi
     // pointer (otherwise the assertion can't tell "no write" from
     // "wrote the same SHA back").
     let bucket_dir = work.join(format!("migrations/{db}/_global_"));
-    std::fs::write(
+    write_workspace_file(
+        &work,
         bucket_dir.join("V20260201000000__u7_second.sdjql"),
-        "CREATE TABLE u7_second(id INT);",
+        b"CREATE TABLE u7_second(id INT);",
     )
     .unwrap();
     let migrations_root = work.join("migrations");
@@ -2657,7 +2688,7 @@ async fn u7_attune_squash_implies_recording_without_explicit_flag(mut ctx: djogi
         stdout.contains(&new_sha),
         "U-7: parent index must record new_sha {new_sha} at migrations path; got: {stdout}"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }
 
 /// Codex umbrella round U-7: the dry-run side of the auto-imply
@@ -2735,5 +2766,5 @@ async fn u7_attune_squash_dry_run_surfaces_record_skipped_without_explicit_flag(
         !rendered.contains("--record requested"),
         "U-9 prose must NOT say `--record` requested: {rendered}"
     );
-    let _ = std::fs::remove_dir_all(&work);
+    let _ = remove_workspace_dir_all(&work, &work);
 }

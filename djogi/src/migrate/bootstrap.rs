@@ -83,7 +83,6 @@
 //!   by `migrations compose` and `db reset`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -775,8 +774,8 @@ pub fn ensure_phase_zero_emitted(
         // the pending dir, then write all three files.
         // These calls are placed after the containment checks above so
         // no filesystem operations run on unvalidated paths.
-        ensure_parent(&up_path)?;
-        ensure_parent(&pending_path)?;
+        ensure_parent(workspace_root, &up_path)?;
+        ensure_parent(workspace_root, &pending_path)?;
         crate::migrate::common::write_workspace_file(workspace_root, &up_path, up_sql.as_bytes())
             .map_err(|e| AutoEmitError::Io {
             path: up_path.clone(),
@@ -900,55 +899,17 @@ fn extensions_for_database(
 /// Canonicalizes the resolved parent path before creating directories,
 /// so symlinks in the caller-supplied path cannot redirect the operation
 /// to an arbitrary location.
-fn ensure_parent(path: &Path) -> Result<(), AutoEmitError> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
+fn ensure_parent(workspace_root: &Path, path: &Path) -> Result<(), AutoEmitError> {
+    if path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty())
     {
-        // Canonicalize the parent (or its existing ancestor) so symlinks
-        // cannot redirect the directory creation. If the parent does not
-        // yet exist, canonicalize the deepest existing ancestor and
-        // re-append the remaining components.
-        let parent_canon = if parent.exists() {
-            parent.canonicalize().map_err(|e| AutoEmitError::Io {
-                path: parent.to_path_buf(),
+        crate::migrate::common::create_workspace_parent_dirs(workspace_root, path).map_err(
+            |e| AutoEmitError::Io {
+                path: path.to_path_buf(),
                 source: e,
-            })?
-        } else {
-            let mut existing = PathBuf::from(parent);
-            loop {
-                match existing.canonicalize() {
-                    Ok(base) => {
-                        let suffix =
-                            parent
-                                .strip_prefix(&existing)
-                                .map_err(|_| AutoEmitError::Io {
-                                    path: parent.to_path_buf(),
-                                    source: io::Error::new(
-                                        io::ErrorKind::InvalidInput,
-                                        "parent path cannot be resolved",
-                                    ),
-                                })?;
-                        break base.join(suffix);
-                    }
-                    Err(_) => {
-                        match existing.parent() {
-                            Some(p) if !p.as_os_str().is_empty() => {
-                                existing = PathBuf::from(p);
-                            }
-                            _ => {
-                                // Reached root without finding an existing ancestor.
-                                // Fallback to the original parent path.
-                                break parent.to_path_buf();
-                            }
-                        }
-                    }
-                }
-            }
-        };
-        fs::create_dir_all(&parent_canon).map_err(|e| AutoEmitError::Io {
-            path: parent_canon,
-            source: e,
-        })?;
+            },
+        )?;
     }
     Ok(())
 }
@@ -1484,7 +1445,8 @@ mod tests {
         assert!(emitted[0].pending_json_path.exists());
         // Up SQL contains HeeRanjID install; no node seed in production emit.
         assert!(emitted[0].up_sql_path.starts_with(&work));
-        let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
+        let up =
+            crate::migrate::read_workspace_file_to_string(&work, &emitted[0].up_sql_path).unwrap();
         assert!(up.contains("HeeRanjID base schema"));
         // Production emit: no node-seed section, no database-level defaults.
         assert!(!up.contains("current_database()"));
@@ -1493,12 +1455,14 @@ mod tests {
         assert!(!up.contains("CREATE EXTENSION"));
         // Down SQL is comment-only.
         assert!(emitted[0].down_sql_path.starts_with(&work));
-        let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();
+        let down = crate::migrate::read_workspace_file_to_string(&work, &emitted[0].down_sql_path)
+            .unwrap();
         assert!(down.contains("bootstrap migration — down"));
         assert!(!down.contains("DROP "), "down must not contain real DDL");
         // Pending JSON parses cleanly.
         assert!(emitted[0].pending_json_path.starts_with(&work));
-        let pending_bytes = fs::read(&emitted[0].pending_json_path).unwrap();
+        let pending_bytes =
+            crate::migrate::read_workspace_file(&work, &emitted[0].pending_json_path).unwrap();
         let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
         assert_eq!(pending.version, PHASE_ZERO_VERSION);
         assert_eq!(pending.bucket_database, "main");
@@ -1627,7 +1591,8 @@ mod tests {
 
         // Up SQL for main contains CREATE EXTENSION postgis but NOT pg_trgm.
         assert!(main_emit.up_sql_path.starts_with(&work));
-        let main_up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        let main_up =
+            crate::migrate::read_workspace_file_to_string(&work, &main_emit.up_sql_path).unwrap();
         assert!(main_up.contains("CREATE EXTENSION IF NOT EXISTS \"postgis\""));
         assert!(
             !main_up.contains("\"pg_trgm\""),
@@ -1636,7 +1601,8 @@ mod tests {
 
         // Up SQL for crud_log contains CREATE EXTENSION pg_trgm but NOT postgis.
         assert!(crud_emit.up_sql_path.starts_with(&work));
-        let crud_up = fs::read_to_string(&crud_emit.up_sql_path).unwrap();
+        let crud_up =
+            crate::migrate::read_workspace_file_to_string(&work, &crud_emit.up_sql_path).unwrap();
         assert!(crud_up.contains("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""));
         assert!(
             !crud_up.contains("\"postgis\""),
@@ -1680,7 +1646,8 @@ mod tests {
             "EXCLUDE-derived btree_gist must surface in bootstrap-migration extensions",
         );
         assert!(main_emit.up_sql_path.starts_with(&work));
-        let up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        let up =
+            crate::migrate::read_workspace_file_to_string(&work, &main_emit.up_sql_path).unwrap();
         assert!(
             up.contains("CREATE EXTENSION IF NOT EXISTS \"btree_gist\""),
             "bootstrap-migration up SQL must auto-install btree_gist: {up}",
@@ -1708,25 +1675,37 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+        let bucket_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, dir.join(".keep"))
+                .expect("resolve seed bucket dir");
+        crate::migrate::common::write_workspace_file(&work, bucket_keep, b"")
             .expect("seed bucket dir");
         let pend_db_dir = crate::migrate::target::pending_database_dir(&work, "main");
         assert!(pend_db_dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, pend_db_dir.join(".keep"), b"")
+        let pend_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, pend_db_dir.join(".keep"))
+                .expect("resolve seed pending dir");
+        crate::migrate::common::write_workspace_file(&work, pend_keep, b"")
             .expect("seed pending dir");
-        let up_write = dir.join(up_filename(PHASE_ZERO_VERSION));
-        assert!(up_write.starts_with(&work));
+        let up_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve existing bootstrap up");
         crate::migrate::common::write_workspace_file(
             &work,
-            &up_write,
+            up_write,
             b"-- existing bootstrap-migration up",
         )
         .unwrap();
-        let down_write = dir.join(down_filename(PHASE_ZERO_VERSION));
-        assert!(down_write.starts_with(&work));
+        let down_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(down_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve existing bootstrap down");
         crate::migrate::common::write_workspace_file(
             &work,
-            &down_write,
+            down_write,
             b"-- existing bootstrap-migration down",
         )
         .unwrap();
@@ -1743,11 +1722,15 @@ mod tests {
             composed_at: format_rfc3339_seconds(fixed_now()),
             depends_on: Vec::new(),
         };
-        let legacy_write = pending_json_path(&work, &bucket);
-        assert!(legacy_write.starts_with(&work));
-        fs::write(
-            &legacy_write,
-            serde_json::to_vec_pretty(&legacy_pending).unwrap(),
+        let legacy_write = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            pending_json_path(&work, &bucket),
+        )
+        .expect("resolve legacy bootstrap pending");
+        crate::migrate::common::write_workspace_file(
+            &work,
+            legacy_write,
+            &serde_json::to_vec_pretty(&legacy_pending).unwrap(),
         )
         .unwrap();
 
@@ -1783,14 +1766,23 @@ mod tests {
         };
         let dir = bucket_dir(&work, &bucket);
         assert!(dir.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, dir.join(".keep"), b"")
+        let bucket_keep =
+            crate::migrate::common::resolve_write_workspace_path(&work, dir.join(".keep"))
+                .expect("resolve seed bucket dir");
+        crate::migrate::common::write_workspace_file(&work, bucket_keep, b"")
             .expect("seed bucket dir");
-        let up_w = dir.join(up_filename(PHASE_ZERO_VERSION));
-        assert!(up_w.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, &up_w, b"-- old up").unwrap();
-        let down_w = dir.join(down_filename(PHASE_ZERO_VERSION));
-        assert!(down_w.starts_with(&work));
-        crate::migrate::common::write_workspace_file(&work, &down_w, b"-- old down").unwrap();
+        let up_w = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve old up");
+        crate::migrate::common::write_workspace_file(&work, up_w, b"-- old up").unwrap();
+        let down_w = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            dir.join(down_filename(PHASE_ZERO_VERSION)),
+        )
+        .expect("resolve old down");
+        crate::migrate::common::write_workspace_file(&work, down_w, b"-- old down").unwrap();
 
         let valid_legacy_pending = PendingPlan {
             format_version: PENDING_FORMAT_VERSION.to_string(),
@@ -1805,23 +1797,31 @@ mod tests {
             composed_at: format_rfc3339_seconds(fixed_now()),
             depends_on: Vec::new(),
         };
-        let legacy_path = pending_json_path(&work, &bucket);
-        assert!(legacy_path.starts_with(&work));
-        ensure_parent(&legacy_path).unwrap();
-        fs::write(
-            &legacy_path,
-            serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
+        let legacy_path = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            pending_json_path(&work, &bucket),
+        )
+        .expect("resolve legacy bootstrap pending");
+        ensure_parent(&work, &legacy_path).unwrap();
+        crate::migrate::common::write_workspace_file(
+            &work,
+            legacy_path,
+            &serde_json::to_vec_pretty(&valid_legacy_pending).unwrap(),
         )
         .unwrap();
 
-        let hidden_path = phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION);
+        let hidden_path = crate::migrate::common::resolve_write_workspace_path(
+            &work,
+            phase_zero_pending_json_path(&work, "main", PHASE_ZERO_VERSION),
+        )
+        .expect("resolve hidden bootstrap pending");
         let mut invalid_hidden_pending = valid_legacy_pending.clone();
         invalid_hidden_pending.version = "V00000000000001__wrong_phase_zero".to_string();
-        assert!(hidden_path.starts_with(&work));
-        ensure_parent(&hidden_path).unwrap();
-        fs::write(
+        ensure_parent(&work, &hidden_path).unwrap();
+        crate::migrate::common::write_workspace_file(
+            &work,
             &hidden_path,
-            serde_json::to_vec_pretty(&invalid_hidden_pending).unwrap(),
+            &serde_json::to_vec_pretty(&invalid_hidden_pending).unwrap(),
         )
         .unwrap();
 
