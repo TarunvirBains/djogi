@@ -72,8 +72,8 @@ use std::process::ExitCode;
 use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::migrate::{
-    FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, migrations_root, read_workspace_file,
-    resolve_audit_url, scan_filesystem, signature_to_hex,
+    FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, migrations_root, resolve_audit_url,
+    scan_filesystem, signature_to_hex,
 };
 use djogi::pg::pool::DjogiPool;
 use djogi::snapshot::sign::{SnapshotKeyError, load_signing_key_from_env, sign_snapshot};
@@ -417,11 +417,10 @@ fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, Ve
             ),
         });
     }
-    let bytes =
-        read_workspace_file(&snapshot_canon, &snapshot_canon).map_err(|e| VerifyError::Io {
-            path: snapshot.to_path_buf(),
-            source: e,
-        })?;
+    let bytes = std::fs::read(&snapshot_canon).map_err(|e| VerifyError::Io {
+        path: snapshot.to_path_buf(),
+        source: e,
+    })?;
     Ok(Some(bytes))
 }
 
