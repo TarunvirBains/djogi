@@ -771,6 +771,49 @@ pub enum DjogiError {
         reason: &'static str,
     },
 
+    /// Cross-model set op detected that the two arms resolved to different
+    /// applied tenants. This is emitted from pure intent values BEFORE any
+    /// GUC mutation, so the connection is not poisoned on the error path.
+    /// The `left_model` / `right_model` type names identify which arm-models
+    /// conflicted; `left_tenant` and `right_tenant` are the concrete tenant
+    /// IDs each arm resolved to (both always `Some` — if either were `None`,
+    /// reconciliation would succeed trivially).
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — tenant mismatch
+    /// between arms is a structural conflict; retrying cannot resolve it.
+    #[error(
+        "cross-model set-op tenant conflict: left `{left_model}` → {left_tenant}, \
+         right `{right_model}` → {right_tenant}"
+    )]
+    #[non_exhaustive]
+    CrossModelSetOpTenantConflict {
+        left_model: &'static str,
+        left_tenant: String,
+        right_model: &'static str,
+        right_tenant: String,
+    },
+
+    /// A cross-model set-op arm produces a different column count than the
+    /// decode target `R`. Postgres compares set-op arms positionally, so a
+    /// mismatch in release mode yields a silent misdecode (wrong ordinals
+    /// passed to `FromPgRow::from_pg_row`). This error is raised at
+    /// SQL-build time, before any tenant wiring or SQL emission.
+    /// Classified as **terminal** by [`DjogiError::is_transient`] — a
+    /// structural column mismatch cannot be resolved by retrying.
+    #[error(
+        "cross-model set-op column shape mismatch: {side} arm produces {arm_count} columns [{arm_list}], \
+         decode target expects {exp_count} columns [{exp_list}]",
+        arm_count = arm_columns.len(),
+        arm_list = arm_columns.join(", "),
+        exp_count = expected_columns.len(),
+        exp_list = expected_columns.join(", ")
+    )]
+    #[non_exhaustive]
+    CrossModelSetOpColumnMismatch {
+        side: &'static str,
+        arm_columns: Vec<&'static str>,
+        expected_columns: Vec<&'static str>,
+    },
+
     /// `djogi::transaction::atomic_with(level, &mut tx_ctx, ...)` was
     /// invoked on a transaction-backed [`crate::DjogiContext`] — i.e.
     /// inside an already-open `atomic` scope.
@@ -1690,6 +1733,32 @@ mod tests {
             .is_terminal(),
             "MergeNoBranches must be terminal"
         );
+        assert!(
+            DjogiError::CrossModelSetOpTenantConflict {
+                left_model: "M",
+                left_tenant: "t1".into(),
+                right_model: "N",
+                right_tenant: "t2".into(),
+            }
+            .is_terminal(),
+            "CrossModelSetOpTenantConflict must be terminal — tenant mismatch cannot be resolved by retrying"
+        );
+        {
+            let err = DjogiError::CrossModelSetOpColumnMismatch {
+                side: "left",
+                arm_columns: vec!["id", "name"],
+                expected_columns: vec!["id", "actor", "recent"],
+            };
+            assert!(
+                err.is_terminal(),
+                "CrossModelSetOpColumnMismatch must be terminal — column count mismatch cannot be resolved by retrying"
+            );
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("id, name") && msg.contains("id, actor, recent"),
+                "error message must include arm and expected column lists: {msg}"
+            );
+        }
         assert!(
             DjogiError::unsupported_postgres_version(17, 4, 18).is_terminal(),
             "UnsupportedPostgresVersion must be terminal — version mismatch cannot be resolved by retrying"

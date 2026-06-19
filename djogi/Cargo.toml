@@ -897,6 +897,12 @@ path = "../tests/internal/set_op_sql_shape.rs"
 harness = true
 required-features = ["testing"]
 
+# Issue #462 — cross-model set-op SQL-shape tests (placeholder harness).
+[[test]]
+name = "cross_set_op_sql_shape"
+path = "../tests/internal/cross_set_op_sql_shape.rs"
+required-features = ["testing"]
+
 # Issue #442 — public CTE surface: DB-free SQL-shape pins.
 # Verifies the hidden `render_cte_sql_for_testing` hook on the
 # adopter-facing `QuerySet::with(...)` / `with_recursive(...)` surface:
@@ -949,6 +955,11 @@ harness = true
 name = "set_op_live"
 path = "../tests/integration/set_op_live.rs"
 harness = true
+
+# Issue #462 — cross-model set-op live integration tests (placeholder harness).
+[[test]]
+name = "cross_set_op_live"
+path = "../tests/integration/cross_set_op_live.rs"
 
 # Issue #442 — public CTE surface: live Postgres acceptance.
 # Covers non-recursive `WITH` bodies, recursive `WITH RECURSIVE` walks,
