@@ -903,4 +903,32 @@ mod tests {
             "expected GROUP BY + HAVING for arity-3 key, got: {sql}"
         );
     }
+
+    #[test]
+    #[should_panic(expected = "grouped LIMIT (n = 18446744073709551615) overflows i64")]
+    fn grouped_limit_over_i64_max_panics() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs
+            .group_by(|_| keys)
+            .annotate(|_| vals.sum())
+            .limit(u64::MAX);
+        let _ = build_grouped_annotated_select(&gaq);
+    }
+
+    #[test]
+    #[should_panic(expected = "grouped OFFSET (n = 18446744073709551615) overflows i64")]
+    fn grouped_offset_over_i64_max_panics() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs
+            .group_by(|_| keys)
+            .annotate(|_| vals.sum())
+            .offset(u64::MAX);
+        let _ = build_grouped_annotated_select(&gaq);
+    }
 }

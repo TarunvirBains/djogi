@@ -1342,12 +1342,21 @@ fn push_grouped_tail(
     }
 
     if let Some(n) = limit {
+        // Postgres binds LIMIT as BIGINT; n arrives as u64 from the
+        // GroupedAnnotatedQuerySet field. A value above i64::MAX cannot
+        // round-trip and is a programming error — panic rather than
+        // silently truncate via `as i64`.
+        let n =
+            i64::try_from(n).unwrap_or_else(|_| panic!("grouped LIMIT (n = {n}) overflows i64"));
         acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
+        acc.push_bind(n);
     }
     if let Some(n) = offset {
+        // Same BIGINT-bind / overflow reasoning as the LIMIT branch above.
+        let n =
+            i64::try_from(n).unwrap_or_else(|_| panic!("grouped OFFSET (n = {n}) overflows i64"));
         acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
+        acc.push_bind(n);
     }
     Ok(())
 }
