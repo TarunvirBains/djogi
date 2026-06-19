@@ -6812,9 +6812,9 @@ mod tests {
         assert_eq!(idx.index_type, IndexTypeSchema::Spgist);
         // The surviving SP-GiST synthetic carries no PostGIS metadata — a
         // separate, pre-existing defect (project_field_level_index hardcodes
-        // these for every field-level synthetic). Asserted here as the
-        // current state so the future metadata fix flips this and flags the
-        // coupling. Not endorsed — see the §6 follow-up.
+        // extension_dependency: None / requires_out_of_transaction: false for
+        // every field-level synthetic). Asserted here as the current state so
+        // the future metadata fix flips this assertion and surfaces the coupling.
         assert_eq!(idx.extension_dependency, None);
     }
 }
