@@ -153,7 +153,6 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    needs: [check]
 
     services:
       postgres:
@@ -301,12 +300,12 @@ jobs:
         # keep elephant-tracker out of the unified feature graph so the
         # default-features sweep stays default-features. The Build step
         # above still covers `--workspace`. Tracked in issue #80.
-        run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
+        run: cargo test --workspace --exclude elephant-tracker
 
       - name: Cache modifier
         # This target pins SQL-shape parity through djogi's test-only SQL
         # renderer, so Cargo skips it in the default-feature workspace sweep.
-        run: cargo test -p djogi --features testing --test cache_modifier -- --test-threads=1
+        run: cargo test -p djogi --features testing --test cache_modifier
 
       - name: Raw SQL bypass pin tests
         run: >
@@ -321,14 +320,13 @@ jobs:
           --test raw_stream_pin
           --test raw_stream_with_fetch_size_pin
           --test raw_pool_access_pin
-          -- --test-threads=1
 
       - name: Presentation codec HMAC feature gate
         # `presentation_codec` always runs in the workspace default-feature lane,
         # but HMAC-specific assertions are gated behind `feature = "hmac-codec"`.
         # Run the target once with that feature enabled so keyed-codec startup
         # and round-trip behavior stay covered in CI.
-        run: cargo test -p djogi --features hmac-codec --test presentation_codec -- --test-threads=1
+        run: cargo test -p djogi --features hmac-codec --test presentation_codec
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`
