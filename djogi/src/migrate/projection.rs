@@ -57,8 +57,8 @@ use std::collections::btree_map::Entry;
 use crate::apps::{AppDescriptor, AppRegistry};
 use crate::descriptor::{
     DeferrabilitySpec, EnumDescriptor, ExclusionConstraintSpec, ExclusionElement, FieldDescriptor,
-    GeneratedColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
-    ModelDescriptor, PartitionSpec, PkType, RustSourceType,
+    FieldSqlType, GeneratedColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
+    IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, RustSourceType,
 };
 use crate::fts::FtsDescriptor;
 use crate::migrate::provider::{DescriptorProvider, InventoryDescriptorProvider};
@@ -800,6 +800,42 @@ where
                     {
                         continue;
                     }
+                    // Geography GiST de-dup (djogi#468). A geography field
+                    // annotated `#[field(index)]` already carries an implicit
+                    // spatial `_gix` (emitted by the macro for *every*
+                    // geography field) that owns this column's GiST index and
+                    // carries the required PostGIS metadata
+                    // (`extension_dependency: Some("postgis")`,
+                    // `requires_out_of_transaction: true`). The default-GiST
+                    // field-level synthetic here would be a *second* GiST index
+                    // on the same column with neither flag set — a metadata-poor
+                    // duplicate the migration emitter could create inside a
+                    // transaction and/or before PostGIS is installed. So when the
+                    // synthetic would itself be GiST and the covering `_gix` is
+                    // provably already present, suppress the synthetic and let
+                    // the `_gix` be the sole index for the column.
+                    //
+                    // The `Some(IndexType::Gist)` clause is load-bearing and
+                    // deliberately narrow: an EXPLICIT non-GiST method on a
+                    // geography column — `#[field(index = "spgist")]`,
+                    // `#[field(index = "hash")]`, etc. — is a *distinct,
+                    // user-requested* access method, NOT a GiST duplicate of the
+                    // `_gix`, and must survive alongside it. Dropping or
+                    // broadening this clause (e.g. matching any geography field,
+                    // or adding a `None` arm) would silently delete those valid
+                    // non-GiST indexes — a phantom bug where the adopter's chosen
+                    // method never exists. Bare `#[field(index)]` on geography
+                    // resolves to `Some(Gist)` (the macro's `default_index_type`
+                    // for geography); an indexed field never carries `None`, so
+                    // no `None` arm is needed here.
+                    if matches!(f.sql_type, FieldSqlType::Geography { .. })
+                        && matches!(f.index_type, Some(IndexType::Gist))
+                        && synthetic_target_single_column(&synthetic).is_some_and(|col| {
+                            has_single_column_gist_index(&indexes, &synthetic.table, col)
+                        })
+                    {
+                        continue;
+                    }
                     indexes.push(synthetic);
                 }
             }
@@ -1227,7 +1263,7 @@ fn field_type_check(
     rust_source_type: Option<RustSourceType>,
     column_name: &str,
 ) -> Option<String> {
-    use crate::descriptor::{FieldSqlType, RangeSubtypeKind};
+    use crate::descriptor::RangeSubtypeKind;
 
     let qcol = quote_ident_for_check(column_name);
     match sql_type {
@@ -2237,6 +2273,44 @@ fn project_fts_index(table: &str, fts: &FtsDescriptor) -> IndexSchema {
     }
 }
 
+/// The lone column name of a single-column `IndexSchema`, or `None` when
+/// the index is composite or expression-targeted.
+///
+/// Lets the geography GiST de-dup compare the covering `_gix` against the
+/// *exact same* column identity the synthetic was built from, rather than
+/// re-deriving it from `f.name` independently (djogi#468).
+fn synthetic_target_single_column(index: &IndexSchema) -> Option<&str> {
+    match &index.target {
+        IndexTargetSchema::Columns(cols) if cols.len() == 1 => Some(cols[0].name.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether `indexes` already holds a single-column GiST index on
+/// `(table, column)` — evidence that the implicit spatial `_gix` for a
+/// geography field is present in the projected set (djogi#468).
+///
+/// Used by the field-synthesis loop to decide whether a geography field's
+/// default-GiST `_idx` would be a redundant duplicate of an already-pushed
+/// `_gix`. It is purely the *evidence check* (does the covering GiST index
+/// exist?); the geography + default-GiST *eligibility* decision stays at the
+/// call site so the suppression's scope is visible there.
+///
+/// The match is single-column-exact: an entry whose target is the lone
+/// `column` (an expression index, or a composite index that happens to
+/// include `column`, does not count) and whose method is GiST.
+fn has_single_column_gist_index(indexes: &[IndexSchema], table: &str, column: &str) -> bool {
+    indexes.iter().any(|e| {
+        e.table == table
+            && e.index_type == IndexTypeSchema::Gist
+            && matches!(
+                &e.target,
+                IndexTargetSchema::Columns(cols)
+                    if cols.len() == 1 && cols[0].name == column
+            )
+    })
+}
+
 /// Synthesise a plain `IndexSchema` from a `#[field(index)]` /
 /// `#[field(index = "method")]` annotation.
 /// `col_name` is the Postgres column name, `index_type` is the method
@@ -2426,9 +2500,9 @@ mod tests {
     use super::*;
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
-        EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType, RangeSubtypeKind, field_descriptor,
-        model_descriptor,
+        EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec,
+        IndexKind, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PkType, RangeSubtypeKind,
+        field_descriptor, model_descriptor,
     };
     use crate::relation::registry::{
         RelationKind as RegistryRelationKind, RelationRegistryError, ReverseRelationMarker,
@@ -6433,5 +6507,314 @@ mod tests {
             global.enums.is_empty(),
             "global bucket must have no enums (no models reference any enum)"
         );
+    }
+
+    // ── Geography dual-index suppression (djogi#468) ────────────────
+    //
+    // A geography field annotated `#[field(index)]` carries BOTH an
+    // implicit spatial `_gix` `IndexSpec` (emitted by the macro for every
+    // geography field) AND, before the suppression below, a synthetic
+    // field-level `_idx`. The two name distinctly (`_gix` vs `_idx`), so
+    // the explicit-wins de-dup guard never fired and both survived into the
+    // projected `AppliedSchema`. The synthetic `_idx` is metadata-poor
+    // (`extension_dependency: None`, `requires_out_of_transaction: false`),
+    // so the surviving duplicate is a migration hazard. These tests fence
+    // the suppression on both axes it discriminates — `sql_type` (geography
+    // vs not) and `index_type` (default-GiST vs explicit non-GiST).
+
+    /// Returns every projected `IndexSchema` in the global bucket that
+    /// targets exactly the single column `column` on `table`.
+    fn indexes_for_column<'a>(
+        buckets: &'a BTreeMap<BucketKey, AppliedSchema>,
+        table: &str,
+        column: &str,
+    ) -> Vec<&'a IndexSchema> {
+        buckets[&empty_global()]
+            .indexes
+            .iter()
+            .filter(|e| e.table == table)
+            .filter(|e| match &e.target {
+                IndexTargetSchema::Columns(cols) => cols.len() == 1 && cols[0].name == column,
+                IndexTargetSchema::Expression(_) => false,
+            })
+            .collect()
+    }
+
+    /// Build the implicit spatial `_gix` `IndexSpec` exactly as the macro
+    /// emits it for a geography field (see
+    /// `djogi-macros/src/model/descriptor.rs` — GiST, single column,
+    /// `requires_out_of_transaction: true`, `extension_dependency:
+    /// Some("postgis")`, name `<table>_<col>_gix`). The column slice must
+    /// outlive the `IndexSpec`, so callers pass a `'static` slice.
+    const fn gix_index_spec(name: &'static str, cols: &'static [IndexColumnSpec]) -> IndexSpec {
+        IndexSpec {
+            name,
+            target: IndexTarget::Columns(cols),
+            kind: IndexKind::NonUnique,
+            index_type: IndexType::Gist,
+            predicate: None,
+            include: &[],
+            nulls_not_distinct: false,
+            requires_out_of_transaction: true,
+            extension_dependency: Some("postgis"),
+        }
+    }
+
+    /// 4.2.1 (djogi#468) — PRIMARY regression guard. A geography field with
+    /// `#[field(index)]` (default GiST) must project to exactly ONE index
+    /// on its column: the metadata-bearing implicit `_gix`. The synthetic
+    /// field-level `_idx`, a metadata-poor GiST duplicate, is suppressed.
+    ///
+    /// RED on the pre-fix tree: the synthesis loop pushes the `_idx`
+    /// alongside the projected `_gix`, so the column carries TWO indexes and
+    /// the count-==-1 assertion fails. GREEN post-fix: only the `_gix`
+    /// survives.
+    #[test]
+    fn geography_field_index_emits_single_gist_not_duplicate() {
+        static LOC_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("location")];
+        static GIX: &[IndexSpec] = &[gix_index_spec("places_location_gix", LOC_COLS)];
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            index_type: Some(IndexType::Gist),
+            ..field_descriptor(
+                "location",
+                FieldSqlType::Geography {
+                    subtype: GeographySubtype::Point,
+                    srid: 4326,
+                },
+                false,
+            )
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            indexes: GIX,
+            ..synth_model("places", "Place")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let location = indexes_for_column(&buckets, "places", "location");
+        assert_eq!(
+            location.len(),
+            1,
+            "a geography field with #[field(index)] must project exactly ONE \
+             index on its column (the implicit _gix); the metadata-poor \
+             synthetic _idx must be suppressed. Found: {:?}",
+            location.iter().map(|i| &i.name).collect::<Vec<_>>(),
+        );
+        let surviving = location[0];
+        assert_eq!(
+            surviving.name, "places_location_gix",
+            "the surviving index must be the implicit _gix, not the synthetic _idx",
+        );
+        assert_eq!(surviving.index_type, IndexTypeSchema::Gist);
+        assert_eq!(
+            surviving.extension_dependency,
+            Some("postgis".to_string()),
+            "the surviving _gix must keep its PostGIS extension dependency",
+        );
+        assert!(
+            surviving.requires_out_of_transaction,
+            "the surviving _gix must keep requires_out_of_transaction = true",
+        );
+    }
+
+    /// 4.2.2 (djogi#468) — non-geography inverse guard. An ordinary scalar
+    /// field with `#[field(index)]` and no implicit `_gix` must still
+    /// synthesise its single field-level `_idx`. Proves the geography skip
+    /// does NOT over-fire on the `sql_type` axis.
+    #[test]
+    fn non_geography_field_index_still_synthesises_btree_idx() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            index_type: None,
+            ..field_descriptor("label", FieldSqlType::Text, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let label = indexes_for_column(&buckets, "widgets", "label");
+        assert_eq!(
+            label.len(),
+            1,
+            "a non-geography field with #[field(index)] must synthesise its \
+             single field-level _idx; found: {:?}",
+            label.iter().map(|i| &i.name).collect::<Vec<_>>(),
+        );
+        assert_eq!(label[0].name, "widgets_label_idx");
+        assert_eq!(label[0].index_type, IndexTypeSchema::BTree);
+    }
+
+    /// 4.2.3 (djogi#468) — JSONB adjacent-class guard. A JSONB field with
+    /// `#[field(index)]` has no implicit IndexSpec; its only index is the
+    /// field-level GiN `_idx`, which must survive untouched. Proves the
+    /// geography skip is not generalised in a way that strips JSONB's index.
+    #[test]
+    fn jsonb_field_index_keeps_single_gin_idx() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            index_type: Some(IndexType::Gin),
+            ..field_descriptor("payload", FieldSqlType::Jsonb, false)
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("events", "Event")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let payload = indexes_for_column(&buckets, "events", "payload");
+        assert_eq!(
+            payload.len(),
+            1,
+            "a JSONB field with #[field(index)] keeps its single GiN _idx; \
+             found: {:?}",
+            payload.iter().map(|i| &i.name).collect::<Vec<_>>(),
+        );
+        assert_eq!(payload[0].name, "events_payload_idx");
+        assert_eq!(payload[0].index_type, IndexTypeSchema::Gin);
+        assert_eq!(
+            payload[0].extension_dependency, None,
+            "the JSONB GiN _idx carries no extension dependency",
+        );
+    }
+
+    /// 4.2.4 (djogi#468) — bare-geography baseline guard. A geography field
+    /// WITHOUT `#[field(index)]` (`indexed: false`) gets only the implicit
+    /// `_gix`. Confirms the common, non-`#[field(index)]` path is unchanged
+    /// — exactly one index, the spatial one.
+    #[test]
+    fn bare_geography_field_emits_single_gix() {
+        static LOC_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("location")];
+        static GIX: &[IndexSpec] = &[gix_index_spec("places_location_gix", LOC_COLS)];
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: false,
+            index_type: None,
+            ..field_descriptor(
+                "location",
+                FieldSqlType::Geography {
+                    subtype: GeographySubtype::Point,
+                    srid: 4326,
+                },
+                false,
+            )
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            indexes: GIX,
+            ..synth_model("places", "Place")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let location = indexes_for_column(&buckets, "places", "location");
+        assert_eq!(
+            location.len(),
+            1,
+            "a bare geography field (no #[field(index)]) must project exactly \
+             the implicit _gix; found: {:?}",
+            location.iter().map(|i| &i.name).collect::<Vec<_>>(),
+        );
+        assert_eq!(location[0].name, "places_location_gix");
+        assert_eq!(location[0].index_type, IndexTypeSchema::Gist);
+    }
+
+    /// 4.2.5 (djogi#468) — MANDATORY BLOCK guard. A geography field with an
+    /// EXPLICIT non-GiST method (`#[field(index = "spgist")]`,
+    /// `index_type: Some(Spgist)`) is a DISTINCT, user-requested index — not
+    /// a GiST duplicate of the `_gix` — and must SURVIVE alongside the
+    /// implicit `_gix`. Both indexes are kept: count == 2.
+    ///
+    /// This test's RED state is specifically against an UN-NARROWED
+    /// suppression predicate (geography with no `index_type` clause): that
+    /// would drop the SP-GiST `_idx`, leaving count == 1, and the
+    /// "exactly two" assertion would fail — the BLOCK-1 phantom bug. Under
+    /// the narrowed predicate (`Some(Gist)` only), SP-GiST passes through
+    /// and both survive. On the pre-fix tree (no suppression) both also
+    /// survive, so its job is to lock the narrowing, not the dual-emission.
+    #[test]
+    fn geography_field_spgist_annotation_survives_alongside_implicit_gix() {
+        static LOC_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("location")];
+        static GIX: &[IndexSpec] = &[gix_index_spec("places_location_gix", LOC_COLS)];
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            index_type: Some(IndexType::Spgist),
+            ..field_descriptor(
+                "location",
+                FieldSqlType::Geography {
+                    subtype: GeographySubtype::Point,
+                    srid: 4326,
+                },
+                false,
+            )
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            indexes: GIX,
+            ..synth_model("places", "Place")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+
+        let location = indexes_for_column(&buckets, "places", "location");
+        assert_eq!(
+            location.len(),
+            2,
+            "a geography field with explicit #[field(index = \"spgist\")] must \
+             keep BOTH the implicit _gix (GiST) AND its user-requested SP-GiST \
+             _idx — the SP-GiST index is a distinct access method, not a GiST \
+             duplicate, and suppressing it is the djogi#468 BLOCK-1 phantom \
+             bug. Found: {:?}",
+            location.iter().map(|i| &i.name).collect::<Vec<_>>(),
+        );
+
+        let gix = location
+            .iter()
+            .find(|i| i.name == "places_location_gix")
+            .expect("implicit _gix must survive");
+        assert_eq!(gix.index_type, IndexTypeSchema::Gist);
+        assert_eq!(gix.extension_dependency, Some("postgis".to_string()));
+        assert!(gix.requires_out_of_transaction);
+
+        let idx = location
+            .iter()
+            .find(|i| i.name == "places_location_idx")
+            .expect("user-requested SP-GiST _idx must survive");
+        assert_eq!(idx.index_type, IndexTypeSchema::Spgist);
+        // The surviving SP-GiST synthetic carries no PostGIS metadata — a
+        // separate, pre-existing defect (project_field_level_index hardcodes
+        // extension_dependency: None / requires_out_of_transaction: false for
+        // every field-level synthetic). Asserted here as the current state so
+        // the future metadata fix flips this assertion and surfaces the coupling.
+        assert_eq!(idx.extension_dependency, None);
     }
 }

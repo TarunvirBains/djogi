@@ -17,7 +17,7 @@
 use crate::model::attrs::{
     FieldAttrs, FieldSqlTypeCategory, FtsSpec, ModelAttrs, PkStrategy,
     RelationKind as MacroRelationKind, detect_relation, field_sql_type_category,
-    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option, unwrap_schema_type,
+    on_delete_str_to_tokens, rust_type_to_sql, unwrap_schema_type,
 };
 use crate::model::sql_bind::rust_source_type_tokens_for_type;
 use proc_macro2::TokenStream;
@@ -1545,7 +1545,10 @@ fn is_jsonb_type(ty: &syn::Type) -> bool {
 /// by checking the last-segment ident.
 /// Returns `true` if the type path ends in one of the five recognized geometry
 /// type names (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-/// `MultiPolygon`), after stripping `Option`. Uses last-segment path matching
+/// `MultiPolygon`), after stripping transparent `Option<_>` and `Tracked<_>` wrappers via
+/// `unwrap_schema_type`. Stripping `Tracked<_>` keeps GiST index selection
+/// correct for dirty-tracked geometry columns (`Tracked<GeoPoint>`), whose
+/// storage type is the inner geometry type. Uses last-segment path matching
 /// so qualified paths (`djogi::geo::LineString`, `geo::Polygon`, etc.) and bare
 /// idents are all accepted.
 /// The `spatial` feature flag lives on the `djogi` runtime crate, not on
@@ -1554,7 +1557,7 @@ fn is_jsonb_type(ty: &syn::Type) -> bool {
 /// `spatial` feature, the compile error surfaces at the struct definition as
 /// "unresolved type", not here.
 fn is_geography_field_type(ty: &syn::Type) -> bool {
-    let (inner, _) = unwrap_option(ty);
+    let (inner, _) = unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
         return false;
     };
@@ -1573,9 +1576,12 @@ fn is_geography_field_type(ty: &syn::Type) -> bool {
 /// Retained as a narrower helper for callers that need to distinguish
 /// `GeoPoint` from other geometry types (e.g. test assertions). For the
 /// common "is this any geography?" check, prefer `is_geography_field_type`.
+/// Strips transparent `Option<_>` and `Tracked<_>` wrappers via
+/// `unwrap_schema_type` so `Tracked<GeoPoint>` and its nullable nestings
+/// classify as `GeoPoint`.
 #[allow(dead_code)]
 fn is_geopoint_type(ty: &syn::Type) -> bool {
-    let (inner, _) = unwrap_option(ty);
+    let (inner, _) = unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
         return false;
     };
@@ -1586,13 +1592,15 @@ fn is_geopoint_type(ty: &syn::Type) -> bool {
 }
 
 /// Detect if a field type is `Geography` by checking the last-segment ident.
-/// Returns `true` if the type path ends in `Geography`, after stripping `Option`.
+/// Returns `true` if the type path ends in `Geography`, after stripping transparent
+/// `Option<_>` and `Tracked<_>` wrappers via `unwrap_schema_type` (so dirty-tracked
+/// `Tracked<Geography<…>>` columns also default to a GiST index).
 /// Uses last-segment path matching to accept bare `Geography<T>`, `djogi::Geography<T>`, etc.
 /// This helper is retained for the `#[field(index)]` auto-index default so that
 /// any user who annotates a field typed as a raw `Geography<…>` wrapper (not
 /// the canonical `GeoPoint`) also gets a GiST index by default.
 fn is_geography_type(ty: &syn::Type) -> bool {
-    let (inner, _) = unwrap_option(ty);
+    let (inner, _) = unwrap_schema_type(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
         return false;
     };
@@ -1747,6 +1755,28 @@ mod tests {
         assert!(!is_geography_type(&ty));
     }
 
+    // ── is_geography_type — Tracked<_> strip (djogi#468) ──────────────────────
+    #[test]
+    fn test_is_geography_type_tracked() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Geography<Point>>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_type_option_tracked() {
+        let ty = syn::parse_str::<syn::Type>("Option<Tracked<Geography<Point>>>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_type_tracked_option() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Option<Geography<Point>>>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_type_tracked_string_false() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<String>").unwrap();
+        assert!(!is_geography_type(&ty));
+    }
+
     // ── is_geography_field_type ───────────────────────────────────────────────
 
     #[test]
@@ -1803,6 +1833,28 @@ mod tests {
         assert!(!is_geography_field_type(&ty));
     }
 
+    // ── is_geography_field_type — Tracked<_> strip (djogi#468) ────────────────
+    #[test]
+    fn test_is_geography_field_type_tracked_geopoint() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<GeoPoint>").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_field_type_option_tracked_geopoint() {
+        let ty = syn::parse_str::<syn::Type>("Option<Tracked<GeoPoint>>").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_field_type_tracked_option_geopoint() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Option<GeoPoint>>").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+    #[test]
+    fn test_is_geography_field_type_tracked_string_false() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<String>").unwrap();
+        assert!(!is_geography_field_type(&ty));
+    }
+
     // ── is_geopoint_type ─────────────────────────────────────────────────────
 
     #[test]
@@ -1851,6 +1903,28 @@ mod tests {
     fn test_is_geopoint_type_geography_false() {
         // `Geography<Point>` is a different type from `GeoPoint`.
         let ty = syn::parse_str::<syn::Type>("Geography<Point>").unwrap();
+        assert!(!is_geopoint_type(&ty));
+    }
+
+    // ── is_geopoint_type — Tracked<_> strip (djogi#468) ───────────────────────
+    #[test]
+    fn test_is_geopoint_type_tracked() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<GeoPoint>").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+    #[test]
+    fn test_is_geopoint_type_option_tracked() {
+        let ty = syn::parse_str::<syn::Type>("Option<Tracked<GeoPoint>>").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+    #[test]
+    fn test_is_geopoint_type_tracked_option() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<Option<GeoPoint>>").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+    #[test]
+    fn test_is_geopoint_type_tracked_string_false() {
+        let ty = syn::parse_str::<syn::Type>("Tracked<String>").unwrap();
         assert!(!is_geopoint_type(&ty));
     }
 
