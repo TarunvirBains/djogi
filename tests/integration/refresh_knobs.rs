@@ -44,8 +44,12 @@
 // inline (via `tracing_test::internal`) rather than the `#[traced_test]`
 // proc-macro attribute. The global buffer is append-only — each test snapshots
 // the buffer length before its call and inspects only the new bytes appended
-// since the snapshot. Tests are run with `--test-threads=1` to prevent
-// concurrent writes from scrambling the buffer.
+// since the snapshot. The buffer-reading test is annotated
+// `#[serial_test::serial]` (default key); it is the only test in this binary
+// that reads the buffer, and the other two tests never `.update()` a
+// subscription, so they cannot emit the `djogi::cache` "undersized" warn it
+// counts. The serial annotation additionally excludes any future serial
+// buffer-reader from racing its inspection window.
 
 use djogi::prelude::*;
 use std::num::NonZeroUsize;
@@ -123,6 +127,13 @@ fn logs_since(since: usize) -> String {
 /// - Tick 4 + 5: another eviction cycle, but one-shot flag set → no second warn.
 ///
 #[djogi::djogi_test(sync_models = [KnobRow])]
+// This test snapshots the process-global tracing buffer and asserts an exact
+// occurrence count of its own `undersized` warn marker over the `[since..]`
+// window. Only this test reads the buffer, and the other tests in this binary
+// never emit that marker, so the count is sound. `#[serial_test::serial]`
+// (forwarded by `#[djogi_test]` onto the generated sync wrapper) hardens this
+// against any future serial buffer-reader added to the binary.
+#[serial_test::serial]
 async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
     let since = init_log_capture();
 

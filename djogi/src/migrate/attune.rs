@@ -1983,6 +1983,35 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, new_value: Option<&str>) -> Self {
+            let value = std::env::var(key).ok();
+            unsafe {
+                match new_value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, value }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.value {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     fn temp_root(tag: &str) -> PathBuf {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -2406,17 +2435,18 @@ mod tests {
     /// resolves to `None`. Walks both happy and adversarial inputs to
     /// pin the exact ASCII case-insensitive contract — without
     /// allocating (no `to_lowercase`) and without regex.
+    #[serial_test::serial]
     #[test]
     fn u2_djogi_env_is_production_predicate_matches_only_exact_word() {
         // Save / restore the env var so the test does not leak state.
-        // Tests run with `--test-threads=1` per the project's
-        // pre-commit policy so concurrent env mutation is not a
-        // concern in this configuration.
-        let prior = std::env::var("DJOGI_ENV").ok();
+        // `#[serial_test::serial]` (default key) gives this test exclusive
+        // process-wide env access, so concurrent env mutation by another
+        // test in this binary is not a concern.
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
 
         // Unset → None.
-        // SAFETY: serial test execution; no other thread reads DJOGI_ENV.
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        // SAFETY: serialized via `#[serial_test::serial]`; no other thread
+        // reads or mutates DJOGI_ENV while this test runs.
         assert_eq!(djogi_env_is_production(), None);
 
         // Exact match (lowercase) → Some(value).
@@ -2442,12 +2472,6 @@ mod tests {
         assert_eq!(djogi_env_is_production(), None);
         unsafe { std::env::set_var("DJOGI_ENV", "") };
         assert_eq!(djogi_env_is_production(), None);
-
-        // Restore.
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
     // ── Stale Phase 0 attune guards ────────────────────────────────────

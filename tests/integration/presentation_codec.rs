@@ -295,6 +295,7 @@ impl TryPresentationCodec<String> for FailingFetchCodec {
 /// diagnostic rather than crashing the process on mis-configured deployments.
 ///
 /// Uses `ENV_MUTEX` to serialise env mutation with Assertion 5.
+#[serial_test::serial]
 #[tokio::test]
 #[cfg(feature = "hmac-codec")]
 async fn pool_connect_fails_without_hmac_key() {
@@ -409,6 +410,7 @@ const _: () = {
 ///
 /// This test confirms it returns `Err` when `DJOGI_PRESENTATION_HMAC_KEY` is
 /// absent — the same condition that blocks pool connect in Assertion 1.
+#[serial_test::serial]
 #[tokio::test]
 #[cfg(feature = "hmac-codec")]
 async fn validate_startup_inventory_errs_without_hmac_key() {
@@ -443,6 +445,7 @@ async fn validate_startup_inventory_errs_without_hmac_key() {
 /// test target, so startup validation must not require
 /// `DJOGI_PRESENTATION_HMAC_KEY`.
 #[cfg(not(feature = "hmac-codec"))]
+#[serial_test::serial]
 #[tokio::test]
 async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disabled() {
     let _guard = ENV_MUTEX.lock().await;
@@ -485,6 +488,7 @@ async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disa
 /// The `email` field is exposed on `support` without a codec (see the `User`
 /// declaration above), so `UserSupport::email` is plain `String`.
 #[djogi::djogi_test(sync_models = [User])]
+#[serial_test::serial]
 async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
     let user = User::create(
         &mut ctx,
@@ -522,6 +526,7 @@ async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [User])]
+#[serial_test::serial]
 async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext) {
     let user = User::create(
         &mut ctx,
@@ -559,6 +564,7 @@ async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext)
 }
 
 #[djogi::djogi_test(sync_models = [UserWithQueryableIdentityCodec])]
+#[serial_test::serial]
 async fn visage_queryset_filter_accepts_presentation_q_predicate(mut ctx: DjogiContext) {
     let match_row = UserWithQueryableIdentityCodec::create(
         &mut ctx,
@@ -592,6 +598,7 @@ async fn visage_queryset_filter_accepts_presentation_q_predicate(mut ctx: DjogiC
 }
 
 #[djogi::djogi_test(sync_models = [UserWithFailingFetchCodec])]
+#[serial_test::serial]
 async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
     let user = UserWithFailingFetchCodec::create(
         &mut ctx,
@@ -662,6 +669,7 @@ async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
 ///    pool creation.
 /// 3. The manual test harness (`setup_test_db`) then succeeds, after which the
 ///    normal create/fetch round-trip still works.
+#[serial_test::serial]
 #[tokio::test]
 #[cfg(feature = "hmac-codec")]
 async fn test_key_installed_before_pool_connect() {

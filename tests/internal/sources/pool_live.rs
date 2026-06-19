@@ -34,11 +34,10 @@ use tokio::sync::{Mutex, MutexGuard, oneshot};
 /// `DJOGI_DATABASE_MAX_CONNECTIONS` env var.
 ///
 /// `cargo test --tests` runs integration tests in this binary
-/// concurrently by default — the lib-test `--test-threads=1` flag does
-/// NOT propagate to integration targets. The env-driven tests below
-/// would race each other (one test's mutation observed by the other,
-/// or one test's cleanup observed before the other reads) without
-/// serialization. We use `tokio::sync::Mutex` (not `std::sync::Mutex`)
+/// concurrently by default. The env-driven tests below would race each
+/// other (one test's mutation observed by the other, or one test's
+/// cleanup observed before the other reads) without serialization. We
+/// use `tokio::sync::Mutex` (not `std::sync::Mutex`)
 /// because the test body holds the guard across `.await` points —
 /// `std::sync::MutexGuard` is `!Send` and clippy rightly rejects
 /// holding it across an await.
@@ -527,6 +526,7 @@ async fn pool_raw_with_client_copy_from_stdin_round_trips_binary_payload() {
 /// the `from_database_config_env_overrides_toml` sibling. The
 /// [`EnvGuard`] restores the prior value on drop, even if the test
 /// panics.
+#[serial_test::serial]
 #[tokio::test]
 async fn from_database_config_honours_toml_max_connections() {
     let _lock = env_lock().await;
@@ -561,6 +561,7 @@ async fn from_database_config_honours_toml_max_connections() {
 /// the `from_database_config_honours_toml_max_connections` sibling. The
 /// [`EnvGuard`] restores the prior value on drop so a panic mid-test
 /// cannot leak the override into the rest of the process.
+#[serial_test::serial]
 #[tokio::test]
 async fn from_database_config_env_overrides_toml() {
     let _lock = env_lock().await;

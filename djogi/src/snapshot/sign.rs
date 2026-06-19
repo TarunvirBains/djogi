@@ -343,6 +343,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn load_key_from_env_unset() {
         let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
@@ -357,6 +358,7 @@ mod tests {
         assert_eq!(load_signing_key_from_env(), Ok(None));
     }
 
+    #[serial_test::serial]
     #[test]
     fn load_key_from_env_valid_hex() {
         let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
@@ -384,6 +386,7 @@ mod tests {
         assert_eq!(result, Ok(Some(expected)));
     }
 
+    #[serial_test::serial]
     #[test]
     fn load_key_from_env_short() {
         let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
@@ -401,6 +404,7 @@ mod tests {
         assert_eq!(result, Err(SnapshotKeyError::InvalidLength { actual: 63 }),);
     }
 
+    #[serial_test::serial]
     #[test]
     fn load_key_from_env_non_hex() {
         let _g = SIGNING_KEY_ENV_MUTEX.lock().unwrap();
@@ -433,6 +437,7 @@ mod tests {
     /// possible but reaches the same code path; covering it on Unix is
     /// sufficient for the variant-routing assertion.
     #[cfg(unix)]
+    #[serial_test::serial]
     #[test]
     fn load_key_from_env_non_unicode_returns_error() {
         use std::ffi::OsString;

@@ -507,6 +507,7 @@ mod tests {
         }
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_env_var_wins() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -526,6 +527,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_compat_env_var_still_works() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -543,6 +545,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_uses_configured_crud_log_url_before_derive() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -553,6 +556,7 @@ mod tests {
         assert_eq!(resolved, "postgres://localhost/myapp_crud_logs");
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_falls_back_to_derived() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -574,6 +578,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_empty_env_var_falls_back() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -597,6 +602,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_rejects_self_audit_via_derive_path() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -628,6 +634,7 @@ mod tests {
         }
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_env_var_bypasses_self_audit_guard() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");
@@ -649,6 +656,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn resolve_audit_url_unresolvable_when_no_path_component() {
         let _g = AUDIT_URL_ENV_MUTEX.lock().expect("audit url env mutex");

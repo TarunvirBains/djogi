@@ -20,7 +20,7 @@ git clone https://github.com/TarunvirBains/djogi
 cd djogi
 cargo build
 DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test \
-  cargo test --workspace -- --test-threads=1
+  cargo test --workspace --exclude elephant-tracker -- --skip adopter_linked_cli
 ```
 
 Integration tests assume a running Postgres at `DATABASE_URL` with

@@ -821,20 +821,52 @@ mod tests {
         }
     }
 
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, new_value: Option<&str>) -> Self {
+            let value = std::env::var(key).ok();
+            unsafe {
+                match new_value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, value }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.value {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     // ── DaemonConfig defaults ─────────────────────────────────────────
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_uses_30s_poll_interval() {
         let cfg = DaemonConfig::default_for_localhost("postgres://localhost/x");
         assert_eq!(cfg.poll_interval, Duration::from_secs(30));
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_uses_10min_stale_threshold() {
         let cfg = DaemonConfig::default_for_localhost("postgres://localhost/x");
         assert_eq!(cfg.claim_stale_after, Duration::from_secs(600));
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_refuses_remote_connections() {
         let cfg = DaemonConfig::default_for_localhost("postgres://localhost/x");
@@ -844,6 +876,7 @@ mod tests {
         );
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_records_running_pid() {
         let cfg = DaemonConfig::default_for_localhost("postgres://localhost/x");
@@ -851,12 +884,14 @@ mod tests {
         assert!(!cfg.host.is_empty(), "host must be a non-empty diagnostic");
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_records_supplied_url() {
         let cfg = DaemonConfig::default_for_localhost("postgres://127.0.0.1/main");
         assert_eq!(cfg.database_url, "postgres://127.0.0.1/main");
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_localhost_uses_development_profile() {
         // The default constructor sets profile to a non-production
@@ -1027,87 +1062,62 @@ mod tests {
 
     // ── Triple-gate logic ─────────────────────────────────────────────
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_accepts_localhost_when_env_unset() {
-        let prior = std::env::var("DJOGI_ENV").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
         let cfg = test_config("postgres://localhost/main");
         assert!(enforce_environment_gates(&cfg).is_ok());
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_refuses_production_env() {
-        let prior = std::env::var("DJOGI_ENV").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::set_var("DJOGI_ENV", "production") };
+        let _guard = EnvGuard::set("DJOGI_ENV", Some("production"));
         let cfg = test_config("postgres://localhost/main");
         let err = enforce_environment_gates(&cfg).unwrap_err();
         assert!(matches!(err, DaemonError::Production));
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_refuses_remote_url_without_override() {
-        let prior = std::env::var("DJOGI_ENV").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
         let cfg = test_config("postgres://prod.example.com:5432/main");
         let err = enforce_environment_gates(&cfg).unwrap_err();
         assert!(matches!(err, DaemonError::NotLocalhost));
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_accepts_remote_url_with_override() {
-        let prior = std::env::var("DJOGI_ENV").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
         let mut cfg = test_config("postgres://prod.example.com:5432/main");
         cfg.allow_non_localhost = true;
         assert!(enforce_environment_gates(&cfg).is_ok());
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_refuses_production_profile() {
         // Production profile in `Djogi.toml` is its own gate, separate
         // from `DJOGI_ENV`. The CLI threads `DjogiConfig::profile`
         // through to `DaemonConfig::profile`; the gate fires when the
         // value is the literal lowercase `"production"`.
-        let prior = std::env::var("DJOGI_ENV").ok();
-        // SAFETY: tests run with --test-threads=1.
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
         let mut cfg = test_config("postgres://localhost/main");
         cfg.profile = "production".to_string();
         let err = enforce_environment_gates(&cfg).unwrap_err();
         assert!(matches!(err, DaemonError::Production));
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn enforce_gates_accepts_non_production_profile_strings() {
         // A typo in the profile field (`"Production"`, `"PROD"`) falls
         // back to the safe-for-dev default rather than silently flipping
         // the gate. Mirrors `DjogiConfig::is_production`'s strict match.
-        let prior = std::env::var("DJOGI_ENV").ok();
-        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let _guard = EnvGuard::set("DJOGI_ENV", None);
         for profile in [
             "development",
             "staging",
@@ -1123,17 +1133,14 @@ mod tests {
                 "profile=`{profile}` must NOT fire the gate (only lowercase `production` does)",
             );
         }
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn production_env_set_recognises_production() {
-        // SAFETY: tests run with --test-threads=1.
-        let prior = std::env::var("DJOGI_ENV").ok();
-        unsafe { std::env::set_var("DJOGI_ENV", "production") };
+        // SAFETY: serialized via `#[serial_test::serial]` (default key); no
+        // concurrent env-mutating test in this binary runs at the same time.
+        let _guard = EnvGuard::set("DJOGI_ENV", Some("production"));
         assert!(production_env_set());
         unsafe { std::env::set_var("DJOGI_ENV", "PRODUCTION") };
         assert!(production_env_set(), "case-insensitive match required");
@@ -1141,11 +1148,6 @@ mod tests {
         assert!(!production_env_set());
         unsafe { std::env::remove_var("DJOGI_ENV") };
         assert!(!production_env_set());
-        // Restore.
-        match prior {
-            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
-            None => unsafe { std::env::remove_var("DJOGI_ENV") },
-        }
     }
 
     // ── DaemonError mappings ──────────────────────────────────────────
@@ -1186,19 +1188,16 @@ mod tests {
 
     // ── hostname fallback ─────────────────────────────────────────────
 
+    #[serial_test::serial]
     #[test]
     fn hostname_or_unknown_falls_back_when_unset() {
-        // SAFETY: tests run with --test-threads=1.
-        let prior = std::env::var("HOSTNAME").ok();
-        unsafe { std::env::remove_var("HOSTNAME") };
+        // SAFETY: serialized via `#[serial_test::serial]` (default key); no
+        // concurrent env-mutating test in this binary runs at the same time.
+        let _guard = EnvGuard::set("HOSTNAME", None);
         let h = hostname_or_unknown();
         assert_eq!(h, "unknown");
         unsafe { std::env::set_var("HOSTNAME", "test-box.example") };
         let h = hostname_or_unknown();
         assert_eq!(h, "test-box.example");
-        match prior {
-            Some(v) => unsafe { std::env::set_var("HOSTNAME", v) },
-            None => unsafe { std::env::remove_var("HOSTNAME") },
-        }
     }
 }

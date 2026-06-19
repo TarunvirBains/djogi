@@ -273,7 +273,8 @@ async fn advisory_lock_count(ctx: &mut djogi::DjogiContext, lock_key: i64) -> i6
          WHERE locktype = 'advisory' \
            AND classid = (($1::bigint >> 32) & 4294967295)::oid \
            AND objid   = ($1::bigint & 4294967295)::oid \
-           AND mode    = 'ExclusiveLock'",
+           AND mode    = 'ExclusiveLock' \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
         &[&lock_key],
     )
     .await

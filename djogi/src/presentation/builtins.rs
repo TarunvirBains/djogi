@@ -803,6 +803,7 @@ mod tests {
     /// basic check). This test uses a specific test key installed via
     /// the test mutex.
     #[cfg(feature = "hmac-codec")]
+    #[serial_test::serial]
     #[test]
     fn hmac_two_different_inputs_produce_different_outputs() {
         let _guard = TEST_HMAC_ENV_MUTEX
@@ -810,11 +811,12 @@ mod tests {
             .unwrap_or_else(|p| p.into_inner());
 
         // Install a deterministic test key.
-        // SAFETY: guarded by TEST_HMAC_ENV_MUTEX so no other thread reads
-        // DJOGI_PRESENTATION_HMAC_KEY concurrently during this set_var call.
         let test_key = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-        // SAFETY: TEST_HMAC_ENV_MUTEX held above; no concurrent readers of
-        // DJOGI_PRESENTATION_HMAC_KEY in the single-threaded env-read path.
+        // SAFETY: `#[serial_test::serial]` (default key) gives this test
+        // exclusive process-wide env access, so no other thread reads or
+        // mutates the environment during this `set_var` call. The per-key
+        // `TEST_HMAC_ENV_MUTEX` (held above) only serialises HMAC-key tests
+        // and is not sufficient on its own across modules.
         #[allow(unsafe_code)]
         unsafe {
             std::env::set_var("DJOGI_PRESENTATION_HMAC_KEY", test_key);
