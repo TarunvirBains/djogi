@@ -1208,14 +1208,20 @@ fn requires_phase_zero_attune_preflight(mode: &AttuneMode, apply: bool) -> bool 
 /// any attune mutation (bootstrap, ledger INSERT, parent pointer).
 /// Returns `Ok(())` when the version is not Phase 0 or when Phase 0
 /// is identity-free replay-current, missing, or incomplete.
-fn check_phase_zero_attune_entry(up_path: &Path, version: &str) -> Result<(), AttuneError> {
+fn check_phase_zero_attune_entry(
+    workspace_root: &Path,
+    up_path: &Path,
+    version: &str,
+) -> Result<(), AttuneError> {
     // Only check files that are Phase 0 candidates.
     if version != PHASE_ZERO_VERSION {
         return Ok(());
     }
-    let bytes = std::fs::read(up_path).map_err(|e| AttuneError::SqlReadFailed {
-        path: up_path.to_path_buf(),
-        source: e,
+    let bytes = common::read_workspace_file(workspace_root, up_path).map_err(|e| {
+        AttuneError::SqlReadFailed {
+            path: up_path.to_path_buf(),
+            source: e,
+        }
     })?;
     match classify_phase_zero_artifact(&bytes) {
         PhaseZeroArtifactState::IdentityFreeCurrent
@@ -1247,7 +1253,7 @@ fn check_phase_zero_attune_entry_in_workspace(
                 source,
             }
         })?;
-    check_phase_zero_attune_entry(&up_path, version)
+    check_phase_zero_attune_entry(workspace_root, &up_path, version)
 }
 
 /// Insert a `status='applied'` ledger row for an unrecorded SQL file.
@@ -1980,7 +1986,6 @@ fn sort_key(e: &AttuneEntry) -> (String, String, String, &'static str) {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct EnvGuard {
@@ -2019,9 +2024,29 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("djogi-attune-{tag}-{nanos}-{n}"));
-        fs::create_dir_all(&p).unwrap();
-        p
+        let temp_root = std::env::temp_dir();
+        let dir_name = format!("djogi-attune-{tag}-{nanos}-{n}");
+        super::common::create_workspace_dir_all(&temp_root, &dir_name).unwrap();
+        temp_root.join(dir_name)
+    }
+
+    fn create_test_dir<P: AsRef<Path>>(
+        workspace_root: &Path,
+        candidate: P,
+    ) -> std::io::Result<PathBuf> {
+        super::common::create_workspace_dir_all(workspace_root, candidate)
+    }
+
+    fn write_test_file<P: AsRef<Path>, B: AsRef<[u8]>>(
+        workspace_root: &Path,
+        candidate: P,
+        contents: B,
+    ) -> std::io::Result<PathBuf> {
+        super::common::write_workspace_file(workspace_root, candidate, contents.as_ref())
+    }
+
+    fn cleanup_test_root(root: &Path) {
+        let _ = super::common::remove_workspace_dir_all(root.parent().unwrap_or(root), root);
     }
 
     fn current_production_phase_zero_sql() -> String {
@@ -2107,21 +2132,23 @@ mod tests {
     fn scan_disk_picks_up_only_up_files() {
         let root = temp_root("scan_disk_up_only");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         // Up file.
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260425010203__init.sdjql"),
             "CREATE TABLE foo();",
         )
         .unwrap();
         // Down file.
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260425010203__init.down.sdjql"),
             "DROP TABLE foo;",
         )
         .unwrap();
         // Random other file.
-        fs::write(dir.join("README.md"), "noop").unwrap();
+        write_test_file(&root, dir.join("README.md"), "noop").unwrap();
         let scanned = scan_disk(&root).expect("scan ok");
         let bucket = BucketKey {
             database: "main".to_string(),
@@ -2130,7 +2157,7 @@ mod tests {
         let versions = scanned.get(&bucket).expect("billing bucket");
         assert_eq!(versions.len(), 1, "down + readme must be ignored");
         assert!(versions.contains_key("V20260425010203__init"));
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
@@ -2138,9 +2165,9 @@ mod tests {
         let root = temp_root("squash_sidecar_cleanup");
         let version = "V20260425010203__init";
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         let sidecar = dir.join(committed_replay_plan_filename(version));
-        crate::migrate::write_workspace_file(&root, &sidecar, b"{}").unwrap();
+        write_test_file(&root, &sidecar, b"{}").unwrap();
 
         delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("delete sidecar");
         assert!(
@@ -2149,20 +2176,22 @@ mod tests {
         );
         delete_replay_plan_sidecar_if_exists(&root, &dir, version).expect("missing sidecar is ok");
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn scan_disk_groups_by_bucket() {
         let root = temp_root("scan_disk_buckets");
-        fs::create_dir_all(root.join("migrations/main/billing")).unwrap();
-        fs::create_dir_all(root.join("migrations/main/_global_")).unwrap();
-        fs::write(
+        create_test_dir(&root, root.join("migrations/main/billing")).unwrap();
+        create_test_dir(&root, root.join("migrations/main/_global_")).unwrap();
+        write_test_file(
+            &root,
             root.join("migrations/main/billing/V20260101000001__init.sdjql"),
             "",
         )
         .unwrap();
-        fs::write(
+        write_test_file(
+            &root,
             root.join("migrations/main/_global_/V20260101000002__init.sdjql"),
             "",
         )
@@ -2179,7 +2208,7 @@ mod tests {
         };
         assert!(scanned.contains_key(&global), "global bucket present");
         assert!(scanned.contains_key(&billing), "billing bucket present");
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
@@ -2478,7 +2507,9 @@ mod tests {
 
     /// Helper to generate a generated-stale Phase 0 file for testing.
     fn write_generated_stale_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             generated_stale_phase_zero_sql(),
         )
@@ -2486,7 +2517,9 @@ mod tests {
     }
 
     fn write_legacy_generated_stale_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             legacy_generated_stale_phase_zero_sql(),
         )
@@ -2495,7 +2528,9 @@ mod tests {
 
     /// Helper to generate an identity-free production Phase 0 file for testing.
     fn write_current_production_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             current_production_phase_zero_sql(),
         )
@@ -2503,7 +2538,9 @@ mod tests {
     }
 
     fn write_seed_capable_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             current_single_node_dev_phase_zero_sql(),
         )
@@ -2511,7 +2548,9 @@ mod tests {
     }
 
     fn write_markerless_seed_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             markerless_seed_phase_zero_sql(),
         )
@@ -2519,7 +2558,9 @@ mod tests {
     }
 
     fn write_phase_zero_with_seed_statement(dir: &Path, statement: &str) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             phase_zero_with_seed_statement(statement),
         )
@@ -2527,11 +2568,14 @@ mod tests {
     }
 
     fn write_missing_phase_zero(dir: &Path) {
-        fs::write(dir.join(up_filename(PHASE_ZERO_VERSION)), " \n\t ").unwrap();
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(root, dir.join(up_filename(PHASE_ZERO_VERSION)), " \n\t ").unwrap();
     }
 
     fn write_incomplete_phase_zero(dir: &Path) {
-        fs::write(
+        let root = dir.parent().expect("test dir must have a parent");
+        write_test_file(
+            root,
             dir.join(up_filename(PHASE_ZERO_VERSION)),
             incomplete_phase_zero_sql(),
         )
@@ -2545,11 +2589,12 @@ mod tests {
     fn record_refuses_generated_stale_phase_zero() {
         let root = temp_root("record_stale_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_generated_stale_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_err(),
             "Record must refuse generated-stale Phase 0; got Ok"
@@ -2560,18 +2605,19 @@ mod tests {
             panic!("Expected StalePhaseZero refusal, got: {:?}", result);
         }
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn record_refuses_legacy_generated_stale_phase_zero() {
         let root = temp_root("record_legacy_stale_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_legacy_generated_stale_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_err(),
             "Record must refuse legacy generated-stale Phase 0; got Ok"
@@ -2582,18 +2628,19 @@ mod tests {
             panic!("Expected StalePhaseZero refusal, got: {:?}", result);
         }
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn record_refuses_seed_capable_phase_zero() {
         let root = temp_root("record_seed_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_seed_capable_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             matches!(
                 result,
@@ -2602,18 +2649,19 @@ mod tests {
             "Record must refuse seed-capable Phase 0; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn record_refuses_markerless_seed_phase_zero() {
         let root = temp_root("record_markerless_seed_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_markerless_seed_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             matches!(
                 result,
@@ -2622,7 +2670,7 @@ mod tests {
             "Record must refuse markerless seed Phase 0; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
@@ -2630,11 +2678,12 @@ mod tests {
         for (name, statement) in extended_seed_statement_cases() {
             let root = temp_root(&format!("record_extended_seed_p0_{name}"));
             let dir = root.join("migrations/main/billing");
-            fs::create_dir_all(&dir).unwrap();
+            create_test_dir(&root, &dir).unwrap();
             write_phase_zero_with_seed_statement(&dir, statement);
 
             let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-            let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+            let result =
+                check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
             assert!(
                 matches!(
                     result,
@@ -2643,7 +2692,7 @@ mod tests {
                 "Record must refuse extended seed Phase 0 {name}; got {result:?}"
             );
 
-            let _ = fs::remove_dir_all(&root);
+            cleanup_test_root(&root);
         }
     }
 
@@ -2652,52 +2701,55 @@ mod tests {
     fn record_accepts_identity_free_production_phase_zero() {
         let root = temp_root("record_current_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_current_production_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
             "Record must accept identity-free Phase 0; got Err: {:?}",
             result
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn attune_does_not_broaden_missing_phase_zero_into_stale_refusal() {
         let root = temp_root("attune_missing_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_missing_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
             "attune must not broaden missing Phase 0 artifacts into stale refusal; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn attune_does_not_broaden_incomplete_phase_zero_into_stale_refusal() {
         let root = temp_root("attune_incomplete_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_incomplete_phase_zero(&dir);
 
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&up_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
             "attune must not broaden incomplete Phase 0 artifacts into stale refusal; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
@@ -2757,22 +2809,24 @@ mod tests {
     fn record_skips_phase_zero_check_for_non_phase_zero_version() {
         let root = temp_root("record_non_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(
+        create_test_dir(&root, &dir).unwrap();
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE foo();",
         )
         .unwrap();
 
         let up_path = dir.join("V20260101000001__init.sdjql");
-        let result = check_phase_zero_attune_entry(&up_path, "V20260101000001__init");
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &up_path, "V20260101000001__init");
         assert!(
             result.is_ok(),
             "Non-Phase 0 files should pass the guard; got Err: {:?}",
             result
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     /// Stale Phase 0 attune Squash refusal: generated-stale file as
@@ -2781,18 +2835,20 @@ mod tests {
     fn squash_refuses_generated_stale_phase_zero_as_from() {
         let root = temp_root("squash_stale_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_generated_stale_phase_zero(&dir);
 
         // Add a later migration so squash would have multiple files.
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE bar();",
         )
         .unwrap();
 
         let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_err(),
             "Squash must refuse generated-stale Phase 0 as --from; got Ok"
@@ -2803,24 +2859,26 @@ mod tests {
             panic!("Expected StalePhaseZero refusal, got: {:?}", result);
         }
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn squash_refuses_legacy_generated_stale_phase_zero_as_from() {
         let root = temp_root("squash_legacy_stale_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_legacy_generated_stale_phase_zero(&dir);
 
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE bar();",
         )
         .unwrap();
 
         let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_err(),
             "Squash must refuse legacy generated-stale Phase 0 as --from; got Ok"
@@ -2831,24 +2889,26 @@ mod tests {
             panic!("Expected StalePhaseZero refusal, got: {:?}", result);
         }
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn squash_refuses_seed_capable_phase_zero_as_from() {
         let root = temp_root("squash_seed_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_seed_capable_phase_zero(&dir);
 
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE bar();",
         )
         .unwrap();
 
         let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
         assert!(
             matches!(
                 result,
@@ -2857,24 +2917,26 @@ mod tests {
             "Squash must refuse seed-capable Phase 0 as --from; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
     fn squash_refuses_markerless_seed_phase_zero_as_from() {
         let root = temp_root("squash_markerless_seed_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_markerless_seed_phase_zero(&dir);
 
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE bar();",
         )
         .unwrap();
 
         let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
         assert!(
             matches!(
                 result,
@@ -2883,7 +2945,7 @@ mod tests {
             "Squash must refuse markerless seed Phase 0 as --from; got {result:?}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     #[test]
@@ -2891,17 +2953,19 @@ mod tests {
         for (name, statement) in extended_seed_statement_cases() {
             let root = temp_root(&format!("squash_extended_seed_p0_{name}"));
             let dir = root.join("migrations/main/billing");
-            fs::create_dir_all(&dir).unwrap();
+            create_test_dir(&root, &dir).unwrap();
             write_phase_zero_with_seed_statement(&dir, statement);
 
-            fs::write(
+            write_test_file(
+                &root,
                 dir.join("V20260101000001__init.sdjql"),
                 "CREATE TABLE bar();",
             )
             .unwrap();
 
             let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-            let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+            let result =
+                check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
             assert!(
                 matches!(
                     result,
@@ -2910,7 +2974,7 @@ mod tests {
                 "Squash must refuse extended seed Phase 0 {name} as --from; got {result:?}"
             );
 
-            let _ = fs::remove_dir_all(&root);
+            cleanup_test_root(&root);
         }
     }
 
@@ -2919,25 +2983,27 @@ mod tests {
     fn squash_accepts_identity_free_production_phase_zero_as_from() {
         let root = temp_root("squash_current_p0");
         let dir = root.join("migrations/main/billing");
-        fs::create_dir_all(&dir).unwrap();
+        create_test_dir(&root, &dir).unwrap();
         write_current_production_phase_zero(&dir);
 
         // Add a later migration so squash would have multiple files.
-        fs::write(
+        write_test_file(
+            &root,
             dir.join("V20260101000001__init.sdjql"),
             "CREATE TABLE bar();",
         )
         .unwrap();
 
         let from_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        let result = check_phase_zero_attune_entry(&from_path, PHASE_ZERO_VERSION);
+        let result =
+            check_phase_zero_attune_entry_in_workspace(&root, &from_path, PHASE_ZERO_VERSION);
         assert!(
             result.is_ok(),
             "Squash must accept identity-free Phase 0 as --from; got Err: {:?}",
             result
         );
 
-        let _ = fs::remove_dir_all(&root);
+        cleanup_test_root(&root);
     }
 
     /// StalePhaseZero refusal message is actionable and names the version.
