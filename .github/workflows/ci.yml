@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+  RUSTFLAGS: -C link-arg=-fuse-ld=lld
   # Required by the `presentation_codec` integration test binary, which links
   # `UserWithHmac` — a model whose `HmacSha256HexString` codec calls
   # `validate_startup()` and checks this env var before any pool can open.
@@ -75,6 +76,9 @@ jobs:
           # `djogi-macros/tests/compile_fail/` and
           # `djogi/tests/compile_fail/`.
           components: clippy, rustfmt, rust-src
+
+      - name: Install lld
+        run: sudo apt-get install -y lld
 
       # Two-cache layout: registry/git share across jobs (same Cargo.lock
       # → same .crate downloads), but `target/` is isolated per job because
@@ -225,6 +229,9 @@ jobs:
           # `djogi/tests/compile_fail/`.
           components: rustfmt, rust-src
 
+      - name: Install lld
+        run: sudo apt-get install -y lld
+
       # Two-cache layout: registry/git share across jobs (same Cargo.lock
       # → same .crate downloads), but `target/` is isolated per job because
       # different feature sets produce incompatible incremental artifacts.
@@ -349,6 +356,8 @@ jobs:
   msrv:
     name: MSRV (Rust 1.95)
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: ""
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -432,6 +441,9 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt, rust-src
+
+      - name: Install lld
+        run: sudo apt-get install -y lld
 
       # Two-cache layout: registry/git share with the `check` and
       # `test` jobs (same Cargo.lock → same .crate downloads), but
