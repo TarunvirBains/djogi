@@ -33,6 +33,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field expands cleanly, and a new spatial integration assertion verifies the
   emitted descriptor classifies such a field as a GiST index rather than BTree.
 
+- fix(#468): the migration projection layer no longer emits a duplicate
+  field-level synthetic index (`_idx`) alongside the implicit spatial index
+  (`_gix`) for geography columns that carry `#[field(index)]`. Previously,
+  geography fields with an explicit `index` annotation would produce two GiST
+  indexes on the same column: the implicit `_gix` (with correct PostGIS
+  extension metadata) and a synthetic `_idx` (without PostGIS metadata),
+  causing `CREATE INDEX` to fail at migration time. The fix suppresses the
+  field-level synthetic when the column is a geography type and a covering
+  single-column GiST index already exists in the descriptor's index list.
+  Covers all wrapper nestings (`GeoPoint`, `Option<GeoPoint>`,
+  `Tracked<GeoPoint>`, `Option<Tracked<GeoPoint>>`, `Tracked<Option<GeoPoint>>`).
+  SP-GiST annotations on geography columns (`#[field(index = "spgist")]`) are
+  unaffected — the suppression only applies to implicit-GiST fields. The known
+  gap that explicit geography field-level synthetics (SP-GiST and any future
+  non-GiST annotations) inherit no PostGIS extension metadata is tracked
+  separately in #494.
+
 - fix(#312): the E_DJG_VDF_017 guard that rejects `Jsonb<T>` storage columns
   in visage `#[derived]` fields now strips transparent `Tracked<_>` wrappers
   (alongside the existing `Option<_>` stripping) before testing for `Jsonb<T>`.
