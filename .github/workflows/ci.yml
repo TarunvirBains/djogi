@@ -254,9 +254,6 @@ jobs:
           key: ${{ runner.os }}-cargo-target-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-target-test-
 
-      - name: Build
-        run: cargo build --workspace
-
       - name: Test
         # Excluding `elephant-tracker` here is load-bearing. Its
         # `Cargo.toml` activates djogi's `spatial` + `outbox` features,
@@ -368,9 +365,6 @@ jobs:
       - name: Install lihaaf (compile-fixture CI gate)
         if: steps.cache-lihaaf.outputs.cache-hit != 'true'
         run: cargo install lihaaf --version 0.2.0 --locked
-
-      - name: Build
-        run: cargo build --workspace
 
       # Macro-fixture gate — currently 323 proc-macro fixtures using
       # lihaaf's build-once-dylib + per-fixture-rustc model:
@@ -497,9 +491,6 @@ jobs:
           key: ${{ runner.os }}-cargo-target-feature-tests-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-target-feature-tests-
 
-      - name: Build
-        run: cargo build --workspace
-
       - name: Cache modifier
         # This target pins SQL-shape parity through djogi's test-only SQL
         # renderer, so Cargo skips it in the default-feature workspace sweep.
@@ -584,9 +575,6 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-target-adopter-cli-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-target-adopter-cli-
-
-      - name: Build
-        run: cargo build --workspace
 
       - name: Test
         run: cargo test -p djogi-cli --test adopter_linked_cli
