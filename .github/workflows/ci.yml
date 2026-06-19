@@ -517,17 +517,15 @@ jobs:
         # and round-trip behavior stay covered in CI.
         run: cargo test -p djogi --features hmac-codec --test presentation_codec
 
-  adopter-cli-tests:
-    name: Adopter CLI Tests
+  adopter-cli-tests-1:
+    name: Adopter CLI Tests (Part 1)
     runs-on: ubuntu-latest
-
     services:
       postgres:
         image: postgis/postgis:18-3.6
         env:
           POSTGRES_USER: djogi
-          # djogi-allow-secret: GHA service-container fixture; identical
-          # to the `test` job above. See that rationale.
+          # djogi-allow-secret: GHA service-container fixture
           POSTGRES_PASSWORD: djogi
           POSTGRES_DB: djogi_test
         ports:
@@ -537,10 +535,8 @@ jobs:
           --health-interval 2s
           --health-timeout 5s
           --health-retries 10
-
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
       - name: Free disk space on GHA runner
         if: ${{ !env.ACT }}
         run: |
@@ -550,16 +546,13 @@ jobs:
           sudo rm -rf /usr/local/lib/android
           sudo rm -rf /usr/local/share/boost
           df -h /
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
         with:
           toolchain: stable
           components: rustfmt, rust-src
-
       - name: Install lld
         run: sudo apt-get install -y lld
-
       - name: Cache cargo registry/git (shared)
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
@@ -568,16 +561,68 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Cache cargo target (adopter-cli)
+      - name: Cache cargo target (adopter-cli-1)
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-target-adopter-cli-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-target-adopter-cli-
-
+          key: ${{ runner.os }}-cargo-target-adopter-cli-1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-target-adopter-cli-1-
       - name: Test
-        run: cargo test -p djogi-cli --test adopter_linked_cli
+        run: cargo test -p djogi-cli --test adopter_linked_cli -- adopter_binary_discovers_all_models binary_is_named_djogi_and_surface_matches link_unforced_crate_is_invisible_forced_is_visible dropguard_unlinked_app_refuses_even_with_allow_destructive djogi_cli_package_builds_both_djogi_and_cargo_djogi_bins parity_cargo_djogi_matches_direct_adopter_bin_compose parity_schema_and_compose_see_same_models discover_binary_path
+
+  adopter-cli-tests-2:
+    name: Adopter CLI Tests (Part 2)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: djogi
+          # djogi-allow-secret: GHA service-container fixture
+          POSTGRES_PASSWORD: djogi
+          POSTGRES_DB: djogi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U djogi"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Free disk space on GHA runner
+        if: ${{ !env.ACT }}
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          df -h /
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, rust-src
+      - name: Install lld
+        run: sudo apt-get install -y lld
+      - name: Cache cargo registry/git (shared)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+      - name: Cache cargo target (adopter-cli-2)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-adopter-cli-2-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-target-adopter-cli-2-
+      - name: Test
+        run: cargo test -p djogi-cli --test adopter_linked_cli -- elephant_tracker apply_with_pending_artifacts container_apply_from_prebuilt_binary verify_degrade_snapshot_only_against_valid_db nocargo_compose_without_cargo_or_source t_forbid_unsafe_build_succeeds t_neg_standalone_compose_refuses_with_exit_2_and_no_artifacts t_nologic_fixture_has_no_custom_migration_code
+
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`
