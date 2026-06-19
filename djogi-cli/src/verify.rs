@@ -72,8 +72,8 @@ use std::process::ExitCode;
 use djogi::__bypass::RawAccessExt as _;
 use djogi::config::DjogiConfig;
 use djogi::migrate::{
-    FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, migrations_root, resolve_audit_url,
-    scan_filesystem, signature_to_hex,
+    FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, migrations_root, read_workspace_file,
+    resolve_audit_url, scan_filesystem, signature_to_hex,
 };
 use djogi::pg::pool::DjogiPool;
 use djogi::snapshot::sign::{SnapshotKeyError, load_signing_key_from_env, sign_snapshot};
@@ -271,7 +271,7 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
         if snap_parent_canon.is_none() {
             continue;
         }
-        let bytes = match read_snapshot_bytes(&snapshot)? {
+        let bytes = match read_snapshot_bytes(&workspace_canon, &snapshot)? {
             Some(b) => b,
             None => continue,
         };
@@ -380,7 +380,10 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 ///   the open handle); for v0.1.0 the symlink-reject is the main exploit
 ///   vector and the residual window is documented on
 ///   [`VerifyError::SymlinkSnapshot`]. may revisit.
-fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, VerifyError> {
+fn read_snapshot_bytes(
+    workspace_root: &std::path::Path,
+    snapshot: &std::path::Path,
+) -> Result<Option<Vec<u8>>, VerifyError> {
     let meta = match std::fs::symlink_metadata(snapshot) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -399,25 +402,7 @@ fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, Ve
     if !meta.is_file() {
         return Ok(None);
     }
-    // Canonicalize the resolved path and validate it stays within its
-    // parent directory, so symlinks cannot redirect the read operation
-    // to an arbitrary location.
-    let snapshot_canon = std::fs::canonicalize(snapshot).map_err(|e| VerifyError::Io {
-        path: snapshot.to_path_buf(),
-        source: e,
-    })?;
-    if let Some(parent) = snapshot_canon.parent()
-        && !snapshot_canon.starts_with(parent)
-    {
-        return Err(VerifyError::Io {
-            path: snapshot.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "resolved snapshot path escapes its parent directory",
-            ),
-        });
-    }
-    let bytes = std::fs::read(&snapshot_canon).map_err(|e| VerifyError::Io {
+    let bytes = read_workspace_file(workspace_root, snapshot).map_err(|e| VerifyError::Io {
         path: snapshot.to_path_buf(),
         source: e,
     })?;
@@ -637,7 +622,7 @@ mod tests {
         let snapshot_link = app_dir.join("schema_snapshot.json");
         symlink(&outside_target, &snapshot_link).unwrap();
 
-        let result = read_snapshot_bytes(&snapshot_link);
+        let result = read_snapshot_bytes(&workspace, &snapshot_link);
 
         // Cleanup before assertion so a panic doesn't leak temp files.
         let _ = remove_workspace_file(&std::env::temp_dir(), &outside_target);
@@ -686,7 +671,7 @@ mod tests {
             std::env::temp_dir().join(format!("djogi-cli-verify-missing-{nanos}-{n}.json"));
         // Sanity — path must not exist.
         assert!(!missing.exists());
-        let result = read_snapshot_bytes(&missing);
+        let result = read_snapshot_bytes(&std::env::temp_dir(), &missing);
         assert!(
             matches!(result, Ok(None)),
             "missing file must return Ok(None), got: {result:?}"
@@ -707,7 +692,7 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("djogi-cli-verify-regular-{nanos}-{n}.json"));
         write_workspace_file(&std::env::temp_dir(), &path, b"{\"x\":1}").unwrap();
-        let result = read_snapshot_bytes(&path);
+        let result = read_snapshot_bytes(&std::env::temp_dir(), &path);
         let _ = remove_workspace_file(&std::env::temp_dir(), &path);
         match result {
             Ok(Some(bytes)) => assert_eq!(bytes, b"{\"x\":1}"),
