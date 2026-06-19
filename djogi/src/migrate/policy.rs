@@ -420,6 +420,35 @@ mod tests {
     use super::*;
     use crate::config::DjogiConfig;
 
+    struct EnvGuard {
+        key: &'static str,
+        value: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, new_value: Option<&str>) -> Self {
+            let value = std::env::var(key).ok();
+            unsafe {
+                match new_value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self { key, value }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.value {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
     /// Construct a [`DjogiConfig`] with a specific profile field
     /// shared helper for the policy default tests.
     fn cfg_with_profile(profile: &str) -> DjogiConfig {
@@ -431,74 +460,47 @@ mod tests {
 
     // ── OutOfOrderPolicy::default_for_config ─────────────────────────────
 
+    #[serial_test::serial]
     #[test]
     fn default_for_config_dev_profile_allows() {
         // Belt-and-braces: clear CI so the test passes regardless of
         // the host's CI env var. tests run with --test-threads=1 per
         // the project's pre-commit policy so concurrent env mutation
         // is not a concern.
-        let prior = std::env::var("CI").ok();
-        // SAFETY: serial test execution; no other thread reads CI.
-        unsafe {
-            std::env::remove_var("CI");
-        }
+        let _guard = EnvGuard::set("CI", None);
         let cfg = cfg_with_profile("development");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);
         assert_eq!(policy, OutOfOrderPolicy::AllowWithDiagnostic);
-        if let Some(v) = prior {
-            unsafe {
-                std::env::set_var("CI", v);
-            }
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_config_production_profile_rejects() {
-        let prior = std::env::var("CI").ok();
-        unsafe {
-            std::env::remove_var("CI");
-        }
+        let _guard = EnvGuard::set("CI", None);
         let cfg = cfg_with_profile("production");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);
         assert_eq!(policy, OutOfOrderPolicy::Reject);
-        if let Some(v) = prior {
-            unsafe {
-                std::env::set_var("CI", v);
-            }
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_config_ci_env_rejects_even_in_dev() {
-        let prior = std::env::var("CI").ok();
-        // SAFETY: serial test execution; no other thread reads CI.
-        unsafe {
-            std::env::set_var("CI", "true");
-        }
+        let _guard = EnvGuard::set("CI", Some("true"));
         let cfg = cfg_with_profile("development");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);
         assert_eq!(policy, OutOfOrderPolicy::Reject);
-        match prior {
-            Some(v) => unsafe { std::env::set_var("CI", v) },
-            None => unsafe { std::env::remove_var("CI") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_config_ci_uppercase_also_rejects() {
-        let prior = std::env::var("CI").ok();
-        unsafe {
-            std::env::set_var("CI", "TRUE");
-        }
+        let _guard = EnvGuard::set("CI", Some("TRUE"));
         let cfg = cfg_with_profile("development");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);
         assert_eq!(policy, OutOfOrderPolicy::Reject);
-        match prior {
-            Some(v) => unsafe { std::env::set_var("CI", v) },
-            None => unsafe { std::env::remove_var("CI") },
-        }
     }
 
+    #[serial_test::serial]
     #[test]
     fn default_for_config_ci_arbitrary_string_does_not_reject() {
         // Some CI runners use `CI=1` instead of `CI=true`. Our policy
@@ -509,17 +511,10 @@ mod tests {
         // burden of opting-in on the operator: an unfamiliar value
         // never silently produces production-grade rejection. Setting
         // `CI=true` is the canonical convention.
-        let prior = std::env::var("CI").ok();
-        unsafe {
-            std::env::set_var("CI", "1");
-        }
+        let _guard = EnvGuard::set("CI", Some("1"));
         let cfg = cfg_with_profile("development");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);
         assert_eq!(policy, OutOfOrderPolicy::AllowWithDiagnostic);
-        match prior {
-            Some(v) => unsafe { std::env::set_var("CI", v) },
-            None => unsafe { std::env::remove_var("CI") },
-        }
     }
 
     // ── allows / override_reason accessors ───────────────────────────────
