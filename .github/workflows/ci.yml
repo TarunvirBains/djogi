@@ -257,7 +257,15 @@ jobs:
       # `--locked` ensures the install uses the exact dependency versions
       # in lihaaf's published Cargo.lock rather than resolving fresh; this
       # makes the install deterministic across CI runs.
+      - name: Cache lihaaf binary
+        id: cache-lihaaf
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/bin/lihaaf
+          key: ${{ runner.os }}-lihaaf-0.2.0
+
       - name: Install lihaaf (compile-fixture CI gate)
+        if: steps.cache-lihaaf.outputs.cache-hit != 'true'
         run: cargo install lihaaf --version 0.2.0 --locked
 
       - name: Build
