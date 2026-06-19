@@ -53,14 +53,14 @@ result type cannot be inferred from either arm alone. The decode target is
 independent of both `LeftModel` and `RightModel`; it only needs to match the
 column shapes produced by the arm SELECT projections at runtime. Column
 **count** mismatches are caught at SQL-build time and return
-[`DjogiError::CrossModelSetOpColumnMismatch`](crate::error::DjogiError::CrossModelSetOpColumnMismatch). Column **type** mismatches
+`DjogiError::CrossModelSetOpColumnMismatch`. Column **type** mismatches
 (same count, incompatible OIDs) still surface as Postgres decode errors.
 
 ---
 
 ## Arm types
 
-Cross-model set ops accept any type implementing [`IntoCrossArm<R>`](djogi::query::cross_set_op::IntoCrossArm):
+Cross-model set ops accept any type implementing `IntoCrossArm<R>`:
 
 | Arm type | Source | Notes |
 |----------|--------|-------|
@@ -184,12 +184,46 @@ let feed: Vec<Activity> = union_as::<Activity, _, _>(logins, edits)
     .await?;
 ```
 
+### Framework-column caveat for cross-model INTERSECT / EXCEPT
+
+`INTERSECT` and `EXCEPT` match rows by their **entire projected tuple**, and
+every arm — both full-model `QuerySet` arms and `VisageQuerySet` arms — projects
+the framework columns `id`, `created_at`, and `updated_at` at fixed ordinals
+0, 1, and 2. Those values are unique per row and never coincide across two
+different source models.
+
+Two consequences follow for **cross-model** `INTERSECT` / `EXCEPT`:
+
+- **Cross-model `INTERSECT` is always empty.** No left-arm row can ever match a
+  right-arm row on `id` / `created_at` / `updated_at`, so the intersection is the
+  empty set regardless of the value columns.
+- **Cross-model `EXCEPT` always returns every left-arm row.** Because no left row
+  equals any right row, nothing is subtracted.
+
+`UNION` and `UNION ALL` are unaffected — they **combine** rows rather than
+matching them, so the framework columns simply ride along.
+
+Value-only cross-model `INTERSECT` / `EXCEPT` (comparing only the value columns,
+excluding the framework columns) would require a per-arm column-narrowing surface
+that drops `id` / `created_at` / `updated_at`. Neither full-model arms nor visage
+arms provide that today; it is tracked as a follow-up in
+[djogi#498](https://github.com/TarunvirBains/djogi/issues/498).
+
+> Practical guidance: reach for cross-model `INTERSECT` / `EXCEPT` only when both
+> arms genuinely share the framework columns — i.e. they read the *same* rows by
+> identity. For combining distinct entity tables, use `UNION` / `UNION ALL`.
+
 ### INTERSECT: items present in both warehouse tables
 
 ```rust
 let wh_east  = WarehouseEast::objects().filter(|f| f.stocked().eq(true));
 let wh_west  = WarehouseWest::objects().filter(|f| f.stocked().eq(true));
 
+// NOTE: `WarehouseEast` and `WarehouseWest` are different models, so their
+// `id` / `created_at` / `updated_at` never coincide — this cross-model
+// INTERSECT returns 0 rows. See the framework-column caveat above. Meaningful
+// cross-model INTERSECT requires both arms to share the framework columns
+// (same rows by identity), or value-only narrowing (djogi#498).
 let in_both: Vec<Inventory> = intersect_as::<Inventory, _, _>(wh_east, wh_west)
     .fetch_all(&mut ctx)
     .await?;
@@ -202,6 +236,11 @@ let in_both: Vec<Inventory> = intersect_as::<Inventory, _, _>(wh_east, wh_west)
 let with_profile = UserProfile::objects();
 let sso_logins   = SsoLoginRecord::objects();
 
+// NOTE: `UserProfile` and `SsoLoginRecord` are different models, so no left
+// row equals any right row on `id` / `created_at` / `updated_at` — this
+// cross-model EXCEPT returns ALL `with_profile` rows unchanged. See the
+// framework-column caveat above. Meaningful cross-model EXCEPT requires both
+// arms to share the framework columns, or value-only narrowing (djogi#498).
 let no_sso: Vec<UserSummary> = except_as::<UserSummary, _, _>(with_profile, sso_logins)
     .fetch_all(&mut ctx)
     .await?;
