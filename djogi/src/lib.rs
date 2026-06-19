@@ -489,7 +489,7 @@ pub use types::{
 };
 // typed Postgres network types (`network` feature).
 #[cfg(feature = "network")]
-pub use types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
+pub use types::{CidrAddr, CidrAddrError, InetAddr, InetAddrError, MacAddr, MacAddrParseError};
 pub use visage::{DjogiVisage, VisageError};
 
 /// The canonical adopter import.
@@ -721,7 +721,7 @@ pub mod prelude {
     // prelude (it is stdlib, not djogi); adopters spell it
     // `std::net::IpAddr` at the field declaration site.
     #[cfg(feature = "network")]
-    pub use crate::types::{CidrAddr, MacAddr};
+    pub use crate::types::{CidrAddr, InetAddr, MacAddr};
     // `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes
     // generic bounds over "any projection of M" names this trait, so it

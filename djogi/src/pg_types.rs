@@ -1244,6 +1244,147 @@ impl std::fmt::Display for CidrAddr {
     }
 }
 
+// ── InetAddr ────────────────────────────────────────────────────────────────
+
+/// A Postgres `INET` value carrying both a host address and an explicit
+/// network prefix length.
+///
+/// # What
+/// `INET` stores an IP address that *may* carry host bits past the
+/// prefix (e.g. `192.168.1.5/24` — the `.5` host part is preserved).
+/// This is the defining difference from [`CidrAddr`]: `CIDR` rejects
+/// non-zero host bits, `INET` keeps them.
+///
+/// # Why InetAddr when `std::net::IpAddr` already maps to INET?
+/// A field typed `std::net::IpAddr` maps to an `INET` column, but the
+/// `postgres-types` native codec presents the value to Rust with the
+/// netmask collapsed to /32 (IPv4) or /128 (IPv6) — the stored prefix
+/// is discarded on decode. Reach for `InetAddr` when the prefix length
+/// is meaningful data your application reads back (interface
+/// configuration, address-with-netmask records). Reach for plain
+/// `IpAddr` when you only ever store and compare bare host addresses.
+///
+/// # InetAddr vs CidrAddr — which to use
+/// | | `InetAddr` (INET) | [`CidrAddr`] (CIDR) |
+/// |----------------------|-----------------------------------|-------------------------------|
+/// | Host bits past prefix | Permitted (`192.168.1.5/24` OK) | Rejected (must be zero) |
+/// | Models | A host address *with* a netmask | A network / subnet |
+/// | Postgres column | `INET` | `CIDR` |
+/// | Example | `10.0.0.7/8` (host .7 on a /8 net) | `10.0.0.0/8` (the /8 network) |
+/// Use `InetAddr` for "this host, on this size of network". Use
+/// `CidrAddr` for "this network range". When you only have a bare
+/// address and never need the prefix, use `std::net::IpAddr`.
+///
+/// # Construction
+/// ```rust,ignore
+/// use djogi::InetAddr;
+/// use std::net::{IpAddr, Ipv4Addr};
+///
+/// // 192.168.1.5/24 — a host address that retains its /24 netmask.
+/// let host = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).unwrap();
+/// assert_eq!(host.prefix(), 24);
+///
+/// // An impossible prefix is rejected at construction, not at the DB.
+/// assert!(InetAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 33).is_err());
+/// ```
+///
+/// # Equality and ordering
+/// `InetAddr` derives `PartialEq` / `Eq` / `Hash` over both the address
+/// and the prefix. Rust structural equality matches Postgres `=` on
+/// `INET` columns: two INET values are equal when their addresses and
+/// prefixes both match.
+///
+/// # Wire format
+/// Identical layout to [`CidrAddr`] (4-byte header + 4/16 address
+/// bytes); the `is_cidr` header byte is `0` for INET. See the table on
+/// [`CidrAddr`] for the byte-level breakdown.
+#[cfg(feature = "network")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InetAddr {
+    addr: std::net::IpAddr,
+    prefix: u8,
+}
+
+/// Error returned by [`InetAddr::new`] when the address / prefix
+/// combination is not a valid Postgres `INET` value.
+///
+/// Unlike [`CidrAddrError`], there is no `HostBitsSet` variant — `INET`
+/// permits host bits past the prefix by design.
+#[cfg(feature = "network")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InetAddrError {
+    /// Prefix length exceeds the address family maximum (32 for IPv4,
+    /// 128 for IPv6).
+    PrefixTooLarge {
+        /// The rejected prefix length.
+        prefix: u8,
+        /// The maximum valid prefix for the address family (32 or 128).
+        max: u8,
+    },
+}
+
+#[cfg(feature = "network")]
+impl std::fmt::Display for InetAddrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PrefixTooLarge { prefix, max } => {
+                write!(
+                    f,
+                    "INET prefix {prefix} exceeds maximum {max} for this address family"
+                )
+            }
+        }
+    }
+}
+
+#[cfg(feature = "network")]
+impl std::error::Error for InetAddrError {}
+
+#[cfg(feature = "network")]
+impl InetAddr {
+    /// Construct an `InetAddr` from an address and a prefix length.
+    ///
+    /// Validates that the prefix is in range (0..=32 for IPv4,
+    /// 0..=128 for IPv6). Unlike [`CidrAddr::new`], host bits past the
+    /// prefix are **permitted** — that is the INET-vs-CIDR difference.
+    ///
+    /// # Errors
+    /// Returns [`InetAddrError::PrefixTooLarge`] when `prefix` exceeds
+    /// the address family maximum.
+    pub fn new(addr: std::net::IpAddr, prefix: u8) -> Result<Self, InetAddrError> {
+        let max_prefix: u8 = match addr {
+            std::net::IpAddr::V4(_) => 32,
+            std::net::IpAddr::V6(_) => 128,
+        };
+        if prefix > max_prefix {
+            return Err(InetAddrError::PrefixTooLarge {
+                prefix,
+                max: max_prefix,
+            });
+        }
+        Ok(Self { addr, prefix })
+    }
+
+    /// Return the host address.
+    pub const fn addr(&self) -> std::net::IpAddr {
+        self.addr
+    }
+
+    /// Return the network prefix length (0..=32 for IPv4, 0..=128 for IPv6).
+    pub const fn prefix(&self) -> u8 {
+        self.prefix
+    }
+}
+
+#[cfg(feature = "network")]
+impl std::fmt::Display for InetAddr {
+    /// Render in the canonical `<addr>/<prefix>` form matching Postgres's
+    /// `INET` text representation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
 /// Shared INET/CIDR wire encoder. The on-wire format is identical for
 /// INET and CIDR; only the Postgres type OID and the `is_cidr` byte
 /// differ. `CidrAddr::to_sql` sets `is_cidr = 1`; future INET typed
@@ -2094,5 +2235,41 @@ mod tests {
         let addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 0));
         let cidr = CidrAddr::new(addr, 8).unwrap();
         assert_eq!(format!("{cidr}"), "10.0.0.0/8");
+    }
+
+    // ── InetAddr tests ────────────────────────────────────────
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_new_accepts_host_bits_set() {
+        use std::net::{IpAddr, Ipv4Addr};
+        // The defining INET-vs-CIDR difference: 192.168.1.5/24 has host
+        // bits past the /24 prefix, which CIDR rejects but INET permits.
+        let addr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5));
+        let inet = InetAddr::new(addr, 24).expect("INET permits host bits");
+        assert_eq!(inet.addr(), addr);
+        assert_eq!(inet.prefix(), 24);
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_new_rejects_oversized_prefix() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert_eq!(
+            InetAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 33),
+            Err(InetAddrError::PrefixTooLarge { prefix: 33, max: 32 })
+        );
+        assert_eq!(
+            InetAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 129),
+            Err(InetAddrError::PrefixTooLarge { prefix: 129, max: 128 })
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_display_renders_addr_slash_prefix() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
+        assert_eq!(inet.to_string(), "10.0.0.1/8");
     }
 }

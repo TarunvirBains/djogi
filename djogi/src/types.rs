@@ -46,7 +46,7 @@ pub use crate::pg_types::{Range, RangeBound};
 // `str::parse::<MacAddr>` can name the error type at the canonical
 // `djogi::types::*` path.
 #[cfg(feature = "network")]
-pub use crate::pg_types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
+pub use crate::pg_types::{CidrAddr, CidrAddrError, InetAddr, InetAddrError, MacAddr, MacAddrParseError};
 
 // Public naming — spec §3.5a. Internals keep `HeerIdDesc` / `RanjIdDesc`
 // to match heeranjid; user-facing surfaces (guides, `#[model(pk = X)]`)
