@@ -488,6 +488,7 @@ async fn validate_startup_inventory_allows_missing_hmac_key_when_hmac_codec_disa
 /// The `email` field is exposed on `support` without a codec (see the `User`
 /// declaration above), so `UserSupport::email` is plain `String`.
 #[djogi::djogi_test(sync_models = [User])]
+#[serial_test::serial]
 async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
     let user = User::create(
         &mut ctx,
@@ -525,6 +526,7 @@ async fn custom_scope_generates_visage_struct(mut ctx: DjogiContext) {
 }
 
 #[djogi::djogi_test(sync_models = [User])]
+#[serial_test::serial]
 async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext) {
     let user = User::create(
         &mut ctx,
@@ -562,6 +564,7 @@ async fn visage_queryset_fetch_applies_presentation_codec(mut ctx: DjogiContext)
 }
 
 #[djogi::djogi_test(sync_models = [UserWithQueryableIdentityCodec])]
+#[serial_test::serial]
 async fn visage_queryset_filter_accepts_presentation_q_predicate(mut ctx: DjogiContext) {
     let match_row = UserWithQueryableIdentityCodec::create(
         &mut ctx,
@@ -595,6 +598,7 @@ async fn visage_queryset_filter_accepts_presentation_q_predicate(mut ctx: DjogiC
 }
 
 #[djogi::djogi_test(sync_models = [UserWithFailingFetchCodec])]
+#[serial_test::serial]
 async fn visage_queryset_fetch_maps_try_codec_errors(mut ctx: DjogiContext) {
     let user = UserWithFailingFetchCodec::create(
         &mut ctx,
