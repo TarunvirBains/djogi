@@ -87,12 +87,12 @@ fn run_inner() -> Result<(), String> {
         ));
     }
     if !active_workflow_lines.iter().any(|line| {
-        line.starts_with("cargo test -p djogi --test")
-            && line.contains("\"$test_name\"")
+        line.starts_with("cargo test -p djogi")
+            && line.contains("\"${tests_args[@]}\"")
             && line.contains("--all-features")
     }) {
         failures.push(format!(
-            "{WORKFLOW}: spatial manifest loop must run `$test_name` with --all-features"
+            "{WORKFLOW}: spatial manifest command must run with collected arguments and --all-features"
         ));
     }
 
