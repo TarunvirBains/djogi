@@ -269,7 +269,7 @@ jobs:
         # keep elephant-tracker out of the unified feature graph so the
         # default-features sweep stays default-features. The Build step
         # above still covers `--workspace`. Tracked in issue #80.
-        run: cargo test --workspace --exclude elephant-tracker
+        run: cargo test --workspace --exclude elephant-tracker -- --skip adopter_linked_cli
 
   lihaaf-gates:
     name: Lihaaf Gates
@@ -525,6 +525,71 @@ jobs:
         # Run the target once with that feature enabled so keyed-codec startup
         # and round-trip behavior stay covered in CI.
         run: cargo test -p djogi --features hmac-codec --test presentation_codec
+
+  adopter-cli-tests:
+    name: Adopter CLI Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: djogi
+          # djogi-allow-secret: GHA service-container fixture; identical
+          # to the `test` job above. See that rationale.
+          POSTGRES_PASSWORD: djogi
+          POSTGRES_DB: djogi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U djogi"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Free disk space on GHA runner
+        if: ${{ !env.ACT }}
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, rust-src
+
+      - name: Install lld
+        run: sudo apt-get install -y lld
+
+      - name: Cache cargo registry/git (shared)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache cargo target (adopter-cli)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-adopter-cli-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-target-adopter-cli-
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test -p djogi-cli --test adopter_linked_cli
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`
