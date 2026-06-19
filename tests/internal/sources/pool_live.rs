@@ -526,6 +526,7 @@ async fn pool_raw_with_client_copy_from_stdin_round_trips_binary_payload() {
 /// the `from_database_config_env_overrides_toml` sibling. The
 /// [`EnvGuard`] restores the prior value on drop, even if the test
 /// panics.
+#[serial_test::serial]
 #[tokio::test]
 async fn from_database_config_honours_toml_max_connections() {
     let _lock = env_lock().await;
@@ -560,6 +561,7 @@ async fn from_database_config_honours_toml_max_connections() {
 /// the `from_database_config_honours_toml_max_connections` sibling. The
 /// [`EnvGuard`] restores the prior value on drop so a panic mid-test
 /// cannot leak the override into the rest of the process.
+#[serial_test::serial]
 #[tokio::test]
 async fn from_database_config_env_overrides_toml() {
     let _lock = env_lock().await;
