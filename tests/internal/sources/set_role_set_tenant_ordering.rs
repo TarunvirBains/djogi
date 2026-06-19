@@ -81,7 +81,14 @@ async fn ensure_test_role(ctx: &mut djogi::DjogiContext, role: &str) {
         .expect("ensure_test_role: CREATE ROLE inside DO block must succeed");
 }
 
+// Serialized against `role_first_then_tenant_documented_failure_mode`: both
+// tests share the `ordering_role` cluster role. Without serialization the
+// concurrent `CREATE ROLE` inside the DO-block exception handler can raise a
+// raw `unique_violation` (SQLSTATE 23505 on `pg_authid_rolname_index`)
+// instead of the expected `duplicate_object` (SQLSTATE 42710), bypassing the
+// `WHEN duplicate_object THEN NULL` catch clause.
 #[djogi::djogi_test]
+#[serial_test::serial]
 async fn tenant_first_then_role_succeeds(mut ctx: djogi::DjogiContext) {
     let role = "ordering_role";
     let tenant_id = "t1";
@@ -124,7 +131,10 @@ async fn tenant_first_then_role_succeeds(mut ctx: djogi::DjogiContext) {
     .expect("canonical ordering inside atomic() must succeed");
 }
 
+// Serialized against `tenant_first_then_role_succeeds` for the same shared-role
+// reason above.
 #[djogi::djogi_test]
+#[serial_test::serial]
 async fn role_first_then_tenant_documented_failure_mode(mut ctx: djogi::DjogiContext) {
     // Inverted ordering: role first, tenant second. D7 documents
     // this as the non-canonical mode and says it may either error or
