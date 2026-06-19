@@ -370,6 +370,10 @@ pub(crate) fn jsonb_sql_cast_for_type(type_name: &str) -> Option<JsonbSqlCast> {
             Some(JsonbSqlCast::Cidr)
         }
         #[cfg(feature = "network")]
+        "djogi::pg_types::InetAddr" | "djogi::types::InetAddr" | "InetAddr" => {
+            Some(JsonbSqlCast::Inet)
+        }
+        #[cfg(feature = "network")]
         "djogi::pg_types::MacAddr" | "djogi::types::MacAddr" | "MacAddr" => {
             Some(JsonbSqlCast::Macaddr)
         }
@@ -565,7 +569,12 @@ impl_jsonb_path_comparable!(
 impl JsonbPathComparable for &'static str {}
 
 #[cfg(feature = "network")]
-impl_jsonb_path_comparable!(std::net::IpAddr, crate::CidrAddr, crate::MacAddr);
+impl_jsonb_path_comparable!(
+    std::net::IpAddr,
+    crate::InetAddr,
+    crate::CidrAddr,
+    crate::MacAddr
+);
 
 impl<M: Model, V: IntoFilterValue + JsonbPathComparable + 'static> JsonbPathRef<M, V> {
     /// Return the Postgres cast suffix for `V`.

@@ -3879,6 +3879,9 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         // distinct Rust types drive INET vs CIDR; the macro does not
         // need a `#[field(ip_type = "...")]` attribute.
         "CidrAddr" | "djogi::CidrAddr" | "djogi::types::CidrAddr" => Some("CIDR"),
+        // INET routes through `djogi::InetAddr` (typed newtype with a
+        // hand-rolled codec; distinct from bare `std::net::IpAddr`).
+        "InetAddr" | "djogi::InetAddr" | "djogi::types::InetAddr" => Some("INET"),
         // MACADDR routes through `djogi::MacAddr` (typed newtype over
         // `[u8; 6]` with a hand-rolled codec — no `eui48` / `mac_address`
         // dependency).
