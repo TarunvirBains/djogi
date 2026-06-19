@@ -105,12 +105,21 @@ pub enum FrameBound {
     /// `N PRECEDING` — the frame extends N rows, values, or peer groups
     /// before the current row. `n` is bound as a positional parameter
     /// (`$N PRECEDING`).
+    /// # Panics
+    /// Emission panics if `n > i64::MAX`. The frame offset is bound as
+    /// Postgres `BIGINT`, so values above `i64::MAX` cannot round-trip;
+    /// such a value is a programming error, not a runtime condition. The
+    /// check uses `i64::try_from` so all build profiles panic rather than
+    /// silently truncate.
     Preceding(u64),
     /// `CURRENT ROW` — the frame boundary is the current row itself.
     CurrentRow,
     /// `N FOLLOWING` — the frame extends N rows, values, or peer groups
     /// after the current row. `n` is bound as a positional parameter
     /// (`$N FOLLOWING`).
+    /// # Panics
+    /// Emission panics if `n > i64::MAX` — see [`FrameBound::Preceding`]
+    /// for the rationale.
     Following(u64),
     /// `UNBOUNDED FOLLOWING` — the frame extends to the last row of the
     /// partition.
@@ -429,12 +438,16 @@ fn emit_bound(acc: &mut SqlAccumulator, bound: FrameBound) {
     match bound {
         FrameBound::UnboundedPreceding => acc.push_sql("UNBOUNDED PRECEDING"),
         FrameBound::Preceding(n) => {
-            acc.push_bind(n as i64);
+            let n = i64::try_from(n)
+                .unwrap_or_else(|_| panic!("FrameBound::Preceding(n = {n}) overflows i64"));
+            acc.push_bind(n);
             acc.push_sql(" PRECEDING");
         }
         FrameBound::CurrentRow => acc.push_sql("CURRENT ROW"),
         FrameBound::Following(n) => {
-            acc.push_bind(n as i64);
+            let n = i64::try_from(n)
+                .unwrap_or_else(|_| panic!("FrameBound::Following(n = {n}) overflows i64"));
+            acc.push_bind(n);
             acc.push_sql(" FOLLOWING");
         }
         FrameBound::UnboundedFollowing => acc.push_sql("UNBOUNDED FOLLOWING"),
@@ -697,6 +710,40 @@ mod tests {
             sql.contains("ROWS BETWEEN CURRENT ROW AND $1 FOLLOWING"),
             "got: {sql}"
         );
+    }
+
+    // ── Frame bound overflow guards ──────────────────────────────────────
+
+    #[test]
+    #[should_panic(expected = "FrameBound::Preceding(n = 18446744073709551615) overflows i64")]
+    fn frame_preceding_over_i64_max_panics() {
+        let spec = WindowSpec {
+            frame: Some(Frame {
+                kind: FrameKind::Rows,
+                start: FrameBound::Preceding(u64::MAX),
+                end: FrameBound::CurrentRow,
+                exclude: None,
+            }),
+            ..Default::default()
+        };
+        let mut acc = SqlAccumulator::new("");
+        spec.emit(&mut acc);
+    }
+
+    #[test]
+    #[should_panic(expected = "FrameBound::Following(n = 18446744073709551615) overflows i64")]
+    fn frame_following_over_i64_max_panics() {
+        let spec = WindowSpec {
+            frame: Some(Frame {
+                kind: FrameKind::Rows,
+                start: FrameBound::CurrentRow,
+                end: FrameBound::Following(u64::MAX),
+                exclude: None,
+            }),
+            ..Default::default()
+        };
+        let mut acc = SqlAccumulator::new("");
+        spec.emit(&mut acc);
     }
 
     // ── RANGE frame ──────────────────────────────────────────────────────
