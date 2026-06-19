@@ -6583,6 +6583,11 @@ mod tests {
 
     #[allow(clippy::await_holding_lock)]
     #[djogi_test]
+    // `#[serial_test::serial]` (default key) is forwarded by `#[djogi_test]`
+    // onto the generated sync wrapper, giving this test exclusive
+    // process-wide env access — the per-key `SIGNING_KEY_ENV_MUTEX` only
+    // serialises signing-key tests, not env-mutating tests in other modules.
+    #[serial_test::serial]
     async fn apply_plan_writes_audit_rows_for_executed_segments_when_key_unset(
         mut ctx: DjogiContext,
     ) {
@@ -6749,6 +6754,9 @@ mod tests {
     /// "no snapshot was supplied this apply".
     #[allow(clippy::await_holding_lock)]
     #[djogi_test]
+    // `#[serial_test::serial]` is forwarded onto the generated sync wrapper;
+    // see `apply_plan_writes_audit_rows_for_executed_segments_when_key_unset`.
+    #[serial_test::serial]
     async fn apply_plan_writes_audit_rows_when_snapshot_none(mut ctx: DjogiContext) {
         let _signing_key_env = SigningKeyEnvUnsetGuard::unset();
         let plan = single_table_plan("audit_snapshot_none_applies");
@@ -6818,6 +6826,12 @@ mod tests {
     }
 
     #[djogi_test]
+    // `#[serial_test::serial]` is forwarded onto the generated sync wrapper;
+    // see `apply_plan_writes_audit_rows_for_executed_segments_when_key_unset`.
+    // This test only reads the signing-key env via `SigningKeyEnvReadGuard`,
+    // but an env read racing another module's `set_var` is itself UB on
+    // Rust 2024+, so process-wide serialization is required.
+    #[serial_test::serial]
     async fn apply_plan_audit_failure_does_not_roll_back_app_db(mut ctx: DjogiContext) {
         let _signing_key_env = SigningKeyEnvReadGuard::hold();
         let plan = single_table_plan("audit_failure_survives");

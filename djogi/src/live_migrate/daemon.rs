@@ -1138,7 +1138,8 @@ mod tests {
     #[serial_test::serial]
     #[test]
     fn production_env_set_recognises_production() {
-        // SAFETY: tests run with --test-threads=1.
+        // SAFETY: serialized via `#[serial_test::serial]` (default key); no
+        // concurrent env-mutating test in this binary runs at the same time.
         let _guard = EnvGuard::set("DJOGI_ENV", Some("production"));
         assert!(production_env_set());
         unsafe { std::env::set_var("DJOGI_ENV", "PRODUCTION") };
@@ -1190,7 +1191,8 @@ mod tests {
     #[serial_test::serial]
     #[test]
     fn hostname_or_unknown_falls_back_when_unset() {
-        // SAFETY: tests run with --test-threads=1.
+        // SAFETY: serialized via `#[serial_test::serial]` (default key); no
+        // concurrent env-mutating test in this binary runs at the same time.
         let _guard = EnvGuard::set("HOSTNAME", None);
         let h = hostname_or_unknown();
         assert_eq!(h, "unknown");

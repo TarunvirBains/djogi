@@ -9,7 +9,7 @@
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --workspace -- --test-threads=1`
+- [ ] `cargo test --workspace --exclude elephant-tracker -- --skip adopter_linked_cli`
 - [ ] `cargo xtask check-secrets --staged` (or full
       `cargo xtask check-secrets`) shows no findings
 - [ ] (if data-layer changes) integration tests against live

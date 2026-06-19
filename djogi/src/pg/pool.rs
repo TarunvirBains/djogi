@@ -890,9 +890,11 @@ mod tests {
 
     /// `resolve_max_connections` walks env > config > None in the
     /// documented order and rejects degenerate env values without
-    /// zeroing the pool. The lib test sweep runs single-threaded, so
-    /// the env-var mutation is safe — the test resets the variable
-    /// after every assertion.
+    /// zeroing the pool. `#[serial_test::serial]` (default key) gives
+    /// this test exclusive process-wide env access, so the env-var
+    /// mutation is safe — the test resets the variable after every
+    /// assertion.
+    #[serial_test::serial]
     #[test]
     fn resolve_max_connections_walks_env_then_config() {
         use crate::config::DatabaseConfig;
@@ -900,9 +902,10 @@ mod tests {
         // Helper: clear the env var before each branch so previous
         // sub-cases don't leak in.
         let clear_env = || {
-            // Safety: process-global mutation; the test runs
-            // single-threaded under the project's `--test-threads=1`
-            // policy and resets the variable before each branch.
+            // Safety: the enclosing test holds the `#[serial_test::serial]`
+            // default lock, so no concurrent env-mutating test in this
+            // binary races this `remove_var`; the test resets the variable
+            // before each branch.
             unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
         };
 
@@ -990,11 +993,15 @@ mod tests {
     /// `from_database_config` smoke-test: builds a pool against an
     /// obviously-bogus URL with config-driven max_size and asserts the
     /// max_size flows through to the pool's status output.
+    #[serial_test::serial]
     #[tokio::test]
     async fn from_database_config_applies_max_size() {
         use crate::config::DatabaseConfig;
 
         // Make sure the env doesn't bleed in from another test.
+        // SAFETY: `#[serial_test::serial]` (default key) gives this test
+        // exclusive process-wide env access; no concurrent env-mutating
+        // test in this binary races this `remove_var`.
         unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
 
         let cfg = DatabaseConfig {

@@ -1159,7 +1159,10 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 /// concurrent environment reads and writes quiescent process-wide (or
 /// otherwise satisfies the platform-specific stronger requirement); a
 /// mutex that only serializes `DJOGI_PRESENTATION_HMAC_KEY` is not enough
-/// by itself.
+/// by itself. In a lib-test context, annotate the calling test with
+/// `#[serial_test::serial]` (default key) to guarantee exclusive
+/// process-wide env access — a per-key mutex does not exclude env readers
+/// or writers in other modules.
 /// # Panics
 /// Panics if `key` fails startup validation (wrong length, non-lowercase,
 /// non-hex characters, etc.). This is intentional: a malformed test key
@@ -1170,7 +1173,8 @@ pub async fn install_accounts_balance_increment_trigger_for_test(
 /// concurrent environment reads or writes process-wide while this function
 /// runs (or otherwise satisfy the platform-specific stronger requirement);
 /// a mutex for only `DJOGI_PRESENTATION_HMAC_KEY` is not sufficient by
-/// itself.
+/// itself. In a lib-test context, a caller annotated with
+/// `#[serial_test::serial]` (default key) satisfies this requirement.
 #[cfg(feature = "hmac-codec")]
 #[doc(hidden)]
 pub unsafe fn install_presentation_hmac_key_for_testing(key: &str) {

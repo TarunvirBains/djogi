@@ -753,11 +753,11 @@ async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiCo
     let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
     let app_database = current_database(&mut ctx).await;
 
-    // Compose a second DB name. Use a random suffix so concurrent
-    // test runs don't collide (the harness also uses uuid-suffixed
-    // names; the convention here mirrors that). Tests run with
-    // `--test-threads=1` per the project's pre-commit policy so the
-    // sequencing is deterministic.
+    // Compose a second DB name. Use a nanosecond-stamped suffix so
+    // concurrent test runs don't collide (the harness also uses
+    // uuid-suffixed names; the convention here mirrors that). The unique
+    // suffix — not test sequencing — is what keeps this isolated, so it
+    // is safe under the parallel test runner.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

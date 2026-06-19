@@ -2439,13 +2439,14 @@ mod tests {
     #[test]
     fn u2_djogi_env_is_production_predicate_matches_only_exact_word() {
         // Save / restore the env var so the test does not leak state.
-        // Tests run with `--test-threads=1` per the project's
-        // pre-commit policy so concurrent env mutation is not a
-        // concern in this configuration.
+        // `#[serial_test::serial]` (default key) gives this test exclusive
+        // process-wide env access, so concurrent env mutation by another
+        // test in this binary is not a concern.
         let _guard = EnvGuard::set("DJOGI_ENV", None);
 
         // Unset → None.
-        // SAFETY: serial test execution; no other thread reads DJOGI_ENV.
+        // SAFETY: serialized via `#[serial_test::serial]`; no other thread
+        // reads or mutates DJOGI_ENV while this test runs.
         assert_eq!(djogi_env_is_production(), None);
 
         // Exact match (lowercase) → Some(value).

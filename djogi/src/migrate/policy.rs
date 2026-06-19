@@ -464,9 +464,9 @@ mod tests {
     #[test]
     fn default_for_config_dev_profile_allows() {
         // Belt-and-braces: clear CI so the test passes regardless of
-        // the host's CI env var. tests run with --test-threads=1 per
-        // the project's pre-commit policy so concurrent env mutation
-        // is not a concern.
+        // the host's CI env var. `#[serial_test::serial]` (default key)
+        // gives this test exclusive process-wide env access, so
+        // concurrent env mutation by another test is not a concern.
         let _guard = EnvGuard::set("CI", None);
         let cfg = cfg_with_profile("development");
         let policy = OutOfOrderPolicy::default_for_config(&cfg);

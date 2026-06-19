@@ -34,11 +34,10 @@ use tokio::sync::{Mutex, MutexGuard, oneshot};
 /// `DJOGI_DATABASE_MAX_CONNECTIONS` env var.
 ///
 /// `cargo test --tests` runs integration tests in this binary
-/// concurrently by default — the lib-test `--test-threads=1` flag does
-/// NOT propagate to integration targets. The env-driven tests below
-/// would race each other (one test's mutation observed by the other,
-/// or one test's cleanup observed before the other reads) without
-/// serialization. We use `tokio::sync::Mutex` (not `std::sync::Mutex`)
+/// concurrently by default. The env-driven tests below would race each
+/// other (one test's mutation observed by the other, or one test's
+/// cleanup observed before the other reads) without serialization. We
+/// use `tokio::sync::Mutex` (not `std::sync::Mutex`)
 /// because the test body holds the guard across `.await` points —
 /// `std::sync::MutexGuard` is `!Send` and clippy rightly rejects
 /// holding it across an await.

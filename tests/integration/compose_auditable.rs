@@ -53,7 +53,10 @@ pub struct AuditPresent {
     pub created_by: Option<String>,
 }
 
+// Serial so it cannot emit tracing into `created_by_null_without_auth`'s
+// buffer window; see that test for the rationale.
 #[djogi::djogi_test(sync_models = [AuditPresent])]
+#[serial_test::serial]
 async fn auditable_getter_returns_created_by(mut ctx: djogi::DjogiContext) {
     let row = AuditPresent::create(
         &mut ctx,
@@ -104,7 +107,10 @@ pub struct AuditAbsent {
     pub created_by: Option<String>,
 }
 
+// Serial so it cannot emit tracing into `created_by_null_without_auth`'s
+// buffer window; see that test for the rationale.
 #[djogi::djogi_test(sync_models = [AuditAbsent])]
+#[serial_test::serial]
 async fn created_by_returns_none_when_unset(mut ctx: djogi::DjogiContext) {
     let row = AuditAbsent::create(
         &mut ctx,
@@ -141,7 +147,10 @@ pub struct AuditWithAuth {
     pub created_by: Option<String>,
 }
 
+// Serial so it cannot emit tracing into `created_by_null_without_auth`'s
+// buffer window; see that test for the rationale.
 #[djogi::djogi_test(sync_models = [AuditWithAuth])]
+#[serial_test::serial]
 async fn created_by_populated_with_auth(mut ctx: djogi::DjogiContext) {
     // Construct a HeerId via `from_i64` so we know the exact Display
     // form. The populator emits `format!("{}", a.user_id)` so the
@@ -208,6 +217,14 @@ fn logs_since(since: usize) -> String {
 }
 
 #[djogi::djogi_test(sync_models = [AuditNoAuth])]
+// This test asserts the ABSENCE of any `WARN`-level marker in the
+// process-global tracing buffer window it snapshots. That generic-marker
+// assertion is only sound if no other test in this binary emits tracing
+// concurrently, so every test in this file is `#[serial_test::serial]`
+// (default key, forwarded by `#[djogi_test]` onto the generated sync
+// wrapper) to restore exclusive-buffer execution after the CI
+// `--test-threads=1` flag was removed.
+#[serial_test::serial]
 async fn created_by_null_without_auth(mut ctx: djogi::DjogiContext) {
     // Snapshot the log buffer BEFORE the create so we only inspect lines
     // emitted by the populator path.
@@ -260,7 +277,10 @@ pub struct AuditOverride {
     pub created_by: Option<String>,
 }
 
+// Serial so it cannot emit tracing into `created_by_null_without_auth`'s
+// buffer window; see that test for the rationale.
 #[djogi::djogi_test(sync_models = [AuditOverride])]
+#[serial_test::serial]
 async fn created_by_user_override_wins(mut ctx: djogi::DjogiContext) {
     // Attach auth so the populator WOULD capture user_id if the guard
     // were missing — this proves the guard, not the absence of auth.
