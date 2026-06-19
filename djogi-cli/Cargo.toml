@@ -17,6 +17,10 @@ categories = ["command-line-utilities", "database"]
 name = "djogi"
 path = "src/main.rs"
 
+[[bin]]
+name = "cargo-djogi"
+path = "src/bin/cargo-djogi.rs"
+
 [lib]
 path = "src/lib.rs"
 

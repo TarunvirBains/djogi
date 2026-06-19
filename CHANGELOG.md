@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI packaging:** the `cargo-djogi` crate is removed. `djogi-cli` now
+  ships both the `djogi` and `cargo-djogi` executables, so `cargo install
+  djogi-cli` provides both the canonical `djogi` command and the
+  `cargo djogi` developer wrapper. There is no longer a separate
+  `cargo-djogi` package (#417).
+- **Upgrading from `cargo-djogi`:** if you have the old standalone `cargo-djogi`
+  crate installed, run `cargo uninstall cargo-djogi` before installing `djogi-cli`,
+  or use `cargo install --force djogi-cli` to allow the binary replacement (#417).
+
 ### Fixed
 
 - fix(#312): the E_DJG_VDF_017 guard that rejects `Jsonb<T>` storage columns

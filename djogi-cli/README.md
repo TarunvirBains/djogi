@@ -2,7 +2,13 @@
 
 CLI for the Djogi Model-first Postgres framework — schema migrations, database management, and descriptor tooling.
 
-**djogi-cli** provides the **`djogi`** command-line binary for Djogi adopters. It handles schema migrations, live-database operations, reference generation, and adopter-linked descriptor integration.
+**djogi-cli** is the single CLI package for Djogi adopters. It ships **two** installed executables — **`djogi`** (the canonical operator command) and **`cargo-djogi`** (the `cargo djogi` developer wrapper). It handles schema migrations, live-database operations, reference generation, and adopter-linked descriptor integration.
+
+Install both with one command:
+
+```bash
+cargo install djogi-cli
+```
 
 ## Primary Commands
 
@@ -20,7 +26,9 @@ CLI for the Djogi Model-first Postgres framework — schema migrations, database
 
 The published `djogi` binary on crates.io runs **descriptor-free commands** — those that work on pre-composed migration artifacts. Commands like `apply`, `status`, and `seed` run this way.
 
-You can also invoke an adopter-linked binary through:
+For descriptor-dependent commands during **local development**, invoke the
+adopter-linked binary through the `cargo djogi` wrapper (the `cargo-djogi`
+executable that `cargo install djogi-cli` installed):
 
 ```bash
 cargo djogi <command...>
@@ -33,6 +41,13 @@ with these `Djogi.toml` keys configured:
 package = "my-adopter-app-bin"
 bin = "djogi"
 ```
+
+> `cargo djogi` is a **local-development convenience** — it shells out to
+> Cargo to build and forward to your adopter-linked `djogi` binary. `djogi`
+> is the canonical operator command. **Production and CI run the prebuilt
+> adopter-linked `djogi` binary directly** (for example inside a migration
+> image), never `cargo djogi`, because the wrapper requires a buildable
+> workspace and a Cargo toolchain.
 
 Descriptor-dependent commands (`compose`, `verify`, `schema`, `docs`) require an **adopter-linked CLI** built in your own workspace. Wire it with one dependency line:
 
@@ -74,3 +89,4 @@ PostgreSQL 18 and later.
 - **[djogi](https://crates.io/crates/djogi)** — The main framework crate.
 - **[Migrations guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/migrations.md)** — Schema evolution, drift detection, and recovery workflows.
 - **[Adopter CLI guide](https://github.com/TarunvirBains/djogi/blob/main/docs/guide/adopter-cli.md)** — How to build and wire the adopter-linked CLI in your workspace.
+- The previously-published standalone **`cargo-djogi`** crate is superseded — both executables now ship from `djogi-cli`. Install `djogi-cli`; there is no separate `cargo-djogi` package.
