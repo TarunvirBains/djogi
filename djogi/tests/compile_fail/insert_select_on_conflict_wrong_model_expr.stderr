@@ -21,12 +21,12 @@ help: the following other types implement trait `IntoConflictExpr<T, V>`
 1577 | impl<T: Model, V> IntoConflictExpr<T, V> for ConflictExpr<T, V> {
      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ConflictExpr<T, V>`
 note: required by a bound in `DjogiField::<M, V>::conflict_set_expr`
-    --> djogi/src/query/field.rs:1082:12
+    --> djogi/src/query/field.rs:1084:12
      |
-1077 |     pub fn conflict_set_expr<S: Model, E>(
+1079 |     pub fn conflict_set_expr<S: Model, E>(
      |            ----------------- required by a bound in this associated function
 ...
-1082 |         E: crate::query::insert_select::IntoConflictExpr<M, V>,
+1084 |         E: crate::query::insert_select::IntoConflictExpr<M, V>,
      |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiField::<M, V>::conflict_set_expr`
 
 error: aborting due to 1 previous error

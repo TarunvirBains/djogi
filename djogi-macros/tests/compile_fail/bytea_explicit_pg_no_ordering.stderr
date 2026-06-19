@@ -4,9 +4,9 @@ error[E0599]: the method `gt` exists for struct `ExplicitPgPredicateField<Blob, 
  17 |     let _ = Blob::objects().filter(|f| f.payload().explicit_pg_predicate().gt(vec![1, 2]));
     |                                                                            ^^ method cannot be called on `ExplicitPgPredicateField<Blob, Vec<u8>>` due to unsatisfied trait bounds
     |
-   ::: djogi/src/query/field.rs:794:1
+   ::: djogi/src/query/field.rs:796:1
     |
-794 | pub struct ExplicitPgPredicateField<M: Model, V> {
+796 | pub struct ExplicitPgPredicateField<M: Model, V> {
     | ------------------------------------------------ doesn't satisfy `ExplicitPgPredicateField<Blob, Vec<u8>>: Iterator`
     |
    ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs

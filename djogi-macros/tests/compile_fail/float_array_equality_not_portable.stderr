@@ -4,9 +4,9 @@ error[E0599]: the method `eq` exists for struct `DjogiField<Widget, Vec<f64>>`, 
  22 |     let _bad = Widget::objects().filter(|f| f.samples().eq(vec![1.0, f64::NAN]));
     |                                                         ^^ method cannot be called on `DjogiField<Widget, Vec<f64>>` due to unsatisfied trait bounds
     |
-   ::: djogi/src/query/field.rs:748:1
+   ::: djogi/src/query/field.rs:750:1
     |
-748 | pub struct DjogiField<M: Model, V> {
+750 | pub struct DjogiField<M: Model, V> {
     | ---------------------------------- doesn't satisfy `DjogiField<Widget, Vec<f64>>: Iterator`
     |
    ::: $RUST/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs

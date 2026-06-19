@@ -373,8 +373,8 @@ pub struct InetAddrRow {
 async fn inet_addr_ipv4_host_with_prefix_round_trip(mut ctx: djogi::DjogiContext) {
     // 192.168.1.5/24 — a host address with a /24 prefix.
     // CidrAddr rejects this (host bits set), but InetAddr permits it.
-    let inet = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24)
-        .expect("valid InetAddr");
+    let inet =
+        InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).expect("valid InetAddr");
 
     let row = InetAddrRow::create(
         &mut ctx,
@@ -399,7 +399,10 @@ async fn inet_addr_ipv4_host_with_prefix_round_trip(mut ctx: djogi::DjogiContext
     let fetched = InetAddrRow::get(&mut ctx, row.id)
         .await
         .expect("Model::get round-trip for InetAddr");
-    assert_eq!(fetched.addr.addr(), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)));
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5))
+    );
     assert_eq!(fetched.addr.prefix(), 24);
     assert_eq!(fetched.maybe_addr, None);
 }
@@ -409,23 +412,17 @@ async fn inet_addr_ipv4_host_with_prefix_round_trip(mut ctx: djogi::DjogiContext
 #[djogi::djogi_test(sync_models = [InetAddrRow])]
 async fn inet_addr_ipv6_round_trip_and_filters(mut ctx: djogi::DjogiContext) {
     // 2001:db8::1/64 — IPv6 address with /64 prefix.
-    let inet_v6 = InetAddr::new(
-        IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()),
-        64,
-    )
-    .expect("valid IPv6 InetAddr");
+    let inet_v6 = InetAddr::new(IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().unwrap()), 64)
+        .expect("valid IPv6 InetAddr");
 
     // 10.0.0.1/32 — IPv4 host for the in_/not_in_ tests.
-    let inet_ipv4_1 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 32)
-        .expect("valid");
+    let inet_ipv4_1 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 32).expect("valid");
 
     // 10.0.0.2/32 — second IPv4 host.
-    let inet_ipv4_2 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 32)
-        .expect("valid");
+    let inet_ipv4_2 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 32).expect("valid");
 
     // 10.0.0.3/32 — third IPv4 host (used in not_in exclusion).
-    let inet_ipv4_3 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), 32)
-        .expect("valid");
+    let inet_ipv4_3 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)), 32).expect("valid");
 
     for (addr, label) in [
         (inet_v6, "inet-v6"),
@@ -454,7 +451,11 @@ async fn inet_addr_ipv6_round_trip_and_filters(mut ctx: djogi::DjogiContext) {
         .fetch_all(&mut ctx)
         .await
         .expect("filter by InetAddr eq must execute");
-    assert_eq!(results.len(), 1, "IPv6 eq filter should return exactly one row");
+    assert_eq!(
+        results.len(),
+        1,
+        "IPv6 eq filter should return exactly one row"
+    );
     assert_eq!(results[0].label, "inet-v6");
     assert_eq!(results[0].addr.addr(), inet_v6.addr());
     assert_eq!(results[0].addr.prefix(), inet_v6.prefix());
@@ -491,20 +492,16 @@ async fn inet_addr_ipv6_round_trip_and_filters(mut ctx: djogi::DjogiContext) {
 #[djogi::djogi_test(sync_models = [InetAddrRow])]
 async fn inet_addr_containment_operators_execute(mut ctx: djogi::DjogiContext) {
     // 10.0.0.0/8 — wide network, contains most test addresses.
-    let inet_wide = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8)
-        .expect("valid");
+    let inet_wide = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("valid");
 
     // 192.168.1.0/24 — narrow network.
-    let inet_narrow = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24)
-        .expect("valid");
+    let inet_narrow = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24).expect("valid");
 
     // 192.168.1.5/32 — host address within the /24 network.
-    let inet_host = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 32)
-        .expect("valid");
+    let inet_host = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 32).expect("valid");
 
     // 172.16.0.0/12 — another network, used for overlap test.
-    let inet_other = InetAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12)
-        .expect("valid");
+    let inet_other = InetAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)), 12).expect("valid");
 
     for (addr, label) in [
         (inet_wide, "inet-wide"),
@@ -551,8 +548,7 @@ async fn inet_addr_containment_operators_execute(mut ctx: djogi::DjogiContext) {
     assert_eq!(results.len(), 0, "nothing strictly contained by /8 here");
 
     // Test with a broader network: which rows are contained by 0.0.0.0/0?
-    let inet_all = InetAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
-        .expect("valid");
+    let inet_all = InetAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).expect("valid");
     let results = InetAddrRow::objects()
         .filter(|f| f.addr().contained_by(inet_all))
         .fetch_all(&mut ctx)
@@ -562,15 +558,18 @@ async fn inet_addr_containment_operators_execute(mut ctx: djogi::DjogiContext) {
     assert_eq!(results.len(), 4, "all rows contained by 0.0.0.0/0");
 
     // overlaps (&&): networks that overlap with 192.168.0.0/16
-    let supernet = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16)
-        .expect("valid");
+    let supernet = CidrAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 0)), 16).expect("valid");
     let results = InetAddrRow::objects()
         .filter(|f| f.addr().overlaps(supernet))
         .fetch_all(&mut ctx)
         .await
         .expect("overlaps filter must execute");
     // 192.168.1.0/24 and 192.168.1.5/32 overlap with 192.168.0.0/16.
-    assert_eq!(results.len(), 2, "two rows should overlap with /16 supernet");
+    assert_eq!(
+        results.len(),
+        2,
+        "two rows should overlap with /16 supernet"
+    );
     let labels: Vec<_> = results.iter().map(|r| r.label.as_str()).collect();
     assert!(labels.contains(&"inet-narrow"));
     assert!(labels.contains(&"inet-host"));
