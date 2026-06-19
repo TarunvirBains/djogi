@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   djogi-cli` provides both the canonical `djogi` command and the
   `cargo djogi` developer wrapper. There is no longer a separate
   `cargo-djogi` package (#417).
+- **Upgrading from `cargo-djogi`:** if you have the old standalone `cargo-djogi`
+  crate installed, run `cargo uninstall cargo-djogi` before installing `djogi-cli`,
+  or use `cargo install --force djogi-cli` to allow the binary replacement (#417).
 
 ### Fixed
 
