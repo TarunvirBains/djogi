@@ -142,7 +142,7 @@ async fn cross_arm_with_lock_rejected_at_terminal(mut ctx: djogi::DjogiContext) 
     assert!(err.is_terminal(), "SetOpArmInvalid is terminal");
 }
 
-// ── Tenant wiring regression (round-1 BLOCK-1) ──
+// ── Tenant wiring regression ──
 
 #[model(table = "x462_live_tlogins", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
