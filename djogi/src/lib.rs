@@ -72,12 +72,9 @@ pub mod model;
 pub mod notify;
 pub mod outbox;
 pub mod pg;
-// Djogi#170) — typed Postgres newtypes
-// with hand-rolled wire codecs. Ships `Interval`, `Range<T>`
-// (substrate), and the network family (`MacAddr` /
-// `CidrAddr`, , behind the `network` feature flag). Future
-// Future dispatches add more newtypes alongside without reshaping
-// the public surface.
+// Djogi#170 — typed Postgres newtypes with hand-rolled wire codecs.
+// Ships `Interval`, `Range<T>` (substrate), and the network family
+// (`MacAddr`, `CidrAddr`, `InetAddr` behind the `network` feature flag).
 pub mod pg_types;
 pub mod presentation;
 pub mod primary_key;

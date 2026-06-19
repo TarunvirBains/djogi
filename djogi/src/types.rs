@@ -32,19 +32,15 @@ pub use crate::pg_types::Interval;
 pub use crate::pg_types::{Range, RangeBound};
 
 // Network types (, `network` feature).
-// `MacAddr` carries a 6-byte EUI-48 MAC address (Postgres `MACADDR`
-// columns); `CidrAddr` carries an `(IpAddr, u8)` network address +
-// prefix (Postgres `CIDR` columns). The `INET` column type is reached
-// through `std::net::IpAddr` directly (no djogi-side newtype) — the
-// `postgres-types` crate carries the native ToSql/FromSql impl, and
-// the host-address case is what adopters reaching for `INET` today
-// want. A future-work follow-up can add
-// `InetAddr { addr, prefix }` symmetric with `CidrAddr` if adopter
-// demand for non-host INET surfaces.
-// The `CidrAddrError` / `MacAddrParseError` types are re-exported so
-// adopters who handle construction errors from `CidrAddr::new` /
-// `str::parse::<MacAddr>` can name the error type at the canonical
-// `djogi::types::*` path.
+// `MacAddr` carries a 6-byte EUI-48 MAC address (Postgres `MACADDR`).
+// `CidrAddr` carries an IP network address + prefix (Postgres `CIDR`)
+// and rejects non-zero host bits. `InetAddr` is the INET counterpart:
+// it preserves both host address and prefix length, permitting host
+// bits past the prefix (e.g., `192.168.1.5/24`). Use `CidrAddr` for
+// subnet ranges; use `InetAddr` when the prefix is meaningful data;
+// use plain `std::net::IpAddr` when you only need a bare host address.
+// The error types (`CidrAddrError`, `InetAddrError`, `MacAddrParseError`)
+// are re-exported so adopters can name them at `djogi::types::*`.
 #[cfg(feature = "network")]
 pub use crate::pg_types::{
     CidrAddr, CidrAddrError, InetAddr, InetAddrError, MacAddr, MacAddrParseError,
