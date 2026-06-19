@@ -209,6 +209,26 @@ fn tracked_geopoint_field_classifies_as_gist_not_btree() {
     );
 
     // Path 2 — the implicit spatial GiST IndexSpec on the model descriptor.
+    //
+    // Exactly one IndexSpec may target `location` at the descriptor level
+    // (the implicit `_gix`). This is a DESCRIPTOR-level guard: the macro
+    // emits one `_gix` per geography field and no descriptor duplicate.
+    // The projection-layer dual-emission (the metadata-poor synthetic `_idx`
+    // that previously appeared alongside the `_gix` in the projected
+    // `AppliedSchema`) is a SEPARATE concern, guarded by the projection unit
+    // test `geography_field_index_emits_single_gist_not_duplicate` in
+    // `djogi/src/migrate/projection.rs` (djogi#468) — not here.
+    let location_indexes = desc
+        .indexes
+        .iter()
+        .filter(|idx| index_column_names(idx) == ["location"])
+        .count();
+    assert_eq!(
+        location_indexes, 1,
+        "TrackedPlace::descriptor().indexes must contain exactly one IndexSpec for \
+         `location` (the implicit _gix); found {location_indexes}",
+    );
+
     let gix = desc
         .indexes
         .iter()
