@@ -960,7 +960,8 @@ async fn run_seeds_pool_backed_context_pins_session(mut ctx: djogi::DjogiContext
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await

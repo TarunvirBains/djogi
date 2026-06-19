@@ -1461,7 +1461,8 @@ async fn apply_plan_advisory_lock_not_held_after_success(mut ctx: djogi::DjogiCo
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await
@@ -1591,7 +1592,8 @@ async fn apply_plan_pool_backed_context_pins_session_for_advisory_lock(
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await
@@ -1671,7 +1673,8 @@ async fn rollback_plan_pool_backed_context_pins_session_for_advisory_lock(
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await
@@ -1740,7 +1743,8 @@ async fn rollback_bind_failure_releases_advisory_lock(mut ctx: djogi::DjogiConte
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await
@@ -1792,7 +1796,8 @@ async fn apply_plan_early_error_releases_lock_via_session_drop(
              WHERE locktype = 'advisory' \
                AND classid = (($1::bigint >> 32) & 4294967295)::oid \
                AND objid   = ($1::bigint & 4294967295)::oid \
-               AND mode    = 'ExclusiveLock'",
+               AND mode    = 'ExclusiveLock' \
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
             &[&lock_key],
         )
         .await
