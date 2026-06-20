@@ -169,9 +169,16 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = E2ERow::objects()
+    // Use `objects_including_deleted()` so the delta query sees soft-deleted
+    // rows: their `updated_at` is bumped on deletion and must arrive in tick-2's
+    // delta window so `__delta_should_tombstone()` can evict them from the Punnu.
+    // `objects()` would filter them out via `deleted_at IS NULL`, causing stale
+    // cache entries to linger after soft-delete. The `deleted_at IS NULL` condition
+    // is a `Q::Condition` (legacy, non-portable) so it also fails the portable
+    // refresh gate — `objects_including_deleted()` is the only correct choice here.
+    let handle = E2ERow::objects_including_deleted()
         .refresh_into(&punnu, pool, auth)
-        .expect("unfiltered queryset must satisfy portable refresh gate");
+        .expect("soft-delete-bypassed queryset must satisfy portable refresh gate");
 
     // ── Tick 1 — full scan ───────────────────────────────────────────────────
     // since = None → no watermark filter → returns all 3 initial rows.
