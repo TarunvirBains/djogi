@@ -1,5 +1,6 @@
-// .6 integration tests: `#[model(soft_deletable)]` opt-in
-// (supersedes .3's `#[derive(SoftDeletable)]`) + manual
+// Integration tests: `#[model(soft_deletable)]` opt-in, the automatic
+// soft-delete default filter on `objects()`, the explicit
+// `objects_including_deleted()` bypass, and the
 // `QuerySet::not_deleted()` helper.
 //
 // What this file pins:
@@ -7,19 +8,13 @@
 // 1. `#[model(soft_deletable)]` emits an `impl ::djogi::SoftDeletable
 //    for #ident` block whose `deleted_at()` getter returns
 //    `Option<DateTime>` copied from the adopter-declared
-//    `deleted_at: Option<DateTime>` field (Path B per v3
-//    line 866).
+//    `deleted_at: Option<DateTime>` field.
 // 2. `QuerySet::<M>::not_deleted()` (where `M: SoftDeletable`)
 //    composes a `deleted_at IS NULL` leaf onto the condition tree.
-//    Calling it on a queryset that returns mixed live/trashed rows
-//    narrows the result to the live rows only.
-// 3. **Counter-test:** the default `objects()` chain (without
-//    `.not_deleted()`) returns trashed rows alongside live ones.
-//    This pins the spec-locked deferral at line 971 — automatic
-//    default-filter composition is deferred to  once the
-//    `Q<T>` substrate lands. When 8γ  ships, this test breaks
-//    loudly so the implementer can flip the assertion (to one row)
-//    instead of silently changing the framework's default behaviour.
+// 3. `objects()` on a soft-deletable model excludes deleted rows by
+//    default; `objects_including_deleted()` bypasses that filter.
+// 4. The default filter composes through proxy models, tenant-keyed
+//    models, visages, prefetch, select_related, and `in_bulk`.
 //
 // # One model per test — coherence
 //
@@ -34,6 +29,7 @@
 // the typed model, queryset, and trait APIs only.
 
 use djogi::SoftDeletable;
+use djogi::auth::AuthContext;
 use djogi::prelude::*;
 use time::OffsetDateTime;
 
@@ -129,10 +125,9 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
     .await
     .expect("create trashed row should succeed");
 
-    // Manual exclusion via the .3 helper. In  this
-    // call site will become redundant once auto-composition lands;
-    // until then the helper is the only path that excludes
-    // soft-deleted rows.
+    // Explicit exclusion via the helper. `objects()` already excludes
+    // deleted rows by default (see Test 3); this pins that the explicit
+    // helper narrows a mixed result to the live rows the same way.
     let rows = SoftFilter::objects()
         .not_deleted()
         .fetch_all(&mut ctx)
@@ -258,5 +253,517 @@ async fn softdeletable_objects_including_deleted_returns_all(mut ctx: djogi::Djo
         rows.len(),
         2,
         "objects_including_deleted() must bypass the soft-delete default filter and return deleted rows",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4b — a model that is BOTH `tenant_key` and `soft_deletable` compiles
+// (no duplicate `objects_insecurely` — the tenant bypass and the soft-delete
+// bypass are distinct names) and the two filters compose independently:
+//   - `objects()` excludes deleted (soft-delete default filter applied).
+//   - `objects_insecurely()` (tenant bypass) STILL excludes deleted — it
+//     drops the RLS predicate, not the soft-delete leaf.
+//   - `objects_including_deleted()` (soft-delete bypass) includes deleted.
+// ---------------------------------------------------------------------------
+
+#[model(table = "tenant_soft_posts", pk = HeerId, tenant_key = "org_id", soft_deletable)]
+#[derive(Debug, Clone)]
+pub struct TenantSoft {
+    pub org_id: String,
+    pub title: String,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[djogi::djogi_test(sync_models = [TenantSoft])]
+async fn tenant_and_soft_deletable_compose_independently(mut ctx: djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.expect("begin transaction");
+    tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+
+    TenantSoft::create(
+        &mut tx,
+        TenantSoft {
+            org_id: "org_a".to_string(),
+            title: "live".to_string(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live tenant-scoped row");
+
+    TenantSoft::create(
+        &mut tx,
+        TenantSoft {
+            org_id: "org_a".to_string(),
+            title: "trashed".to_string(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create trashed tenant-scoped row");
+
+    // objects() — soft-delete default filter applied → only the live row.
+    let default_rows = TenantSoft::objects()
+        .fetch_all(&mut tx)
+        .await
+        .expect("tenant-scoped default fetch");
+    assert_eq!(
+        default_rows.len(),
+        1,
+        "objects() on a tenant + soft-deletable model must exclude the deleted row",
+    );
+    assert_eq!(default_rows[0].title, "live");
+
+    // objects_insecurely() — bypasses the RLS tenant predicate, NOT the
+    // soft-delete leaf. The soft-delete filter lives in the queryset
+    // condition (orthogonal to the Postgres policy), so the deleted row
+    // stays excluded.
+    let insecure_rows = TenantSoft::objects_insecurely()
+        .fetch_all(&mut tx)
+        .await
+        .expect("tenant-bypass fetch");
+    assert_eq!(
+        insecure_rows.len(),
+        1,
+        "objects_insecurely() bypasses RLS only — the soft-delete default filter \
+         must still exclude the deleted row",
+    );
+    assert_eq!(insecure_rows[0].title, "live");
+
+    // objects_including_deleted() — bypasses the soft-delete leaf → both rows.
+    let including_rows = TenantSoft::objects_including_deleted()
+        .fetch_all(&mut tx)
+        .await
+        .expect("soft-delete-bypass fetch");
+    assert_eq!(
+        including_rows.len(),
+        2,
+        "objects_including_deleted() must include the deleted row; the tenant and \
+         soft-delete bypasses are orthogonal and compose without an E0592 collision",
+    );
+
+    tx.commit().await.expect("commit transaction");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — a proxy model that is ALSO soft-deletable gets both the proxy
+// filter and the soft-delete filter in objects().
+// ---------------------------------------------------------------------------
+
+#[model(table = "soft_proxy_parent", soft_deletable)]
+#[derive(Debug, Clone)]
+pub struct SoftProxyParent {
+    pub note: String,
+    pub active: bool,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[model(
+    table = "soft_proxy_parent",
+    proxy_for = SoftProxyParent,
+    default_filter = |f| f.active.eq(true),
+    soft_deletable
+)]
+#[derive(Debug, Clone)]
+pub struct ActiveSoftProxy {
+    pub note: String,
+    pub active: bool,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[djogi::djogi_test(sync_models = [SoftProxyParent])]
+async fn soft_deletable_proxy_applies_both_filters(mut ctx: djogi::DjogiContext) {
+    // active + live  -> survives both filters
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "keep".into(),
+            active: true,
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create active live row");
+
+    // active + trashed -> dropped by soft-delete filter
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "trashed".into(),
+            active: true,
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create active trashed row");
+
+    // inactive + live -> dropped by proxy filter
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "inactive".into(),
+            active: false,
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create inactive live row");
+
+    let rows = ActiveSoftProxy::objects()
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all should succeed");
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "a soft-deletable proxy must apply BOTH the proxy default_filter (active = true) \
+         and the soft-delete default filter (deleted_at IS NULL)",
+    );
+    assert_eq!(
+        rows[0].note, "keep",
+        "only the active live row survives both filters"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5b — objects_including_deleted() on a proxy + soft_deletable model
+// bypasses the soft-delete filter but PRESERVES the proxy filter.
+//   active + live    -> returned (in proxy scope, not deleted)
+//   active + trashed -> returned (in proxy scope, soft-delete bypassed)
+//   inactive + live  -> NOT returned (proxy filter still excludes it)
+// A proxy-scoped-out row leaking through the soft-delete bypass would be a
+// data exposure — this is the regression guard against it.
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [SoftProxyParent])]
+async fn soft_deletable_proxy_bypass_preserves_proxy_filter(mut ctx: djogi::DjogiContext) {
+    // active + live -> in proxy scope, not deleted
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "keep".into(),
+            active: true,
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create active live row");
+
+    // active + trashed -> in proxy scope, soft-deleted
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "trashed".into(),
+            active: true,
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create active trashed row");
+
+    // inactive + live -> OUT of proxy scope
+    SoftProxyParent::create(
+        &mut ctx,
+        SoftProxyParent {
+            note: "inactive".into(),
+            active: false,
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create inactive live row");
+
+    let rows = ActiveSoftProxy::objects_including_deleted()
+        .fetch_all(&mut ctx)
+        .await
+        .expect("fetch_all should succeed");
+
+    // Both active rows (live + trashed) come back — soft-delete is bypassed.
+    assert_eq!(
+        rows.len(),
+        2,
+        "objects_including_deleted() on a soft-deletable proxy must include the \
+         soft-deleted in-scope row (soft-delete bypassed) AND the live in-scope row, \
+         but NOT the proxy-excluded row (proxy filter preserved)",
+    );
+    let mut notes: Vec<&str> = rows.iter().map(|r| r.note.as_str()).collect();
+    notes.sort_unstable();
+    assert_eq!(
+        notes,
+        vec!["keep", "trashed"],
+        "the proxy-excluded 'inactive' row must NOT leak through the soft-delete bypass",
+    );
+    assert!(
+        !notes.contains(&"inactive"),
+        "a proxy-scoped-out row must stay hidden even when including deleted rows",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 6 — a visage over a soft-deletable model excludes deleted rows by
+// default (the visage queryset seeds the source model's default filter).
+// ---------------------------------------------------------------------------
+
+#[model(table = "soft_visage", soft_deletable)]
+#[derive(Debug, Clone)]
+pub struct SoftVisage {
+    #[field(expose(public))]
+    pub note: String,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[djogi::djogi_test(sync_models = [SoftVisage])]
+async fn soft_deletable_visage_excludes_deleted_by_default(mut ctx: djogi::DjogiContext) {
+    SoftVisage::create(
+        &mut ctx,
+        SoftVisage {
+            note: "shared".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live row");
+
+    SoftVisage::create(
+        &mut ctx,
+        SoftVisage {
+            note: "shared".into(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create trashed row");
+
+    // The visage predicate matches BOTH rows by note; only the soft-delete
+    // default filter (inherited from the source model) excludes the trashed
+    // one, isolating the default-filter behavior.
+    let rows = SoftVisagePublic::filter(|v| v.note().eq("shared".to_string()))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("visage fetch_all should succeed");
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "a visage over a soft-deletable model must inherit the deleted_at IS NULL default filter",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7 — prefetch of a soft-deletable child excludes deleted children.
+// A deleted child surfaces as a LEFT JOIN miss (None), identical to a
+// NULL FK or orphan target.
+// ---------------------------------------------------------------------------
+
+#[model(table = "soft_child", soft_deletable)]
+#[derive(Debug, Clone)]
+pub struct SoftChild {
+    pub label: String,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+// `no_default` is required because `ForeignKey<T>` intentionally does not
+// implement `Default` — a relation with no PK value is meaningless. Rows are
+// built with explicit framework-field sentinels (the DB overwrites them via
+// `RETURNING *` on insert) through `soft_parent_for_insert`.
+#[model(table = "soft_parent", no_default)]
+#[derive(Debug, Clone)]
+pub struct SoftParent {
+    pub name: String,
+    pub child_id: ForeignKey<SoftChild>,
+}
+
+/// Build a `SoftParent` value for `SoftParent::create`. Framework fields use
+/// the recency-biased PK sentinel + epoch timestamps; the DB defaults
+/// overwrite them via `RETURNING *`. Extracted because `no_default` forbids
+/// `..Default::default()`.
+fn soft_parent_for_insert(name: &str, child: &SoftChild) -> SoftParent {
+    SoftParent {
+        id: <HeerIdRecencyBiased as PrimaryKey>::sentinel(),
+        created_at: djogi::DateTime::UNIX_EPOCH,
+        updated_at: djogi::DateTime::UNIX_EPOCH,
+        name: name.into(),
+        child_id: ForeignKey::new(child.id),
+    }
+}
+
+#[djogi::djogi_test(sync_models = [SoftChild, SoftParent])]
+async fn prefetch_soft_deletable_child_excludes_deleted(mut ctx: djogi::DjogiContext) {
+    let live_child = SoftChild::create(
+        &mut ctx,
+        SoftChild {
+            label: "live".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live child");
+
+    let dead_child = SoftChild::create(
+        &mut ctx,
+        SoftChild {
+            label: "dead".into(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create dead child");
+
+    SoftParent::create(&mut ctx, soft_parent_for_insert("p_live", &live_child))
+        .await
+        .expect("create parent pointing at live child");
+
+    SoftParent::create(&mut ctx, soft_parent_for_insert("p_dead", &dead_child))
+        .await
+        .expect("create parent pointing at dead child");
+
+    let parents = SoftParent::objects()
+        .prefetch(SoftParentRelated::child())
+        .fetch_all_prefetched(&mut ctx)
+        .await
+        .expect("prefetch fetch should succeed");
+
+    let p_live = parents
+        .iter()
+        .find(|p| p.row.name == "p_live")
+        .expect("p_live present");
+    let p_dead = parents
+        .iter()
+        .find(|p| p.row.name == "p_dead")
+        .expect("p_dead present");
+
+    assert!(
+        p_live.get(SoftParentRelated::child()).is_some(),
+        "parent pointing at a live child must resolve the prefetched child",
+    );
+    assert!(
+        p_dead.get(SoftParentRelated::child()).is_none(),
+        "parent pointing at a deleted child must see the prefetched child as None",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — select_related of a soft-deletable child excludes deleted
+// children (deleted child decodes to None via LEFT JOIN miss). Reuses the
+// SoftChild / SoftParent fixtures from Test 7.
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [SoftChild, SoftParent])]
+async fn select_related_soft_deletable_child_excludes_deleted(mut ctx: djogi::DjogiContext) {
+    let live_child = SoftChild::create(
+        &mut ctx,
+        SoftChild {
+            label: "live".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live child");
+
+    let dead_child = SoftChild::create(
+        &mut ctx,
+        SoftChild {
+            label: "dead".into(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create dead child");
+
+    SoftParent::create(&mut ctx, soft_parent_for_insert("sr_live", &live_child))
+        .await
+        .expect("create parent pointing at live child");
+
+    SoftParent::create(&mut ctx, soft_parent_for_insert("sr_dead", &dead_child))
+        .await
+        .expect("create parent pointing at dead child");
+
+    let rows = SoftParent::objects()
+        .select_related(SoftParentRelated::child())
+        .fetch_all_joined(&mut ctx)
+        .await
+        .expect("select_related fetch should succeed");
+
+    let live_joined = rows
+        .iter()
+        .find(|j| j.row.name == "sr_live")
+        .expect("sr_live present");
+    let dead_joined = rows
+        .iter()
+        .find(|j| j.row.name == "sr_dead")
+        .expect("sr_dead present");
+
+    assert!(
+        live_joined.get(SoftParentRelated::child()).is_some(),
+        "parent pointing at a live child must resolve the select_related child",
+    );
+    assert!(
+        dead_joined.get(SoftParentRelated::child()).is_none(),
+        "parent pointing at a deleted child must see the select_related child as None",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — in_bulk() honours the soft-delete default filter. A deleted row
+// requested by PK must NOT come back from objects().in_bulk(...). Reuses the
+// SoftDefault model from Test 3.
+// ---------------------------------------------------------------------------
+
+#[djogi::djogi_test(sync_models = [SoftDefault])]
+async fn in_bulk_respects_soft_delete_default_filter(mut ctx: djogi::DjogiContext) {
+    let live = SoftDefault::create(
+        &mut ctx,
+        SoftDefault {
+            note: "live".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create live row");
+
+    let trashed = SoftDefault::create(
+        &mut ctx,
+        SoftDefault {
+            note: "trashed".into(),
+            deleted_at: Some(OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create trashed row");
+
+    let found = SoftDefault::objects()
+        .in_bulk(&mut ctx, vec![live.id, trashed.id])
+        .await
+        .expect("in_bulk should succeed");
+
+    assert!(
+        found.contains_key(&live.id),
+        "in_bulk must return the live row requested by PK",
+    );
+    assert!(
+        !found.contains_key(&trashed.id),
+        "in_bulk must NOT return a soft-deleted row — the objects() default filter \
+         (deleted_at IS NULL) must compose with the PK IN predicate",
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly the live row survives the default filter"
     );
 }
