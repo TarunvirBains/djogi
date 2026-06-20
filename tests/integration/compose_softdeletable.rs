@@ -722,6 +722,17 @@ async fn select_related_soft_deletable_child_excludes_deleted(mut ctx: djogi::Dj
 // requested by PK must NOT come back from objects().in_bulk(...). Reuses the
 // SoftDefault model from Test 3.
 // ---------------------------------------------------------------------------
+//
+// Test 9b — in_bulk() with a value-bearing filter condition verifies that
+// condition parameters are bound BEFORE the IN-list parameters. If the bind
+// order were reversed, a string value in `$1` would be compared against the id
+// column (or vice-versa), producing wrong results or a type error. Using a
+// string equality predicate (note = $1) guarantees at least one named
+// parameter precedes the PK IN binds ($2, $3, $4), so a regression in
+// parameter ordering is directly observable as wrong rows returned.
+//
+// Reuses the SoftDefault model from Test 3 (table `soft_default`).
+// ---------------------------------------------------------------------------
 
 #[djogi::djogi_test(sync_models = [SoftDefault])]
 async fn in_bulk_respects_soft_delete_default_filter(mut ctx: djogi::DjogiContext) {
@@ -765,5 +776,77 @@ async fn in_bulk_respects_soft_delete_default_filter(mut ctx: djogi::DjogiContex
         found.len(),
         1,
         "exactly the live row survives the default filter"
+    );
+}
+
+#[djogi::djogi_test(sync_models = [SoftDefault])]
+async fn in_bulk_honours_value_bearing_condition_and_default_filter(mut ctx: djogi::DjogiContext) {
+    // Row A: matches the note filter and is not deleted — must appear in result.
+    let row_a = SoftDefault::create(
+        &mut ctx,
+        SoftDefault {
+            note: "live".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create row_a should succeed");
+
+    // Row B: different note — excluded by the string equality predicate.
+    let row_b = SoftDefault::create(
+        &mut ctx,
+        SoftDefault {
+            note: "other".into(),
+            deleted_at: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create row_b should succeed");
+
+    // Row C: matches the note filter but is soft-deleted — excluded by the
+    // soft-delete default filter that objects() seeds automatically.
+    let row_c = SoftDefault::create(
+        &mut ctx,
+        SoftDefault {
+            note: "live".into(),
+            deleted_at: Some(time::OffsetDateTime::now_utc()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create row_c should succeed");
+
+    // The filter binds `note = $1` before the PK IN list binds `$2, $3, $4`.
+    // If the accumulator pushed IN binds first, the string value would be sent
+    // as `$1` while the id placeholder `$2` would try to compare an integer to
+    // the note column — causing wrong results or a Postgres type error.
+    let found = SoftDefault::objects()
+        .filter(|f| f.note().eq("live".to_string()))
+        .in_bulk(&mut ctx, vec![row_a.id, row_b.id, row_c.id])
+        .await
+        .expect("in_bulk with value-bearing condition should succeed");
+
+    assert!(
+        found.contains_key(&row_a.id),
+        "row_a (note = 'live', not deleted) must be returned by in_bulk",
+    );
+    assert!(
+        !found.contains_key(&row_b.id),
+        "row_b (note = 'other') must be excluded by the note equality predicate",
+    );
+    assert!(
+        !found.contains_key(&row_c.id),
+        "row_c (note = 'live', deleted) must be excluded by the soft-delete default filter",
+    );
+    assert_eq!(
+        found.len(),
+        1,
+        "exactly one row survives both the value-bearing condition and the soft-delete filter",
+    );
+    assert_eq!(
+        found[&row_a.id].note, "live",
+        "the surviving row must be the one with note = 'live' that is not deleted",
     );
 }
