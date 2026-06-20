@@ -3034,7 +3034,7 @@ pub struct ModelDescriptor {
     ///
     /// # Migration-differ neutrality
     /// This is metadata, not schema. The migration differ
-    /// ([`crate::migrate::diff::diff_schemas`]) never sees `ModelDescriptor`
+    /// (`crate::migrate::diff::diff_schemas`) never sees `ModelDescriptor`
     /// directly — descriptors are first lowered to `AppliedSchema` /
     /// `TableSchema` by the projection layer (`migrate::projection`), and the
     /// differ compares those projected schemas. Neutrality therefore holds
