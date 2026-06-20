@@ -2590,6 +2590,7 @@ mod tests {
         table_comment: None,
         storage_params: None,
         tablespace: None,
+        soft_delete_column: None,
     };
 
     // Minimal `Model` impls — mirror the `Fake` used in `query::field`,

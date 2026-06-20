@@ -2999,6 +2999,7 @@ mod tests {
         table_comment: None,
         storage_params: None,
         tablespace: None,
+        soft_delete_column: None,
     };
 
     struct Fake;
