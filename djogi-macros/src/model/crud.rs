@@ -693,12 +693,46 @@ pub fn expand(
     // by `.push(OrderExpr::Column { ... })` per parsed `(field, Asc|Desc)`
     // tuple. NULL position defaults to `NullsOrder::Default` (matching
     // the queryset convention from `query/order.rs`).
-    let proxy_default_filter_override = match &model_attrs.proxy_default_filter {
-        Some(closure) => {
-            let sql = match crate::model::proxy::lower_default_filter_to_sql(closure) {
-                Ok(s) => s,
-                Err(err) => return err.to_compile_error(),
-            };
+    // Lower the proxy default-filter closure to SQL once; reuse the string in
+    // both `default_filter_condition` and `__soft_delete_inclusive_condition`
+    // (the latter is only emitted when the model is also soft-deletable).
+    // Calling `lower_default_filter_to_sql` twice on the same closure would be
+    // harmless but wasteful — share the lowered form here.
+    let proxy_filter_sql: Option<String> = match &model_attrs.proxy_default_filter {
+        Some(closure) => match crate::model::proxy::lower_default_filter_to_sql(closure) {
+            Ok(s) => Some(s),
+            Err(err) => return err.to_compile_error(),
+        },
+        None => None,
+    };
+    // Build the `default_filter_condition` override. Four cases:
+    // 1. Not a proxy, not soft-deletable → trait default (`None`), no override.
+    // 2. Not a proxy, IS soft-deletable → emit `deleted_at IS NULL` only.
+    // 3. IS a proxy, not soft-deletable → emit proxy SQL fragment only (existing behaviour).
+    // 4. IS a proxy AND soft-deletable → emit AND(proxy SQL, deleted_at IS NULL).
+    //
+    // The `deleted_at IS NULL` leaf is constructed via
+    // `Condition::__is_null_leaf(<M as SoftDeletable>::COLUMN)` — routing
+    // through the trait const keeps a future per-model column-rename override
+    // working without changing this emission.
+    let proxy_default_filter_override = match (&proxy_filter_sql, model_attrs.soft_deletable) {
+        (None, false) => quote! {},
+        (None, true) => {
+            // Case 2: soft-deletable only.
+            quote! {
+                fn default_filter_condition() -> ::std::option::Option<
+                    ::djogi::query::internal::Condition,
+                > {
+                    ::std::option::Option::Some(
+                        ::djogi::query::internal::Condition::__is_null_leaf(
+                            <Self as ::djogi::SoftDeletable>::COLUMN,
+                        ),
+                    )
+                }
+            }
+        }
+        (Some(sql), false) => {
+            // Case 3: proxy only — unchanged from the original behaviour.
             quote! {
                 fn default_filter_condition() -> ::std::option::Option<
                     ::djogi::query::internal::Condition,
@@ -709,8 +743,46 @@ pub fn expand(
                 }
             }
         }
-        None => quote! {},
+        (Some(sql), true) => {
+            // Case 4: proxy AND soft-deletable. AND the two leaves together.
+            quote! {
+                fn default_filter_condition() -> ::std::option::Option<
+                    ::djogi::query::internal::Condition,
+                > {
+                    ::std::option::Option::Some(
+                        ::djogi::query::internal::Condition::and(
+                            ::djogi::query::internal::Condition::__from_raw_sql_fragment(#sql),
+                            ::djogi::query::internal::Condition::__is_null_leaf(
+                                <Self as ::djogi::SoftDeletable>::COLUMN,
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
     };
+    // Override `Model::__soft_delete_inclusive_condition` for models that are
+    // BOTH a proxy AND soft-deletable. The bypass must preserve the proxy scope
+    // (dropping only the soft-delete leaf) — returning `None` here would expose
+    // proxy-scoped-out rows through `objects_including_deleted()`. Non-proxy
+    // soft-deletable models inherit the trait default (`None`), which is correct:
+    // there is no proxy scope to preserve.
+    let soft_delete_inclusive_condition_override =
+        match (&proxy_filter_sql, model_attrs.soft_deletable) {
+            (Some(sql), true) => {
+                quote! {
+                    #[doc(hidden)]
+                    fn __soft_delete_inclusive_condition() -> ::std::option::Option<
+                        ::djogi::query::internal::Condition,
+                    > {
+                        ::std::option::Option::Some(
+                            ::djogi::query::internal::Condition::__from_raw_sql_fragment(#sql),
+                        )
+                    }
+                }
+            }
+            _ => quote! {},
+        };
     let proxy_default_order_override = if model_attrs.proxy_default_order.is_empty() {
         quote! {}
     } else {
@@ -3449,6 +3521,68 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // `objects_including_deleted` — soft-delete bypass inherent method.
+    // Emitted ONLY when `#[model(soft_deletable)]` is declared. For every
+    // other model this block is empty — no inherent methods, no associated
+    // items, no compile-time surface at all.
+    //
+    // ## Design
+    // The method constructs a `QuerySet<Self>` that includes soft-deleted rows
+    // (rows where `deleted_at IS NOT NULL`) while preserving any proxy-scope
+    // default filter that may be active on this model. It does NOT bypass
+    // proxy filters — only the soft-delete IS NULL leaf is dropped.
+    //
+    // This is achieved by calling `QuerySet::__new_with_explicit_condition`,
+    // passing the result of `Model::__soft_delete_inclusive_condition` (the
+    // proxy-only condition, or `None` for plain soft-deletable models). The
+    // `__new_with_explicit_condition` constructor is `#[doc(hidden)] pub` so
+    // it is callable from adopter crates where the macro emission runs; a
+    // `pub(crate)` ctor would fail E0624 there.
+    //
+    // ## Path routing
+    // `QuerySet`, `QuerySet::__new_with_explicit_condition`, and
+    // `Model::__soft_delete_inclusive_condition` are all routed through
+    // their public re-export paths so this emission compiles in
+    // adopter crates without any extra deps beyond `djogi`.
+    // -------------------------------------------------------------------------
+    let soft_deletable_bypass_impl = if model_attrs.soft_deletable {
+        quote! {
+            impl #impl_generics #name #ty_generics #where_clause {
+                /// Returns a lazy `QuerySet` that includes **all** rows —
+                /// including those where `deleted_at` is non-`NULL` — while
+                /// still honouring any proxy scope that is active on this model.
+                ///
+                /// The default [`Model::objects()`] on a soft-deletable model
+                /// applies a `deleted_at IS NULL` filter automatically; this
+                /// method drops that filter so callers can inspect or restore
+                /// deleted records. It is the intended entry point for
+                /// administrative and audit use cases.
+                ///
+                /// # Proxy + soft-deletable composition
+                /// When the model is ALSO a proxy (`#[model(proxy_for = …)]`),
+                /// the proxy's own `default_filter` is still applied. Only the
+                /// soft-delete IS NULL leaf is bypassed. This preserves the
+                /// proxy's tenant scoping.
+                ///
+                /// # Auditing
+                /// Every call site is grep-able via `objects_including_deleted`.
+                ///
+                /// This method itself is synchronous — it constructs the queryset
+                /// only; no SQL is issued until a terminal method
+                /// (`.fetch_all`, `.fetch_one`, etc.) is called.
+                #[must_use = "querysets are lazy — dropping one silently omits the query"]
+                pub fn objects_including_deleted() -> ::djogi::query::QuerySet<Self> {
+                    ::djogi::query::QuerySet::<Self>::__new_with_explicit_condition(
+                        <Self as ::djogi::model::Model>::__soft_delete_inclusive_condition(),
+                    )
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
@@ -3456,6 +3590,7 @@ pub fn expand(
         #create_with_id_impl
         #bulk_methods_impl
         #insecurely_impl
+        #soft_deletable_bypass_impl
 
         // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
         // module is `#[doc(hidden)] pub`, so downstream hand-rolled
@@ -3488,6 +3623,7 @@ pub fn expand(
 
             #proxy_default_filter_override
             #proxy_default_order_override
+            #soft_delete_inclusive_condition_override
 
             fn get(
                 ctx: &mut ::djogi::context::DjogiContext,
