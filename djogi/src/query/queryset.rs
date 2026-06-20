@@ -2007,15 +2007,14 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
-// Manual `.not_deleted` helper for `SoftDeletable`
-// models.
-// **Spec lock (line 971, RESOLVED 2026-05-03, lens, locked):**
-// automatic default-filter composition is deferred to
-// once the `Q<T>` substrate lands. Today only the manual helper
-// ships — adopters must call `.not_deleted` explicitly on each
-// `objects` chain that should exclude soft-deleted rows. A later
-// change will replace this method with auto-composition under the
-// new substrate.
+// Explicit `.not_deleted` helper for `SoftDeletable` models.
+// `objects()` on a soft-deletable model already excludes
+// `deleted_at IS NOT NULL` rows via an automatic default filter
+// (the macro emits a `Model::default_filter_condition` override that
+// `QuerySet::new` seeds), so this helper is redundant on a plain
+// `objects()` chain. It remains for re-applying soft-delete exclusion
+// explicitly on top of an `objects_including_deleted()` bypass, or for
+// documentation-of-intent at a call site.
 // **Design notes:**
 // 1. The bound is `M: crate::SoftDeletable` (re-exported through
 // `crate::compose`). The trait already implies `M: Model` via its
@@ -2041,27 +2040,23 @@ impl<T: Model> QuerySet<T> {
 // so adding the same bound here keeps the impl block coherent
 // when chained.
 impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
-    /// Filter to rows where `deleted_at IS NULL` — the manual
-    /// soft-delete exclusion helper.
-    /// **Manual today; auto-composed under the future substrate.** This
-    /// ships the manual helper only; adopters who want soft-deleted rows excluded
-    /// must call `.not_deleted` on every `objects` chain. A future
-    /// substrate flip will land automatic default-filter composition once the
-    /// `Q<T>` substrate is in place — at which point this helper
-    /// becomes redundant on the default code path. The method name
-    /// will likely be retained as a no-op or as the explicit reverse
-    /// of an `_insecurely()` bypass; see spec line 971 for the
-    /// migration plan.
-    /// ```ignore
-    /// // Soft-deletable model with the attribute on `#[model]`:
-    /// #[model(table = "posts", soft_deletable)]
-    /// pub struct Post {
-    ///     pub title: String,
-    ///     pub deleted_at: Option<djogi::DateTime>,
-    /// }
+    /// Filter to rows where `deleted_at IS NULL` — explicit soft-delete
+    /// exclusion.
     ///
-    /// // Exclude trashed rows explicitly:
-    /// let live = Post::objects()
+    /// On `#[model(soft_deletable)]` models, [`objects()`](crate::Model::objects)
+    /// **already** excludes deleted rows via an automatic default filter,
+    /// so this method is redundant on a plain `objects()` chain. Reach for
+    /// it only to re-apply soft-delete exclusion explicitly on top of an
+    /// `objects_including_deleted()` bypass, or for documentation-of-intent
+    /// at a call site.
+    ///
+    /// The column name is read through `<M as SoftDeletable>::COLUMN`
+    /// (defaults to `"deleted_at"`), so a future per-model column override
+    /// flows through automatically.
+    ///
+    /// ```ignore
+    /// // Layer soft-delete exclusion back on after a deliberate bypass:
+    /// let live = Post::objects_including_deleted()
     ///     .not_deleted()
     ///     .fetch_all(&mut ctx)
     ///     .await?;
