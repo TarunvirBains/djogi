@@ -354,7 +354,7 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 // and the unit test suite covering env-var priority, derive fallback,
 // and the self-audit guard.
 
-/// Read a snapshot file's bytes, refusing to follow symlinks.
+/// Read a snapshot file's bytes through the shared workspace containment helper.
 /// DIRECTORIES via `entry.file_type()?.is_dir()`, but the verify path's
 /// per-bucket file lookup previously used `path.is_file()` (which
 /// follows symlinks) followed by `std::fs::read`. A symlinked
@@ -367,8 +367,8 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 /// This helper:
 /// - Returns `Ok(None)` when the path does not exist (typical of a
 ///   freshly composed migrations directory before the first apply).
-/// - Returns `Err(VerifyError::SymlinkSnapshot)` when the path is a
-///   symlink — refusing to follow.
+/// - Returns `Err(VerifyError::SymlinkSnapshot)` when the resolved
+///   path escapes the workspace root.
 /// - Returns `Ok(None)` when the path is some other non-regular file
 ///   (named pipe, device file). The migrations tree is supposed to
 ///   contain regular files; non-file entries are silently skipped.
@@ -384,29 +384,26 @@ fn read_snapshot_bytes(
     workspace_root: &std::path::Path,
     snapshot: &std::path::Path,
 ) -> Result<Option<Vec<u8>>, VerifyError> {
-    let meta = match std::fs::symlink_metadata(snapshot) {
-        Ok(m) => m,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(VerifyError::Io {
-                path: snapshot.to_path_buf(),
-                source: e,
-            });
+    match read_workspace_file(workspace_root, snapshot) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::IsADirectory
+            ) =>
+        {
+            Ok(None)
         }
-    };
-    if meta.file_type().is_symlink() {
-        return Err(VerifyError::SymlinkSnapshot {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(VerifyError::SymlinkSnapshot {
+                path: snapshot.to_path_buf(),
+            })
+        }
+        Err(e) => Err(VerifyError::Io {
             path: snapshot.to_path_buf(),
-        });
+            source: e,
+        }),
     }
-    if !meta.is_file() {
-        return Ok(None);
-    }
-    let bytes = read_workspace_file(workspace_root, snapshot).map_err(|e| VerifyError::Io {
-        path: snapshot.to_path_buf(),
-        source: e,
-    })?;
-    Ok(Some(bytes))
 }
 
 /// Result of trying to fetch a single audit row. `TableAbsent` is the
