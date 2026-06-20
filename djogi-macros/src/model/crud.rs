@@ -3565,13 +3565,25 @@ pub fn expand(
                 /// proxy's tenant scoping.
                 ///
                 /// # Auditing
-                /// Every call site is grep-able via `objects_including_deleted`.
+                /// Every call site is grep-able via `objects_including_deleted`,
+                /// and a `tracing::warn!` carrying `model`, `method`, and
+                /// `caller` fields is emitted synchronously when the queryset is
+                /// constructed — mirroring the tenant `objects_insecurely()`
+                /// audit trail so a bypass leaves both a static (grep) and a
+                /// runtime (log) signal.
                 ///
                 /// This method itself is synchronous — it constructs the queryset
                 /// only; no SQL is issued until a terminal method
                 /// (`.fetch_all`, `.fetch_one`, etc.) is called.
+                #[track_caller]
                 #[must_use = "querysets are lazy — dropping one silently omits the query"]
                 pub fn objects_including_deleted() -> ::djogi::query::QuerySet<Self> {
+                    ::djogi::__private::tracing::warn!(
+                        model = #model_name_str,
+                        method = "objects_including_deleted",
+                        caller = %::std::panic::Location::caller(),
+                        "soft-delete default filter bypassed — query includes deleted rows",
+                    );
                     ::djogi::query::QuerySet::<Self>::__new_with_explicit_condition(
                         <Self as ::djogi::model::Model>::__soft_delete_inclusive_condition(),
                     )
