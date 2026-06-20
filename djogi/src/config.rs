@@ -532,7 +532,9 @@ mod tests {
             },
             ..DjogiConfig::default()
         };
-        let err = cfg.validate().expect_err("must reject out-of-range threshold");
+        let err = cfg
+            .validate()
+            .expect_err("must reject out-of-range threshold");
         assert!(
             err.to_string().contains("pk_flip_long_tx_threshold_secs"),
             "error should name the offending field, got: {err}"
