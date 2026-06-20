@@ -8,15 +8,13 @@
 // clause before any adopter `.filter(...)` is applied.
 //
 // Why this is an internal SQL-shape test rather than a live `#[djogi_test]`
-// integration test: `Model::descriptor()` resolves through an inventory
-// lookup keyed on `table_name`, so a proxy and its base model — which share
-// one `table_name` by definition — are indistinguishable through that path.
-// Placing both in `sync_models = [...]` passes the same descriptor twice and
-// fails projection before the proxy filter can be observed. The visage SQL
-// builder (`__sql_for_test`) reaches the exact macro-emitted seeding code this
-// change touches without a live database, and asserts the WHERE clause
-// directly — the same approach `visage_traversal_shape` uses for visage
-// traversal lowering.
+// integration test: verifying the proxy-specific WHERE clause requires the
+// visage SQL builder (`__sql_for_test`), which reaches the macro-emitted
+// seeding code without a live database and asserts the WHERE clause directly —
+// the same approach `visage_traversal_shape` uses for visage traversal
+// lowering. `Model::descriptor()` is keyed on `type_name` (the struct ident),
+// which is unique across all registered models — a proxy and its base model
+// each return their own descriptor even though they share a `table_name`.
 
 use djogi::prelude::*;
 

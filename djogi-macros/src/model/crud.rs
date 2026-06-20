@@ -662,12 +662,18 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // `descriptor()` — looks up the ModelDescriptor emitted by descriptor.rs.
     // `inventory::iter::<T>` is a ZST implementing IntoIterator — no parens.
+    // Keyed on `type_name` (the struct ident string), NOT `table_name`.
+    // Proxy and parent models share a `table_name` by definition, so a
+    // `table_name`-keyed find is non-deterministic when both are registered.
+    // `type_name` is unique across all registered models — `DuplicateModelTypeName`
+    // validation in projection.rs enforces this invariant.
     // -------------------------------------------------------------------------
+    let name_str = name.to_string();
     let descriptor_impl = quote! {
         fn descriptor() -> &'static ::djogi::ModelDescriptor {
             ::djogi::__private::inventory::iter::<::djogi::ModelDescriptor>
                 .into_iter()
-                .find(|d| d.table_name == #table)
+                .find(|d| d.type_name == #name_str)
                 .expect("ModelDescriptor not registered — did #[model] run?")
         }
     };
