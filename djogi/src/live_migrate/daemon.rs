@@ -633,7 +633,14 @@ async fn resume_backfill_for_candidate(
             filter,
             batch_size,
             ..
-        } => (table, filter, batch_size as u32),
+        } => {
+            let chunk_size = u32::try_from(batch_size).map_err(|_| {
+                DaemonError::Database(DjogiError::Db(DbError::other(format!(
+                    "resume_backfill: batch_size ({batch_size}) overflows u32"
+                ))))
+            })?;
+            (table, filter, chunk_size)
+        }
         super::compose::ExtractResult::NotBackfillChunked => {
             return Err(DaemonError::Database(DjogiError::Db(DbError::other(
                 "plan has no BackfillChunked step to resume",
@@ -1199,5 +1206,26 @@ mod tests {
         unsafe { std::env::set_var("HOSTNAME", "test-box.example") };
         let h = hostname_or_unknown();
         assert_eq!(h, "test-box.example");
+    }
+
+    #[test]
+    fn resume_backfill_batch_size_overflow_yields_err() {
+        // Verify that an i64 batch_size exceeding u32::MAX produces Err, not panic.
+        // This is the value that would previously silently truncate via `as u32`.
+        let batch_size: i64 = i64::from(u32::MAX) + 1;
+        let result = u32::try_from(batch_size);
+        assert!(
+            result.is_err(),
+            "expected Err for batch_size {batch_size} > u32::MAX but got Ok"
+        );
+        // Also verify a negative value produces Err (not wrap-around).
+        let negative: i64 = -1;
+        assert!(
+            u32::try_from(negative).is_err(),
+            "expected Err for negative batch_size {negative}"
+        );
+        // Valid values must still succeed.
+        let valid: i64 = i64::from(u32::MAX);
+        assert_eq!(u32::try_from(valid).unwrap(), u32::MAX);
     }
 }

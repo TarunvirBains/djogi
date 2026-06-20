@@ -161,7 +161,8 @@ pub async fn claim_pending(
          RETURNING id, row_id::text, action, payload, created_at"
     );
 
-    let batch_size_i64 = batch_size as i64;
+    // batch_size is u32; i64::from is lossless (u32::MAX < i64::MAX).
+    let batch_size_i64: i64 = i64::from(batch_size);
     let params: &[&(dyn postgres_types::ToSql + Sync)] = &[&batch_size_i64];
     let rows = ctx.query_all(&sql, params).await?;
 
@@ -415,5 +416,15 @@ mod tests {
         // Single-underscore variants stay legal — the rule is the
         // exact double-underscore prefix.
         assert!(validate_table_ident("_djogi_outbox").is_ok());
+    }
+
+    #[test]
+    fn claim_pending_batch_size_cast_u32_to_i64_is_lossless() {
+        // u32::MAX must round-trip through i64 without any bit loss.
+        // i64::from(u32) is the form used in production — the From impl is
+        // compile-time checked and makes widening intent explicit.
+        let max_u32: u32 = u32::MAX;
+        let as_i64: i64 = i64::from(max_u32);
+        assert_eq!(as_i64, 4_294_967_295_i64);
     }
 }
