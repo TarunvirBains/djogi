@@ -593,12 +593,21 @@ where
     /// Fetch every row whose primary key is in `ids` and return them
     /// keyed by PK in a `HashMap`.
     /// One round trip. The generated SQL is
-    /// `SELECT * FROM <table> WHERE id IN ($1, $2, ...)` — one bound
+    /// `SELECT <cols> FROM <table> WHERE id IN ($1, $2, ...)` — one bound
     /// parameter per id. Postgres' bind-parameter cap is 65_535; larger
     /// id batches should be chunked by the caller.
+    /// # Composition with the queryset condition
+    /// The PK `IN (...)` predicate is **AND-composed** with the queryset's
+    /// accumulated condition — both the model's default filter (e.g. the
+    /// soft-delete `deleted_at IS NULL` filter on `#[model(soft_deletable)]`
+    /// models, seeded by `objects()`) and any caller `.filter(...)`. So a
+    /// soft-deleted row requested by PK does **not** come back from
+    /// `objects().in_bulk(...)`; reach for `objects_including_deleted()` to
+    /// include it. When the condition is vacuous the SQL is the bare
+    /// `WHERE id IN (...)` shape; otherwise it is
+    /// `WHERE (<condition>) AND id IN (...)`.
     /// # Why on `QuerySet`, not `Model`
-    /// The queryset receiver means callers can still stack filters and
-    /// orderings before the PK probe:
+    /// The queryset receiver lets callers stack filters before the PK probe:
     /// ```rust,ignore
     /// Account::objects()
     ///     .filter(|f| f.tenant_id.eq(tenant))
