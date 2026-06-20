@@ -2575,6 +2575,65 @@ mod tests {
     }
 
     #[test]
+    fn soft_delete_column_is_invisible_to_projection() {
+        // `soft_delete_column` is behavioral metadata for relation
+        // composition, not a schema signal. Two descriptors identical except
+        // for this field must project to the SAME `TableSchema` — otherwise
+        // the migration differ (which compares projected schemas, never
+        // `ModelDescriptor` directly) would emit a spurious operation when a
+        // model gains or loses `#[model(soft_deletable)]` without any real
+        // column change. The `deleted_at` column itself is an ordinary
+        // nullable field already compared via `fields`; this slot must add no
+        // schema signal.
+        let none_variant = ModelDescriptor {
+            soft_delete_column: None,
+            ..synth_model("widgets", "Widget")
+        };
+        let some_variant = ModelDescriptor {
+            soft_delete_column: Some("deleted_at"),
+            ..synth_model("widgets", "Widget")
+        };
+
+        // `project_from_iters` builds the FK/PK context maps internally and
+        // returns buckets keyed by (database, app). Each single-model
+        // projection lands in the synthetic global bucket; pull the `widgets`
+        // `TableSchema` out of each. `AppliedSchema.models` is a
+        // `BTreeMap<String, TableSchema>` keyed by Postgres table name, so the
+        // correct accessor is `.models.get("widgets")` — not
+        // `.models.iter().find(...)`, which would yield `(&String,
+        // &TableSchema)` tuples with no `.table` field.
+        let buckets_none = project_from_iters(
+            std::iter::once(&none_variant),
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-06-16T00:00:00Z".to_string(),
+        )
+        .expect("project none_variant");
+        let buckets_some = project_from_iters(
+            std::iter::once(&some_variant),
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-06-16T00:00:00Z".to_string(),
+        )
+        .expect("project some_variant");
+
+        let table_none = buckets_none
+            .get(&empty_global())
+            .and_then(|b| b.models.get("widgets"))
+            .expect("widgets projected in none bucket");
+        let table_some = buckets_some
+            .get(&empty_global())
+            .and_then(|b| b.models.get("widgets"))
+            .expect("widgets projected in some bucket");
+
+        assert_eq!(
+            table_none, table_some,
+            "soft_delete_column must not affect the projected TableSchema; it is \
+             behavioral metadata for relation composition, not a schema signal",
+        );
+    }
+
+    #[test]
     fn models_with_app_land_in_app_bucket() {
         let billing = synth_app("billing", "main");
         let m = ModelDescriptor {

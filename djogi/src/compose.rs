@@ -117,12 +117,12 @@ pub trait Auditable: Model {
 /// A model carrying this bound declares `deleted_at: Option<DateTime>`
 /// itself (Path B per) and the
 /// `#[model(soft_deletable)]` attribute emits the trait impl.
-/// Automatic default-filter composition uses the `Q<T>`
-/// substrate (spec line 971, RESOLVED 2026-05-03, lens,
-/// locked); this trait ships the surface plus the manual
-/// [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
-/// helper that reads the column name through `<M as
-/// SoftDeletable>::COLUMN` rather than a hard-coded string.
+/// `objects()` on a soft-deletable model excludes deleted rows by default
+/// via an automatic `deleted_at IS NULL` filter; the explicit bypass is the
+/// macro-emitted `objects_including_deleted()`. The manual
+/// [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted) helper
+/// remains for explicit re-application on a bypassed queryset and reads the
+/// column name through `<M as SoftDeletable>::COLUMN`.
 /// This trait is the bound surface used by code that needs to talk
 /// generically about "models with soft-delete semantics" — for example,
 /// the visage layer's "include trashed rows" toggle.

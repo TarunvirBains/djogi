@@ -887,6 +887,26 @@ fn try_expand(
         Some(text) => quote! { ::std::option::Option::Some(#text) },
         None => quote! { ::std::option::Option::None },
     };
+    // soft_delete_column — carries the soft-delete column name for relation
+    // composition (prefetch / select_related JOIN-ON scoping). Read through
+    // the trait const `<Self as SoftDeletable>::COLUMN` so a per-model column
+    // override flows through to the relation-join predicate rather than a
+    // hard-coded `"deleted_at"`. The `SoftDeletable` impl is emitted for
+    // exactly the models where `model_attrs.soft_deletable` is true (see
+    // `compose::soft_deletable::expand`), so the trait-const read resolves
+    // precisely under this gate; `None` for every other model. Reads of
+    // associated consts from trait impls are valid const-eval inside this
+    // `inventory::submit!` initializer — the surrounding literal already does
+    // this for `App::LABEL`, `PrimaryKey::KIND`, and `PrimaryKey::SQL_TYPE`.
+    let soft_delete_column_lit = if model_attrs.soft_deletable {
+        quote! {
+            ::std::option::Option::Some(
+                <#source_ident as ::djogi::SoftDeletable>::COLUMN,
+            )
+        }
+    } else {
+        quote! { ::std::option::Option::None }
+    };
 
     // Side-channel RLS DDL emission — only when tenant_key is declared.
     if let Some(tenant_col) = &model_attrs.tenant_key {
@@ -1207,6 +1227,10 @@ fn try_expand(
                 // `#[model(tablespace = "...")]` metadata.
                 storage_params: #storage_params_tokens,
                 tablespace: #tablespace_tokens,
+                // Behavioral metadata for relation composition — the
+                // soft-delete column name, or `None`. See
+                // `ModelDescriptor::soft_delete_column`.
+                soft_delete_column: #soft_delete_column_lit,
             }
         }
         #(#deferrability_submits)*

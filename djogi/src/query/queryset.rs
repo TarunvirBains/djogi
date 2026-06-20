@@ -708,6 +708,74 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    /// Construct a [`QuerySet<T>`] seeding the default condition
+    /// **explicitly** rather than calling
+    /// [`Model::default_filter_condition`]. The model's default ordering
+    /// ([`Model::default_order_by`]) is still applied, exactly as
+    /// [`QuerySet::new`] does.
+    ///
+    /// This is the substrate behind the macro-emitted
+    /// `objects_including_deleted()` on `#[model(soft_deletable)]` models.
+    /// It is `#[doc(hidden)] pub` — **not** `pub(crate)` — because
+    /// `objects_including_deleted()` expands in adopter crates and calls
+    /// this across the crate boundary; a `pub(crate)` ctor would fail
+    /// `E0624` downstream. The `__`-prefix + `#[doc(hidden)]`
+    /// pair signals it is not supported user surface (same contract
+    /// [`crate::query::internal::Condition::__from_raw_sql_fragment`]
+    /// carries). Adopters reach the audited bypass through
+    /// `objects_including_deleted()`, never this constructor directly.
+    ///
+    /// # Why `Option<Condition>` rather than a vacuous ctor
+    /// `objects_including_deleted()` must bypass the **soft-delete** filter
+    /// while preserving any **proxy** default filter — otherwise a model
+    /// that is both a proxy and soft-deletable would leak proxy-scoped-out
+    /// rows. The caller passes
+    /// [`Model::__soft_delete_inclusive_condition`] (the proxy-only filter,
+    /// or `None`) so only the soft-delete leaf is dropped. `None` yields a
+    /// vacuous `Q::always_true()` condition — the "truly empty" shape for a
+    /// non-proxy soft-deletable model.
+    ///
+    /// The `Option<Condition> -> Q<T>` mapping is performed in-crate here
+    /// (identical to [`QuerySet::new`] at the `default_filter_condition()`
+    /// site), which keeps the `#[non_exhaustive]` `Q<T>` construction inside
+    /// `djogi` and off the adopter-crate emission path.
+    ///
+    /// # Why ordering is still seeded
+    /// The bypass disables the default *filter*, not the default *sort*.
+    /// A proxy that bypasses its `default_filter` still wants its
+    /// `default_order`; a soft-deletable model has no default order, so
+    /// this returns the empty `Vec` for it. Either way the ordering hook
+    /// behaves identically to `new()`.
+    #[doc(hidden)]
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn __new_with_explicit_condition(
+        default_condition: ::std::option::Option<crate::query::internal::Condition>,
+    ) -> Self {
+        // Map Option<Condition> -> Q<T> in-crate, identical to QuerySet::new's
+        // default_filter_condition() handling. Keeping this mapping in-crate
+        // avoids constructing the #[non_exhaustive] Q<T> from adopter-crate
+        // macro output.
+        let condition = default_condition.map_or_else(Q::always_true, |c| {
+            use crate::query::q::Q;
+            Q::Condition(c)
+        });
+        let ordering = T::default_order_by();
+        QuerySet {
+            condition,
+            ordering,
+            has_explicit_ordering: false,
+            distinct: DistinctMode::None,
+            limit: None,
+            offset: None,
+            is_empty: false,
+            prefetch_paths: Vec::new(),
+            select_related_paths: Vec::new(),
+            lock: crate::query::lock::LockMode::None,
+            cache_target: None,
+            _model: PhantomData,
+        }
+    }
+
     /// Performs an `INNER JOIN LATERAL` against the provided `inner` queryset.
     /// Returns a [`LateralQuerySet`] that evaluates to `(L, R)` tuples.
     /// Parent rows (`L`) are dropped from the result if the `inner`
@@ -1939,15 +2007,14 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
-// Manual `.not_deleted` helper for `SoftDeletable`
-// models.
-// **Spec lock (line 971, RESOLVED 2026-05-03, lens, locked):**
-// automatic default-filter composition is deferred to
-// once the `Q<T>` substrate lands. Today only the manual helper
-// ships — adopters must call `.not_deleted` explicitly on each
-// `objects` chain that should exclude soft-deleted rows. A later
-// change will replace this method with auto-composition under the
-// new substrate.
+// Explicit `.not_deleted` helper for `SoftDeletable` models.
+// `objects()` on a soft-deletable model already excludes
+// `deleted_at IS NOT NULL` rows via an automatic default filter
+// (the macro emits a `Model::default_filter_condition` override that
+// `QuerySet::new` seeds), so this helper is redundant on a plain
+// `objects()` chain. It remains for re-applying soft-delete exclusion
+// explicitly on top of an `objects_including_deleted()` bypass, or for
+// documentation-of-intent at a call site.
 // **Design notes:**
 // 1. The bound is `M: crate::SoftDeletable` (re-exported through
 // `crate::compose`). The trait already implies `M: Model` via its
@@ -1973,27 +2040,23 @@ impl<T: Model> QuerySet<T> {
 // so adding the same bound here keeps the impl block coherent
 // when chained.
 impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
-    /// Filter to rows where `deleted_at IS NULL` — the manual
-    /// soft-delete exclusion helper.
-    /// **Manual today; auto-composed under the future substrate.** This
-    /// ships the manual helper only; adopters who want soft-deleted rows excluded
-    /// must call `.not_deleted` on every `objects` chain. A future
-    /// substrate flip will land automatic default-filter composition once the
-    /// `Q<T>` substrate is in place — at which point this helper
-    /// becomes redundant on the default code path. The method name
-    /// will likely be retained as a no-op or as the explicit reverse
-    /// of an `_insecurely()` bypass; see spec line 971 for the
-    /// migration plan.
-    /// ```ignore
-    /// // Soft-deletable model with the attribute on `#[model]`:
-    /// #[model(table = "posts", soft_deletable)]
-    /// pub struct Post {
-    ///     pub title: String,
-    ///     pub deleted_at: Option<djogi::DateTime>,
-    /// }
+    /// Filter to rows where `deleted_at IS NULL` — explicit soft-delete
+    /// exclusion.
     ///
-    /// // Exclude trashed rows explicitly:
-    /// let live = Post::objects()
+    /// On `#[model(soft_deletable)]` models, [`objects()`](crate::Model::objects)
+    /// **already** excludes deleted rows via an automatic default filter,
+    /// so this method is redundant on a plain `objects()` chain. Reach for
+    /// it only to re-apply soft-delete exclusion explicitly on top of an
+    /// `objects_including_deleted()` bypass, or for documentation-of-intent
+    /// at a call site.
+    ///
+    /// The column name is read through `<M as SoftDeletable>::COLUMN`
+    /// (defaults to `"deleted_at"`), so a future per-model column override
+    /// flows through automatically.
+    ///
+    /// ```ignore
+    /// // Layer soft-delete exclusion back on after a deliberate bypass:
+    /// let live = Post::objects_including_deleted()
     ///     .not_deleted()
     ///     .fetch_all(&mut ctx)
     ///     .await?;

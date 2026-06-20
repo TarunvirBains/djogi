@@ -37,16 +37,19 @@
 //! field is missing, the emitted `self.deleted_at` produces an
 //! actionable rustc diagnostic (`error[E0609]: no field "deleted_at"
 //! on type ...`).
-//! # Default-filter composition deferred
-//! The current implementation ships **only** the trait impl. The runtime helper
-//! `QuerySet::not_deleted()` (in `djogi/src/query/queryset.rs`) is a
-//! manual filter the adopter invokes per `objects()` chain, now reading
-//! the column name through `<M as SoftDeletable>::COLUMN`. **Automatic**
-//! default-filter composition — making `Model::objects()` exclude
-//! soft-deleted rows by default and exposing an `_insecurely()`
-//! bypass — is deferred to once the `Q<T>` substrate
-//! lands. Per spec line 971 (RESOLVED 2026-05-03, lens, locked):
-//! substrate decisions belong with the substrate refactor.
+//! # Automatic default-filter composition
+//! `objects()` on a soft-deletable model excludes `deleted_at IS NOT NULL`
+//! rows by default. The model macro emits a `Model::default_filter_condition`
+//! override (in `model/crud.rs`, AND-composed with any proxy default filter)
+//! returning the `deleted_at IS NULL` leaf, which `QuerySet::new` seeds into
+//! every freshly constructed queryset. The explicit bypass is
+//! `objects_including_deleted()`, which is emitted alongside and routes
+//! through `QuerySet::__new_with_explicit_condition`, seeded with the
+//! proxy-only condition (`Model::__soft_delete_inclusive_condition`) so it
+//! drops only the soft-delete leaf and preserves any proxy default filter.
+//! The manual `QuerySet::not_deleted()` helper remains for explicit
+//! re-application on a bypassed queryset; it reads the column name through
+//! `<M as SoftDeletable>::COLUMN`, the same convention this emission uses.
 //! # Composition with `#[model(...)]`
 //! Adopter usage:
 //! ```rust,ignore

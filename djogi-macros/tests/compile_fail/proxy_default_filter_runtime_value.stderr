@@ -4,7 +4,7 @@ error: `default_filter` argument must be an inline literal (bool/integer/float/s
 28 |     default_filter = |f| f.active.eq(RUNTIME_VAR),
    |                                      ^^^^^^^^^^^
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:25:1
     |
  25 | / #[model(
@@ -14,12 +14,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
  29 | | )]
     | |__^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -31,7 +31,7 @@ note: required by a bound in `Q`
     |               ^^^^^ required by this bound in `Q`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:25:1
     |
  25 | / #[model(
@@ -41,12 +41,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
  29 | | )]
     | |__^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -58,7 +58,7 @@ note: required by a bound in `IntoQ`
     |                    ^^^^^ required by this bound in `IntoQ`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
   --> $DIR/proxy_default_filter_runtime_value.rs:25:1
    |
 25 | / #[model(
@@ -68,12 +68,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
 29 | | )]
    | |__^ unsatisfied trait bound
    |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -85,18 +85,18 @@ note: required by a bound in `DjogiVisageOf`
    |                            ^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiVisageOf`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:31:12
     |
  31 | pub struct ActiveVehicle {
     |            ^^^^^^^^^^^^^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -108,7 +108,7 @@ note: required by a bound in `djogi::DjogiVisage::Model`
     |                 ^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiVisage::Model`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:25:1
     |
  25 | / #[model(
@@ -118,12 +118,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
  29 | | )]
     | |__^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -135,7 +135,7 @@ note: required by a bound in `DjogiField`
     |                          ^^^^^ required by this bound in `DjogiField`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
   --> $DIR/proxy_default_filter_runtime_value.rs:25:1
    |
 25 | / #[model(
@@ -145,12 +145,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
 29 | | )]
    | |__^ unsatisfied trait bound
    |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -162,7 +162,7 @@ note: required by a bound in `FieldRef`
    |                        ^^^^^ required by this bound in `FieldRef`
    = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:25:1
     |
  25 | / #[model(
@@ -172,12 +172,12 @@ error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisf
  29 | | )]
     | |__^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -189,18 +189,18 @@ note: required by a bound in `OuterRef`
     |                        ^^^^^ required by this bound in `OuterRef`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
     --> $DIR/proxy_default_filter_runtime_value.rs:31:12
      |
   31 | pub struct ActiveVehicle {
      |            ^^^^^^^^^^^^^ unsatisfied trait bound
      |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
     --> $DIR/proxy_default_filter_runtime_value.rs:31:1
      |
   31 | pub struct ActiveVehicle {
      | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
     --> $DIR/proxy_default_filter_runtime_value.rs:18:1
      |
   18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -215,18 +215,18 @@ note: required by a bound in `djogi::query::field::djogi_field_macro_support::__
      |            ^^^^^ required by this bound in `__make_djogi_field`
      = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:31:12
     |
  31 | pub struct ActiveVehicle {
     |            ^^^^^^^^^^^^^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -238,18 +238,18 @@ note: required by a bound in `djogi::query::field::__macro_support::__make_field
     |                                ^^^^^ required by this bound in `__make_field_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:31:12
     |
  31 | pub struct ActiveVehicle {
     |            ^^^^^^^^^^^^^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -276,7 +276,7 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, std::
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, std::string::String>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
    ::: djogi/src/query/field.rs:748:1
     |
@@ -284,10 +284,10 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, std::
     |   ---------------------------------- doesn't satisfy `_: Iterator`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
+            `ActiveVehicle: Model`
             `DjogiField<ActiveVehicle, std::string::String>: Iterator`
             which is required by `&mut DjogiField<ActiveVehicle, std::string::String>: Iterator`
-note: the trait `djogi::model::Model` must be implemented
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -306,11 +306,11 @@ error[E0599]: the method `neq` exists for struct `DjogiField<ActiveVehicle, std:
     | |__^
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -329,11 +329,11 @@ error[E0599]: the method `in_` exists for struct `DjogiField<ActiveVehicle, std:
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, std::string::String>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -352,11 +352,11 @@ error[E0599]: the method `not_in` exists for struct `DjogiField<ActiveVehicle, s
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, std::string::String>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -375,7 +375,7 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, bool>
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, bool>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
    ::: djogi/src/query/field.rs:748:1
     |
@@ -383,10 +383,10 @@ error[E0599]: the method `eq` exists for struct `DjogiField<ActiveVehicle, bool>
     |   ---------------------------------- doesn't satisfy `DjogiField<ActiveVehicle, bool>: Iterator`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
+            `ActiveVehicle: Model`
             `DjogiField<ActiveVehicle, bool>: Iterator`
             which is required by `&mut DjogiField<ActiveVehicle, bool>: Iterator`
-note: the trait `djogi::model::Model` must be implemented
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -405,11 +405,11 @@ error[E0599]: the method `neq` exists for struct `DjogiField<ActiveVehicle, bool
     | |__^
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -428,11 +428,11 @@ error[E0599]: the method `in_` exists for struct `DjogiField<ActiveVehicle, bool
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, bool>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
@@ -451,29 +451,29 @@ error[E0599]: the method `not_in` exists for struct `DjogiField<ActiveVehicle, b
     | |__^ method cannot be called on `DjogiField<ActiveVehicle, bool>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
    --> $DIR/proxy_default_filter_runtime_value.rs:31:12
     |
  31 | pub struct ActiveVehicle {
     |            ^^^^^^^^^^^^^ unsatisfied trait bound
     |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:31:1
     |
  31 | pub struct ActiveVehicle {
     | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
    --> $DIR/proxy_default_filter_runtime_value.rs:18:1
     |
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -485,18 +485,18 @@ note: required by a bound in `djogi::expr::subquery::__macro_support::__make_out
     |                                ^^^^^ required by this bound in `__make_outer_ref`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `ActiveVehicle: djogi::model::Model` is not satisfied
+error[E0277]: the trait bound `ActiveVehicle: Model` is not satisfied
   --> $DIR/proxy_default_filter_runtime_value.rs:31:12
    |
 31 | pub struct ActiveVehicle {
    |            ^^^^^^^^^^^^^ unsatisfied trait bound
    |
-help: the trait `djogi::model::Model` is not implemented for `ActiveVehicle`
+help: the trait `Model` is not implemented for `ActiveVehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:31:1
    |
 31 | pub struct ActiveVehicle {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
-help: the trait `djogi::model::Model` is implemented for `Vehicle`
+help: the trait `Model` is implemented for `Vehicle`
   --> $DIR/proxy_default_filter_runtime_value.rs:18:1
    |
 18 | #[model(table = "phase8_proxy_runtime_vehicles")]
@@ -515,11 +515,11 @@ error[E0599]: the variant, associated function, or constant `always_true` exists
     | |__^ variant, associated function, or constant cannot be called on `Q<ActiveVehicle>` due to unsatisfied trait bounds
  30 |   #[derive(Debug, Clone)]
  31 |   pub struct ActiveVehicle {
-    |   ------------------------ doesn't satisfy `ActiveVehicle: djogi::model::Model`
+    |   ------------------------ doesn't satisfy `ActiveVehicle: Model`
     |
     = note: the following trait bounds were not satisfied:
-            `ActiveVehicle: djogi::model::Model`
-note: the trait `djogi::model::Model` must be implemented
+            `ActiveVehicle: Model`
+note: the trait `Model` must be implemented
    --> djogi/src/model.rs:126:1
     |
 126 | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {

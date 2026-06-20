@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Automatic soft-delete default filter:** `objects()` on a
+  `#[model(soft_deletable)]` model now excludes `deleted_at IS NOT NULL`
+  rows by default — no manual `.not_deleted()` call required. The filter
+  composes with proxy `default_filter` scoping, tenant RLS, visages,
+  prefetch / `select_related` (a deleted child surfaces as `None` via a
+  LEFT JOIN miss), and `in_bulk`. A new searchable
+  `objects_including_deleted()` inherent method is the explicit bypass: it
+  drops **only** the soft-delete leaf, preserving any proxy default filter
+  and tenant RLS (distinct from the tenant `objects_insecurely()`), and
+  emits a `tracing::warn!` audit signal on every call. `.not_deleted()`
+  remains for explicit re-application on top of a bypass. The new
+  `ModelDescriptor::soft_delete_column` field carries the soft-delete
+  column name for the relation-composition paths and is invisible to the
+  migration differ (behavioral metadata, not schema) (#330).
+
 ### Changed
 
 - **CLI packaging:** the `cargo-djogi` crate is removed. `djogi-cli` now

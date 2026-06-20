@@ -201,6 +201,32 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         None
     }
 
+    /// The default filter to seed when the soft-delete default is
+    /// **deliberately bypassed** (the macro-emitted
+    /// `objects_including_deleted()` path). Returns every default-filter
+    /// contribution **except** the `deleted_at IS NULL` soft-delete leaf —
+    /// in practice, the proxy `default_filter` for a proxy-AND-soft-deletable
+    /// model, or `None` otherwise.
+    ///
+    /// # Why this exists (security)
+    /// `objects_including_deleted()` must include soft-deleted rows while
+    /// still honouring a proxy's scoping. If it seeded a vacuous condition,
+    /// a model that is both a proxy and soft-deletable would leak
+    /// proxy-scoped-out rows through the soft-delete bypass. This hook lets
+    /// the bypass drop **only** the soft-delete leaf. The macro overrides it
+    /// to return the proxy-only filter; non-proxy models keep this `None`
+    /// default (the bypass is then truly empty, which is correct — there is
+    /// no proxy scope to preserve).
+    ///
+    /// `#[doc(hidden)]`: not user-facing surface. It is consumed solely by
+    /// the generated `objects_including_deleted()` and is meaningful only on
+    /// soft-deletable models. Hand-written `Model` impls keep the `None`
+    /// default.
+    #[doc(hidden)]
+    fn __soft_delete_inclusive_condition() -> Option<crate::query::internal::Condition> {
+        None
+    }
+
     /// Default ordering applied to every freshly constructed
     /// [`crate::query::QuerySet<Self>`]. Proxy models override via
     /// `#[model(proxy_for = Parent, default_order = [(field, Asc), ...])]`

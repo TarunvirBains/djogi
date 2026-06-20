@@ -3017,6 +3017,34 @@ pub struct ModelDescriptor {
     /// (the database default).
     /// Djogi#219).
     pub tablespace: Option<&'static str>,
+
+    /// Soft-delete column name when `#[model(soft_deletable)]` is set,
+    /// else `None`. Carries `<Self as SoftDeletable>::COLUMN` (defaults to
+    /// `"deleted_at"`).
+    ///
+    /// # Behavioral field — deliberately distinct from `composed_via`
+    /// Unlike the per-field `composed_via` provenance tag (which must NOT
+    /// gate behavior), this is a purpose-built behavioral field: relation
+    /// composition (`prefetch`, `select_related`) reads it to apply the
+    /// child model's soft-delete default filter to hand-built JOIN SQL,
+    /// which cannot route through `Model::default_filter_condition` because
+    /// those paths operate on erased descriptors, not `SoftDeletable`
+    /// bounds. Because it carries the column *name*, a per-model column
+    /// override (`<Self as SoftDeletable>::COLUMN`) flows through correctly.
+    ///
+    /// # Migration-differ neutrality
+    /// This is metadata, not schema. The migration differ
+    /// (`crate::migrate::diff::diff_schemas`) never sees `ModelDescriptor`
+    /// directly — descriptors are first lowered to `AppliedSchema` /
+    /// `TableSchema` by the projection layer (`migrate::projection`), and the
+    /// differ compares those projected schemas. Neutrality therefore holds
+    /// iff the projection layer does not copy `soft_delete_column` into the
+    /// projected `TableSchema`. The underlying `deleted_at` column is an
+    /// ordinary nullable field already carried in `fields` and compared
+    /// there; this slot adds no schema signal. (A projection-equality test
+    /// pins this — see `migrate::projection`'s
+    /// `soft_delete_column_is_invisible_to_projection`.)
+    pub soft_delete_column: Option<&'static str>,
 }
 
 /// Descriptor for one `#[computed(sql = "...")]` field.
@@ -3265,6 +3293,10 @@ pub const fn model_descriptor(
         // `#[model(tablespace = "...")]` lowered to `ALTER TABLE ...
         // SET TABLESPACE`. Defaults to `None`.
         tablespace: None,
+        // Behavioral metadata for relation composition — defaults to
+        // `None` (not soft-deletable). The macro fills
+        // `Some(<Self as SoftDeletable>::COLUMN)` for soft-deletable models.
+        soft_delete_column: None,
     }
 }
 

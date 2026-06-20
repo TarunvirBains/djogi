@@ -209,6 +209,20 @@ pub(crate) fn push_joins<T: Model>(acc: &mut SqlAccumulator, paths: &[ErasedSele
         acc.push_sql(" = rel_");
         acc.push_sql(path.source_column);
         acc.push_sql(".id");
+        // Soft-delete composition: scope the join to live child rows when
+        // the child is soft-deletable. In ON (not WHERE) so a deleted child
+        // is a LEFT JOIN miss (decodes to None), not a dropped parent row.
+        // The column name comes from the runtime child descriptor (which
+        // carries `<Child as SoftDeletable>::COLUMN`), so a per-model column
+        // override flows through automatically.
+        if let Some(sd_col) = (path.child_descriptor)().soft_delete_column {
+            crate::ident::debug_assert_ident!(sd_col, "soft_delete_column");
+            acc.push_sql(" AND rel_");
+            acc.push_sql(path.source_column);
+            acc.push_sql(".");
+            acc.push_sql(sd_col);
+            acc.push_sql(" IS NULL");
+        }
     }
 }
 

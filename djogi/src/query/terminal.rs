@@ -593,12 +593,21 @@ where
     /// Fetch every row whose primary key is in `ids` and return them
     /// keyed by PK in a `HashMap`.
     /// One round trip. The generated SQL is
-    /// `SELECT * FROM <table> WHERE id IN ($1, $2, ...)` — one bound
+    /// `SELECT <cols> FROM <table> WHERE id IN ($1, $2, ...)` — one bound
     /// parameter per id. Postgres' bind-parameter cap is 65_535; larger
     /// id batches should be chunked by the caller.
+    /// # Composition with the queryset condition
+    /// The PK `IN (...)` predicate is **AND-composed** with the queryset's
+    /// accumulated condition — both the model's default filter (e.g. the
+    /// soft-delete `deleted_at IS NULL` filter on `#[model(soft_deletable)]`
+    /// models, seeded by `objects()`) and any caller `.filter(...)`. So a
+    /// soft-deleted row requested by PK does **not** come back from
+    /// `objects().in_bulk(...)`; reach for `objects_including_deleted()` to
+    /// include it. When the condition is vacuous the SQL is the bare
+    /// `WHERE id IN (...)` shape; otherwise it is
+    /// `WHERE (<condition>) AND id IN (...)`.
     /// # Why on `QuerySet`, not `Model`
-    /// The queryset receiver means callers can still stack filters and
-    /// orderings before the PK probe:
+    /// The queryset receiver lets callers stack filters before the PK probe:
     /// ```rust,ignore
     /// Account::objects()
     ///     .filter(|f| f.tenant_id.eq(tenant))
@@ -633,22 +642,37 @@ where
                 return Ok(HashMap::new());
             }
             auto_set_tenant::<T>(ctx).await?;
-            // Raw SELECT by PK list. We bypass `build_select` + the
-            // filter chain because generic `QuerySet<T>` has no handle
-            // on the `{Model}Fields::id` FieldRef — the field bag is a
-            // per-model ZST emitted by the macro and not reachable
-            // from this generic method. Any additional filters /
-            // orderings the caller stacked on `self` are dropped for
-            // this call; callers who need combined semantics should use
-            // `.filter(...).fetch_all(...)` and key the result themselves.
-            // TODO(phase4-task7d): layer user filters back in via a
-            // dedicated `build_where_only` helper so `in_bulk` honours
-            // upstream `.filter(...)` calls.
+            // SELECT by PK list, AND-composed with `self.condition`.
+            //
+            // The PK `IN (...)` predicate is still hand-built rather than
+            // routed through `build_select`: a generic `QuerySet<T>` has no
+            // handle on the `{Model}Fields::id` FieldRef (the field bag is a
+            // per-model ZST emitted by the macro), and `T::Pk` has no generic
+            // `FilterValue` conversion — the typed `FieldRef<M, V>` API is the
+            // only producer of `FilterValue::List`. So the IN list binds
+            // through `push_list_binds` (which only needs `T::Pk: ToSql`).
+            //
+            // But the queryset's accumulated `self.condition` (which now
+            // carries the soft-delete default filter seeded by `QuerySet::new`,
+            // plus any caller `.filter(...)`) IS composed: when non-vacuous it
+            // is emitted by the shared condition emitter and AND-ed with the PK
+            // IN clause, so `objects().in_bulk(...)` on a soft-deletable model
+            // does not leak deleted rows. Parameter numbering stays positional
+            // because the condition binds are pushed before the IN binds and
+            // the accumulator increments `$n` in push order.
             let mut acc = SqlAccumulator::new("SELECT ");
             acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
             acc.push_sql(" FROM ");
             acc.push_sql(T::table_name());
-            acc.push_sql(" WHERE id IN (");
+            acc.push_sql(" WHERE ");
+            let has_condition = crate::query::sql::has_consumer_where(&self);
+            if has_condition {
+                acc.push_sql("(");
+                crate::query::sql::push_consumer_predicate_only(&mut acc, &self)
+                    .map_err(DjogiError::from)?;
+                acc.push_sql(") AND ");
+            }
+            acc.push_sql("id IN (");
             acc.push_list_binds(ids.iter().cloned());
             acc.push_sql(")");
             let (sql, binds) = acc.into_parts();

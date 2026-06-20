@@ -124,9 +124,15 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = SoftDeleteRow::objects()
+    // Use `objects_including_deleted()` so the delta query sees soft-deleted rows:
+    // their updated_at is bumped on deletion and must reach `__delta_should_tombstone()`
+    // which routes them to tombstones for Punnu eviction. `objects()` would apply
+    // `deleted_at IS NULL` — a non-portable `Q::Condition` that fails the portable
+    // refresh gate, and would also silently drop soft-deleted rows at the SQL boundary,
+    // breaking the tombstone contract entirely.
+    let handle = SoftDeleteRow::objects_including_deleted()
         .refresh_into(&punnu, pool, auth)
-        .expect("unfiltered queryset must satisfy portable refresh gate");
+        .expect("soft-delete-bypassed queryset must satisfy portable refresh gate");
 
     // First tick: full scan, no watermark. The live row is returned as a live
     // item (deleted_at is None → __delta_should_tombstone() returns false).
@@ -239,9 +245,14 @@ async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiCon
     let auth =
         djogi::auth::AuthContext::new(djogi::HeerId::from_i64(1).expect("HeerId(1) is valid"));
 
-    let handle = SoftDeleteRow::objects()
+    // Use `objects_including_deleted()` so the delta query sees soft-deleted rows.
+    // `objects()` would apply `deleted_at IS NULL` (non-portable `Q::Condition`),
+    // both failing the portable refresh gate and silently dropping the pre-deleted
+    // row before it can reach `__delta_should_tombstone()` — which is exactly the
+    // SQL-filter regression this test exists to prevent.
+    let handle = SoftDeleteRow::objects_including_deleted()
         .refresh_into(&punnu, pool, auth)
-        .expect("unfiltered queryset must satisfy portable refresh gate");
+        .expect("soft-delete-bypassed queryset must satisfy portable refresh gate");
 
     // Full-scan tick (since=None): fetches BOTH the live and pre-deleted rows.
     // The live row → live_items (applied = 1).

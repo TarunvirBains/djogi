@@ -156,6 +156,31 @@ impl Condition {
     pub fn __from_raw_sql_fragment(sql: &'static str) -> Condition {
         Condition::RawSql(RawSqlFragment(sql))
     }
+
+    /// Macro-only constructor for a `<column> IS NULL` leaf condition.
+    /// Routes through a `#[doc(hidden)]` public surface so
+    /// `djogi-macros`'s emitted code (which expands in adopter crates)
+    /// can build the soft-delete default-filter leaf without naming the
+    /// sealed [`Leaf`] type's `pub(crate)` `new` constructor — which is
+    /// invisible across the crate boundary and would fail `E0624`.
+    /// Not part of the user-facing API; the `__`-prefix + `#[doc(hidden)]`
+    /// pair signals downstream code must not call this directly. Adopters
+    /// who want an explicit `IS NULL` filter use the typed
+    /// `FieldRef::is_null` surface instead.
+    ///
+    /// The column is a `&'static str` — for soft-delete emission it is
+    /// `<Self as SoftDeletable>::COLUMN` (defaults to `"deleted_at"`),
+    /// so a future per-model column override flows through unchanged.
+    /// The `(op, value)` pairing is fixed to `(IsNull, Null)`, the only
+    /// well-formed shape for an `IS NULL` predicate, so this constructor
+    /// cannot produce the ill-formed leaves that widening `Leaf::new` to
+    /// `pub` would permit — the injection-safety seal on [`Leaf`] stays
+    /// intact.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __is_null_leaf(column: &'static str) -> Condition {
+        Condition::Leaf(Leaf::new(column, LookupOp::IsNull, FilterValue::Null))
+    }
 }
 
 // Written out explicitly instead of `#[derive(Default)]` + `#[default]` on the
