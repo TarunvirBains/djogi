@@ -155,17 +155,12 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — Counter-test: the default `objects()` chain (no
-// `.not_deleted()`) STILL returns trashed rows.
+// Test 3 — the default `objects()` chain excludes soft-deleted rows.
 //
-// **This test pins the spec-locked deferral at line 971
-// (RESOLVED 2026-05-03, lens, locked).** When  lands
-// automatic default-filter composition under the new `Q<T>`
-// substrate, this assertion will start failing — at which point the
-// implementer must flip the count from 2 to 1 and add a comment that
-// 8γ  made auto-composition active. Failing loudly is the whole
-// point: the tripwire ensures default-query semantics never change
-// silently.
+// `#[model(soft_deletable)]` makes `objects()` apply a `deleted_at IS NULL`
+// default filter automatically. An adopter who calls `objects()` with no
+// further qualification sees only live rows; deleted rows require the
+// explicit `objects_including_deleted()` bypass (see Test 4).
 // ---------------------------------------------------------------------------
 
 #[model(table = "soft_default", soft_deletable)]
@@ -176,7 +171,7 @@ pub struct SoftDefault {
 }
 
 #[djogi::djogi_test(sync_models = [SoftDefault])]
-async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi::DjogiContext) {
+async fn softdeletable_objects_excludes_deleted_by_default(mut ctx: djogi::DjogiContext) {
     let _live = SoftDefault::create(
         &mut ctx,
         SoftDefault {
@@ -199,12 +194,6 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
     .await
     .expect("create trashed row should succeed");
 
-    // No `.not_deleted()` on the chain — the default `objects()`
-    // call must still return both rows today. When automatic
-    // default-filter composition lands, this expectation
-    // changes to 1 row (the live one). The failure on this
-    // assertion is the tripwire: it forces an explicit acknowledgment
-    // that default-query semantics are about to change .
     let rows = SoftDefault::objects()
         .fetch_all(&mut ctx)
         .await
@@ -212,12 +201,16 @@ async fn softdeletable_default_query_includes_deleted_pre_8gamma(mut ctx: djogi:
 
     assert_eq!(
         rows.len(),
-        2,
-        "Only the manual `.not_deleted()` helper is shipped — \
-         automatic default-filter composition is deferred to  \
-         (spec line 971, RESOLVED 2026-05-03, lens, locked). \
-         When 8γ  lands, this assertion must flip to 1 row, and a \
-         comment recording the change should be added below.",
+        1,
+        "objects() on a soft-deletable model must exclude rows whose deleted_at is non-NULL",
+    );
+    assert_eq!(
+        rows[0].note, "live",
+        "the live row is the one that survives the default soft-delete filter",
+    );
+    assert!(
+        djogi::SoftDeletable::deleted_at(&rows[0]).is_none(),
+        "the surviving row's deleted_at column must be NULL",
     );
 }
 
