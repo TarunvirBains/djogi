@@ -850,3 +850,34 @@ async fn in_bulk_honours_value_bearing_condition_and_default_filter(mut ctx: djo
         "the surviving row must be the one with note = 'live' that is not deleted",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Portability-gate rejection — no DB required
+//
+// The automatic `deleted_at IS NULL` condition is seeded into
+// `QuerySet::new()` as `Q::Condition(c)`, which is intentionally
+// non-portable. `try_portable()` calls `try_reduce_q_ref_to_basic` on the
+// condition tree; that function rejects `Q::Condition` with
+// `PortablePredicateError`. As a consequence, `SoftDeletableModel::objects()`
+// can never reach the `refresh_into` delta-refresh path — which is correct:
+// the delta-refresh SQL fetcher builds its own SQL from scratch and must NOT
+// inherit the IS NULL predicate. Deleted rows must flow through the watermark
+// for tombstone collection; filtering them out at the queryset level would
+// cause them to be silently ignored rather than collected as tombstones.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn soft_delete_default_filter_is_non_portable_blocking_refresh_into() {
+    let qs = SoftDefault::objects();
+    // The automatic IS NULL default filter is seeded as Q::Condition, which is
+    // intentionally non-portable. Any attempt to call refresh_into on
+    // objects() therefore returns Err at the portability gate — the
+    // delta-refresh SQL fetcher must not inherit the IS NULL predicate
+    // (deleted rows flow through the watermark for tombstone collection,
+    // not via IS NULL filtering).
+    assert!(
+        qs.try_portable().is_err(),
+        "SoftDefault::objects() must be non-portable because the soft-delete \
+         IS NULL condition is Q::Condition, which blocks refresh_into",
+    );
+}
