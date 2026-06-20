@@ -1347,6 +1347,26 @@ async fn apply_plan_pinned(
     result
 }
 
+/// Convert a non-transactional step count from `usize` to the `i32` the
+/// ledger's `total_steps` / `applied_steps_count` columns store. A
+/// migration with more than `i32::MAX` (~2.1 billion) non-transactional
+/// statements is unreachable in practice, but silently saturating the
+/// count would write a wrong `total_steps`, and a later resume that
+/// recounts the real plan would see a false plan-shape mismatch. Failing
+/// loudly here is the production-stability stance for an operational metric.
+///
+/// # Panics
+/// Panics if `count` exceeds `i32::MAX`.
+fn step_count_to_i32(count: usize, context: &str) -> i32 {
+    i32::try_from(count).unwrap_or_else(|_| {
+        panic!(
+            "run_migration: {context} ({count}) overflows i32 — a single \
+             migration cannot have more than {} non-transactional steps",
+            i32::MAX
+        )
+    })
+}
+
 /// Core apply logic. Called from `apply_plan_pinned` after the advisory
 /// lock is held. Returning early from any error path is fine; the outer
 /// function's `release_advisory_lock` runs after.
@@ -1502,14 +1522,15 @@ async fn apply_plan_inner(
     // which is its own resumable unit). Transactional segments
     // collapse to a single atomic step from the resumability
     // perspective.
-    let mut total_non_tx_steps: i32 = 0;
+    let mut total_non_tx_steps_usize: usize = 0;
     let mut has_non_tx = false;
     for seg in &plan.segments {
         if seg.kind == SegmentKind::NonTransactional {
             has_non_tx = true;
-            total_non_tx_steps = total_non_tx_steps.saturating_add(seg.statements.len() as i32);
+            total_non_tx_steps_usize += seg.statements.len();
         }
     }
+    let total_non_tx_steps: i32 = step_count_to_i32(total_non_tx_steps_usize, "total_non_tx_steps");
     let execution_mode = if has_non_tx {
         ExecutionMode::NonTransactional
     } else {
@@ -9041,5 +9062,23 @@ mod tests {
             matches!(reapply_result, Err(RunnerError::DriftDetected { .. })),
             "re-apply over committed partial non-tx progress must refuse as drift, got: {reapply_result:?}"
         );
+    }
+
+    // ── Step count to i32 (#491) ────────────────────────────────────
+
+    #[test]
+    fn step_count_to_i32_returns_value_in_range() {
+        assert_eq!(step_count_to_i32(0, "total_non_tx_steps"), 0);
+        assert_eq!(step_count_to_i32(42, "total_non_tx_steps"), 42);
+        assert_eq!(
+            step_count_to_i32(i32::MAX as usize, "total_non_tx_steps"),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows i32")]
+    fn step_count_to_i32_panics_on_overflow() {
+        let _ = step_count_to_i32(i32::MAX as usize + 1, "total_non_tx_steps");
     }
 }
