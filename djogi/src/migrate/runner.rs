@@ -3978,6 +3978,9 @@ async fn pk_flip_preflight(
                  WHERE pid <> pg_backend_pid() \
                    AND xact_start IS NOT NULL \
                    AND now() - xact_start > make_interval(secs => $1::int)",
+                // `threshold` (pk_flip_long_tx_threshold_secs) is validated
+                // <= i32::MAX at config load (DjogiConfig::validate),
+                // so this narrowing cast cannot truncate.
                 &[&(threshold as i32)],
             )
             .await

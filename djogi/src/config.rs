@@ -257,6 +257,7 @@ impl DjogiConfig {
             config.database.event_log_url = Some(url);
         }
 
+        config.validate()?;
         Ok(config)
     }
 
@@ -293,7 +294,36 @@ impl DjogiConfig {
             config.database.event_log_url = Some(url);
         }
 
+        config.validate()?;
         Ok(config)
+    }
+
+    /// Validate loaded configuration values that have a representable
+    /// range narrower than their declared type. Called automatically at
+    /// the end of [`load`](Self::load) and
+    /// [`load_from_workspace`](Self::load_from_workspace), so a
+    /// misconfiguration is a startup error rather than a runtime
+    /// truncation deep in the migration engine.
+    ///
+    /// Currently checks:
+    /// - `migrate.pk_flip_long_tx_threshold_secs`: bound to `i32::MAX`
+    ///   because it is bound to a Postgres `int` parameter in the PK-flip
+    ///   long-transaction pre-flight (`make_interval(secs => $1::int)`).
+    ///   `i32::MAX` seconds is ~68 years, so any larger value is operator
+    ///   error, not a legitimate timeout.
+    #[allow(clippy::result_large_err)] // matches figment::Error used by load
+    pub fn validate(&self) -> Result<(), figment::Error> {
+        if self.migrate.pk_flip_long_tx_threshold_secs > i32::MAX as u32 {
+            return Err(figment::Error::from(format!(
+                "migrate.pk_flip_long_tx_threshold_secs ({}) exceeds the \
+                 maximum supported value {} (Postgres int); use a value in \
+                 0..={} seconds",
+                self.migrate.pk_flip_long_tx_threshold_secs,
+                i32::MAX,
+                i32::MAX
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -477,5 +507,94 @@ mod tests {
     fn policy_config_default_is_lenient() {
         let cfg = DjogiConfig::default();
         assert!(!cfg.policy.strict_out_of_order);
+    }
+
+    // ── Config validation (#491) ────────────────────────────────────
+
+    #[test]
+    fn validate_accepts_in_range_pk_flip_threshold() {
+        let cfg = DjogiConfig {
+            migrate: MigrateConfig {
+                pk_flip_long_tx_threshold_secs: i32::MAX as u32,
+                ..MigrateConfig::default()
+            },
+            ..DjogiConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_pk_flip_threshold_above_i32_max() {
+        let cfg = DjogiConfig {
+            migrate: MigrateConfig {
+                pk_flip_long_tx_threshold_secs: i32::MAX as u32 + 1,
+                ..MigrateConfig::default()
+            },
+            ..DjogiConfig::default()
+        };
+        let err = cfg.validate().expect_err("must reject out-of-range threshold");
+        assert!(
+            err.to_string().contains("pk_flip_long_tx_threshold_secs"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn load_rejects_out_of_range_pk_flip_threshold() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/test"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+
+                [migrate]
+                pk_flip_long_tx_threshold_secs = 4000000000
+                "#,
+            )?;
+            let result = DjogiConfig::load();
+            assert!(
+                result.is_err(),
+                "load must reject pk_flip_long_tx_threshold_secs > i32::MAX"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn load_from_workspace_rejects_out_of_range_threshold() {
+        figment::Jail::expect_with(|jail| {
+            jail.clear_env();
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/test"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+
+                [migrate]
+                pk_flip_long_tx_threshold_secs = 4000000000
+                "#,
+            )?;
+            let workspace = std::env::current_dir().unwrap();
+            let result = DjogiConfig::load_from_workspace(&workspace);
+            assert!(
+                result.is_err(),
+                "load_from_workspace must reject pk_flip_long_tx_threshold_secs > i32::MAX"
+            );
+            Ok(())
+        });
     }
 }
