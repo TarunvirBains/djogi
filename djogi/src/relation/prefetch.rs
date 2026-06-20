@@ -379,7 +379,8 @@ where
         // the wire shape stable across migrations that might list user
         // columns before framework columns (the `accounts` case).
         let target_table = <Target as Model>::table_name();
-        let target_fields = <Target as Model>::descriptor().fields;
+        let target_descriptor = <Target as Model>::descriptor();
+        let target_fields = target_descriptor.fields;
         let mut acc = SqlAccumulator::new("SELECT ");
         for (i, field) in target_fields.iter().enumerate() {
             // The Model trait is sealed, so `target_fields` comes from a
@@ -401,6 +402,19 @@ where
         acc.push_sql(target_table);
         acc.push_sql(" t ON t.id = p.");
         acc.push_sql(source_column);
+        // Soft-delete composition: if the target is soft-deletable, scope
+        // the JOIN to live rows. Placing the predicate in ON (not WHERE)
+        // preserves LEFT JOIN semantics — a deleted child surfaces as a
+        // miss (None), identical to a NULL FK or orphan target, rather than
+        // dropping the parent row entirely. The column name is read from the
+        // descriptor (which carries `<Target as SoftDeletable>::COLUMN`), so
+        // a per-model column override flows through this runtime read.
+        if let Some(sd_col) = target_descriptor.soft_delete_column {
+            crate::ident::debug_assert_ident!(sd_col, "soft_delete_column");
+            acc.push_sql(" AND t.");
+            acc.push_sql(sd_col);
+            acc.push_sql(" IS NULL");
+        }
         acc.push_sql(" WHERE p.id IN (");
         acc.push_list_binds(unique_pks.iter().cloned());
         acc.push_sql(")");
