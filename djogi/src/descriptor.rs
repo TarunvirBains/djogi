@@ -768,14 +768,16 @@ pub enum IndexNameTarget<'a> {
 ///   [`IndexNameTarget::Columns`]) or the literal `expr` (for
 ///   [`IndexNameTarget::Expression`]).
 /// - `<suffix>` is `idx` / `key` / `uidx` per [`IndexNameKind`].
-///   Truncation rule (plan §D5): when the naïve name would exceed the
-///   Postgres 63-byte identifier limit, the stem is truncated to 55 bytes
-///   and an 8-character hex digest of the full pre-truncation name is
-///   appended so near-duplicate inputs cannot collide.
-///   The hash uses `std::hash::DefaultHasher` (SipHash-1-3) — determinism
-///   within a single process is sufficient because the name is computed
-///   once, emitted into a `static` literal, and never re-hashed at
-///   runtime.
+///   Truncation rule: when the naïve name would exceed the
+///   Postgres 63-byte identifier limit, the stem is truncated to 46
+///   bytes and a 16-character hex digest of the full pre-truncation
+///   name is appended (46 + 1 + 16 = 63), so near-duplicate inputs
+///   cannot collide.
+///   The digest is the full 64-bit `std::hash::DefaultHasher`
+///   (SipHash-1-3) value — not a cryptographic or cross-version-stable
+///   hash. Determinism within a single process is sufficient because
+///   the name is computed once, emitted into a `static` literal, and
+///   never re-hashed at runtime.
 /// # Examples
 /// ```ignore
 /// use djogi::descriptor::{IndexNameKind, IndexNameTarget, index_name};
@@ -814,7 +816,7 @@ pub fn index_name(table: &str, kind: IndexNameKind, target: IndexNameTarget<'_>)
     if full.len() <= 63 {
         return full;
     }
-    // Truncate to 55 bytes and append an 8-char hex digest of the full
+    // Truncate to 46 bytes and append a 16-char hex digest of the full
     // pre-truncation name. The byte-slice take is safe because `full` is
     // ASCII (table + body + suffix are all ASCII-ident-shape by Q5).
     let digest = {
@@ -823,9 +825,9 @@ pub fn index_name(table: &str, kind: IndexNameKind, target: IndexNameTarget<'_>)
             .build_hasher();
         h.write(full.as_bytes());
         let raw = h.finish();
-        format!("{:08x}", (raw as u32))
+        format!("{:016x}", raw)
     };
-    let stem: String = full.as_bytes()[..55].iter().map(|b| *b as char).collect();
+    let stem: String = full.as_bytes()[..46].iter().map(|b| *b as char).collect();
     format!("{stem}_{digest}")
 }
 
@@ -1446,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn index_name_long_input_truncates_to_55_plus_8hex_suffix() {
+    fn index_name_long_input_truncates_to_46_plus_16hex_suffix() {
         use super::{IndexNameKind, IndexNameTarget, index_name};
         // Deliberately over-long table + column combination so the
         // naive name exceeds 63 bytes.
@@ -1459,30 +1461,31 @@ mod tests {
         );
         assert_eq!(
             name.len(),
-            55 + 1 + 8,
-            "truncated name layout: 55-byte stem + `_` + 8-char hex digest; got '{name}'"
+            46 + 1 + 16,
+            "truncated name layout: 46-byte stem + `_` + 16-char hex digest \
+             (= 63, the Postgres usable identifier limit); got '{name}'"
         );
         // Stem must be an ASCII prefix of the naive full name.
         let naive = format!("{}_{}_{}_{}", table, cols[0], cols[1], "idx");
         assert!(
-            naive.as_bytes().starts_with(name.as_bytes()[..55].as_ref()),
+            naive.as_bytes().starts_with(name.as_bytes()[..46].as_ref()),
             "truncated stem must be a prefix of the pre-truncation full name"
         );
-        // The suffix must be 8 hex digits.
-        let tail = &name[name.len() - 8..];
+        // The suffix must be 16 hex digits.
+        let tail = &name[name.len() - 16..];
         assert!(
             tail.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-            "hash suffix must be 8 lowercase hex chars; got '{tail}'"
+            "hash suffix must be 16 lowercase hex chars; got '{tail}'"
         );
     }
 
     #[test]
     fn index_name_near_duplicate_long_inputs_do_not_collide() {
         use super::{IndexNameKind, IndexNameTarget, index_name};
-        // Two inputs that differ only past the 55th byte of the
+        // Two inputs that differ only past the 46th byte of the
         // pre-truncation name — without the hash suffix, both would
-        // collide on the same 55-byte prefix.
+        // collide on the same 46-byte prefix.
         let table = "very_long_table_with_many_underscore_separated_words";
         let a = index_name(
             table,
@@ -1495,8 +1498,8 @@ mod tests {
             IndexNameTarget::Columns(&["payload_one_extra_suffix_b"]),
         );
         assert_ne!(a, b, "hash suffix must break near-duplicate collisions");
-        assert_eq!(a.len(), 55 + 1 + 8);
-        assert_eq!(b.len(), 55 + 1 + 8);
+        assert_eq!(a.len(), 46 + 1 + 16);
+        assert_eq!(b.len(), 46 + 1 + 16);
     }
 
     #[test]
