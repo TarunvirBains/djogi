@@ -2291,20 +2291,21 @@ fn render_period_column_list(columns: &[String], period_column: &str) -> String 
 }
 
 /// Truncate a constraint identifier to the Postgres 63-byte limit.
-/// Layout for long names: 54-byte stem + `_` + 8-char hex digest =
+/// Layout for long names: 46-byte stem + `_` + 16-char hex digest =
 /// exactly 63 bytes. Constraint names that already fit are returned
 /// verbatim.
-/// **Why 54 + 1 + 8 = 63 (and not 55 + 1 + 8 = 64).** Postgres's
-/// usable identifier limit is 63 bytes
-/// (`NAMEDATALEN - 1` on a default build); names longer than that
-/// are silently truncated by the server, which would let two
-/// distinct constraint names collide post-truncation. We size the
-/// stem so the total stays at exactly the limit.
-/// The hash uses `std::hash::DefaultHasher` (SipHash-1-3) — same
-/// primitive as [`crate::descriptor::index_name`]. Determinism
-/// within a single process is sufficient because the constraint
-/// name is computed once per emission and is part of the migration
-/// file the operator commits.
+/// **Why size the stem to exactly 46 bytes.** Postgres's usable
+/// identifier limit is 63 bytes (`NAMEDATALEN - 1` on a default
+/// build); names longer than that are silently truncated by the
+/// server, which would let two distinct constraint names collide
+/// post-truncation. We size the stem (46) so the total 46 + 1 + 16
+/// lands at exactly the limit.
+/// The digest is the full 64-bit `std::hash::DefaultHasher`
+/// (SipHash-1-3) value — same primitive as
+/// [`crate::descriptor::index_name`], and likewise not a cryptographic
+/// or cross-version-stable hash. Determinism within a single process is
+/// sufficient because the constraint name is computed once per emission
+/// and is part of the migration file the operator commits.
 fn truncate_constraint(name: String) -> String {
     if name.len() <= 63 {
         return name;
@@ -2314,8 +2315,8 @@ fn truncate_constraint(name: String) -> String {
         BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
     h.write(name.as_bytes());
     let raw = h.finish();
-    let digest = format!("{:08x}", raw as u32);
-    let stem: String = name.as_bytes()[..54].iter().map(|b| *b as char).collect();
+    let digest = format!("{:016x}", raw);
+    let stem: String = name.as_bytes()[..46].iter().map(|b| *b as char).collect();
     format!("{stem}_{digest}")
 }
 
@@ -2403,8 +2404,8 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema, table: &str) {
         // unnamed FKs as `{table}_{column}_fkey`, which agrees with
         // the Djogi convention for short names but silently TAIL-
         // TRUNCATES at 63 bytes for long names — whereas Djogi's
-        // convention preserves a 54-byte stem and appends an 8-char
-        // hash. Two non-matching names mean the runtime
+        // convention preserves a 46-byte stem and appends a 16-char
+        // hash digest. Two non-matching names mean the runtime
         // [`DjogiContext::defer_constraints`] validator would happily
         // approve a `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` that
         // Postgres rejects with `42704` (constraint does not exist).
@@ -3036,7 +3037,7 @@ mod tests {
         // When the conventional name `<table>_<column>_fkey` exceeds Postgres'
         // 63-byte identifier limit, Postgres' auto-naming TAIL-TRUNCATES
         // (lopping bytes off the right) while Djogi's [`fk_constraint_name`]
-        // preserves a 54-byte stem and appends an 8-char hex digest.
+        // preserves a 46-byte stem and appends a 16-char hex digest.
         // The two names differ, so an unnamed inline FK would name the constraint
         // differently from what the runtime `defer_constraints` validator expects,
         // and a `SET CONSTRAINTS "<djogi_hashed_name>" DEFERRED` would raise
@@ -3046,7 +3047,7 @@ mod tests {
         // column = "author_user_account_id_reference" (31 bytes)
         // "{table}_{column}_fkey" = 44 + 1 + 31 + 5 = 81 bytes (>63)
         // Therefore the convention falls into the truncate branch and
-        // emits `<54-byte stem>_<8 hex>` for a total of 63 bytes.
+        // emits `<46-byte stem>_<16 hex>` for a total of 63 bytes.
         let table = "djogi_some_very_long_table_for_fk_regression";
         let column = "author_user_account_id_reference";
         let conventional = format!("{table}_{column}_fkey");
@@ -5016,9 +5017,23 @@ mod tests {
     fn truncate_constraint_handles_long_names_with_digest() {
         let long = format!("{}_a_b_c_d_e_f_g_h_i_j_check", "a".repeat(60));
         let truncated = truncate_constraint(long.clone());
-        assert!(truncated.len() <= 63);
+        assert_eq!(
+            truncated.len(),
+            63,
+            "truncated constraint name must be exactly 63 bytes; got {}",
+            truncated.len()
+        );
         // Same input -> same output (determinism).
         assert_eq!(truncate_constraint(long), truncated);
+        // Stem-position assertion: the last `_` must sit at byte 46,
+        // separating the 46-byte stem from the 16-char hex digest.
+        assert_eq!(
+            truncated.rfind('_').unwrap(),
+            46,
+            "last underscore must be at byte 46 (46-byte stem + `_` + 16-char digest); \
+             got position {} in '{truncated}'",
+            truncated.rfind('_').unwrap(),
+        );
     }
 
     #[test]

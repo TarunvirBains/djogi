@@ -963,15 +963,15 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
 /// both places. Unit tests on both sides assert byte-for-byte parity
 /// against a small cross-crate matrix so drift between the two
 /// implementations is caught immediately.
-/// Logic kept deliberately identical to §6.4 + D5 in the v3 plan:
+/// Logic kept deliberately identical to the runtime `index_name` contract:
 /// - `NonUnique` / `UniqueConstraint` / `UniqueIndex` stems → `_idx` /
 ///   `_key` / `_uidx`.
 /// - Expression targets render with the literal `expr` body; column
 ///   lists render as underscore-joined column names in declaration
 ///   order.
-/// - When the naïve name exceeds 63 bytes, truncate the stem to 55
-///   bytes and append `_<8-char hex digest>` of the pre-truncation
-///   name (SipHash-1-3 low 32 bits).
+/// - When the naïve name exceeds 63 bytes, truncate the stem to 46
+///   bytes and append `_<16-char hex digest>` of the pre-truncation
+///   name (full 64-bit SipHash-1-3 value).
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     let table = ctx.table_name;
     let body = &decl.body;
@@ -999,14 +999,14 @@ fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     if full.len() <= 63 {
         return full;
     }
-    // Truncation: 55-byte stem + `_` + 8-char hex digest (see §D5).
+    // Truncation: 46-byte stem + `_` + 16-char hex digest.
     use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
     let mut h =
         BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
     h.write(full.as_bytes());
-    let digest = format!("{:08x}", (h.finish() as u32));
-    let stem_55: String = full.as_bytes()[..55].iter().map(|b| *b as char).collect();
-    format!("{stem_55}_{digest}")
+    let digest = format!("{:016x}", h.finish());
+    let stem_46: String = full.as_bytes()[..46].iter().map(|b| *b as char).collect();
+    format!("{stem_46}_{digest}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1295,6 +1295,57 @@ mod tests {
         assert_eq!(
             generate_index_name(&last_first, &ctx_people),
             "people_last_first_idx"
+        );
+
+        // Long-name (truncation) parity: when the naive name exceeds 63
+        // bytes, site 5 (`generate_index_name`) must emit the same layout
+        // as the runtime mirror `descriptor::index_name` — a 46-byte stem,
+        // `_`, and a 16-char SipHash-1-3 hex digest, totalling exactly 63
+        // bytes (the Postgres usable identifier limit). The runtime helper
+        // cannot be called here (the djogi/djogi-macros compile cycle), so
+        // this pins the layout site 5 owes the contract; short-name value
+        // parity is covered by the assertions above.
+        let long_ctx = LoweringCtx {
+            table_name: "very_long_table_with_many_underscore_separated_words",
+            declared_columns: &[
+                "first_column_name".to_string(),
+                "second_column_name".to_string(),
+            ],
+            reserved_generated_names: &[],
+        };
+        let long = mk_decl(
+            false,
+            IndexDeclTarget::Fields(vec![
+                FieldColSpec::Simple("first_column_name".into()),
+                FieldColSpec::Simple("second_column_name".into()),
+            ]),
+            None,
+            vec![],
+            false,
+        );
+        let long_name = generate_index_name(&long, &long_ctx);
+        assert_eq!(
+            long_name.len(),
+            46 + 1 + 16,
+            "truncated index name must be exactly 63 bytes \
+             (46-byte stem + `_` + 16-char hex digest); got '{long_name}'"
+        );
+        let naive = format!(
+            "{}_{}_{}_{}",
+            long_ctx.table_name, "first_column_name", "second_column_name", "idx"
+        );
+        assert!(
+            naive
+                .as_bytes()
+                .starts_with(long_name.as_bytes()[..46].as_ref()),
+            "truncated stem must be a 46-byte prefix of the pre-truncation \
+             full name; got '{long_name}'"
+        );
+        let tail = &long_name[long_name.len() - 16..];
+        assert!(
+            tail.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "hash suffix must be 16 lowercase hex chars; got '{tail}'"
         );
     }
 

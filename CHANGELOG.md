@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Upgrading from `cargo-djogi`:** if you have the old standalone `cargo-djogi`
   crate installed, run `cargo uninstall cargo-djogi` before installing `djogi-cli`,
   or use `cargo install --force djogi-cli` to allow the binary replacement (#417).
+- **Name shortening:** constraint and index name shortening now embeds the full
+  64-bit SipHash-1-3 digest as 16 hex chars (previously the low 32 bits as
+  8 hex chars), and the truncation stem is uniformly 46 bytes. This also fixes
+  a latent off-by-one where `index_name` and the macro mirror produced 64-byte
+  names, one over the Postgres 63-byte limit. Generated names for over-long
+  identifiers change; any existing `schema_snapshot.json` containing shortened
+  names will report a one-time index/constraint rename on next
+  `djogi migrations compose` (#493).
 
 ### Fixed
 

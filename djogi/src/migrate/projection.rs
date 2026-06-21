@@ -1111,8 +1111,8 @@ fn outbox_pending_index_name(table: &str) -> String {
     let mut h =
         BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
     h.write(full.as_bytes());
-    let digest = format!("{:08x}", h.finish() as u32);
-    let stem: String = full.as_bytes()[..54].iter().map(|b| *b as char).collect();
+    let digest = format!("{:016x}", h.finish());
+    let stem: String = full.as_bytes()[..46].iter().map(|b| *b as char).collect();
     format!("{stem}_{digest}")
 }
 
@@ -2367,8 +2367,8 @@ fn fts_index_name(table: &str, column: &str) -> String {
     let mut h =
         BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
     h.write(full.as_bytes());
-    let digest = format!("{:08x}", h.finish() as u32);
-    let stem: String = full.as_bytes()[..54].iter().map(|b| *b as char).collect();
+    let digest = format!("{:016x}", h.finish());
+    let stem: String = full.as_bytes()[..46].iter().map(|b| *b as char).collect();
     format!("{stem}_{digest}")
 }
 
@@ -6875,5 +6875,55 @@ mod tests {
         // every field-level synthetic). Asserted here as the current state so
         // the future metadata fix flips this assertion and surfaces the coupling.
         assert_eq!(idx.extension_dependency, None);
+    }
+
+    #[test]
+    fn outbox_pending_index_name_long_table_truncates_to_46_stem() {
+        // Drive the truncation branch: the naive name must exceed 63 bytes.
+        // naive = "{table}_outbox_pending_idx"
+        // len("a".repeat(50)) + "_outbox_pending_idx".len() = 50 + 19 = 69 > 63 → truncated.
+        let table = "a".repeat(50);
+        let name = outbox_pending_index_name(&table);
+        // Exact length: 46-byte stem + `_` + 16-char digest = 63.
+        assert_eq!(
+            name.len(),
+            63,
+            "truncated outbox index name must be exactly 63 bytes; got '{name}'"
+        );
+        // Stem-position assertion: last `_` at byte 46.
+        // Before the fix: stem=54, so rfind('_') returns 54 (≠ 46) → RED.
+        // After the fix:  stem=46, so rfind('_') returns 46 → GREEN.
+        assert_eq!(
+            name.rfind('_').unwrap(),
+            46,
+            "last underscore must be at byte 46 (46-byte stem + `_` + 16-char digest); \
+             got position {} in '{name}'",
+            name.rfind('_').unwrap(),
+        );
+    }
+
+    #[test]
+    fn fts_index_name_long_table_column_truncates_to_46_stem() {
+        // Drive the truncation branch: naive name = "{table}_{column}_gin" > 63 bytes.
+        // len("a".repeat(40)) + "_" + len("b".repeat(23)) + "_gin".len() = 40 + 1 + 23 + 4 = 68 > 63.
+        let table = "a".repeat(40);
+        let column = "b".repeat(23);
+        let name = fts_index_name(&table, &column);
+        // Exact length: 46-byte stem + `_` + 16-char digest = 63.
+        assert_eq!(
+            name.len(),
+            63,
+            "truncated fts index name must be exactly 63 bytes; got '{name}'"
+        );
+        // Stem-position assertion: last `_` at byte 46.
+        // Before the fix: stem=54, rfind('_') returns 54 (≠ 46) → RED.
+        // After the fix:  stem=46, rfind('_') returns 46 → GREEN.
+        assert_eq!(
+            name.rfind('_').unwrap(),
+            46,
+            "last underscore must be at byte 46 (46-byte stem + `_` + 16-char digest); \
+             got position {} in '{name}'",
+            name.rfind('_').unwrap(),
+        );
     }
 }
