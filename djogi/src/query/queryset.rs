@@ -1110,8 +1110,8 @@ impl<T: Model> QuerySet<T> {
     /// rather than silently truncate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn limit(mut self, n: u64) -> Self {
-        let n = i64::try_from(n)
-            .unwrap_or_else(|_| panic!("QuerySet::limit(n = {n}) overflows i64"));
+        let n =
+            i64::try_from(n).unwrap_or_else(|_| panic!("QuerySet::limit(n = {n}) overflows i64"));
         self.limit = Some(n);
         self
     }
@@ -1122,8 +1122,8 @@ impl<T: Model> QuerySet<T> {
     /// Panics if `n > i64::MAX` — see [`Self::limit`] for the rationale.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn offset(mut self, n: u64) -> Self {
-        let n = i64::try_from(n)
-            .unwrap_or_else(|_| panic!("QuerySet::offset(n = {n}) overflows i64"));
+        let n =
+            i64::try_from(n).unwrap_or_else(|_| panic!("QuerySet::offset(n = {n}) overflows i64"));
         self.offset = Some(n);
         self
     }

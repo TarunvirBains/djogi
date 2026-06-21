@@ -1050,8 +1050,8 @@ mod tests {
     //! keyword.
 
     use super::*;
-    use crate::descriptor::ModelDescriptor;
     use crate::DjogiError;
+    use crate::descriptor::ModelDescriptor;
 
     // Minimal DB-free `Model` impl for set-op builder panic tests. Mirrors
     // the `Fake` model in `queryset`/`sql` unit tests so these stay
@@ -1087,7 +1087,8 @@ mod tests {
         fn save<'ctx>(
             &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
-        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
             async { unreachable!() }
         }
         fn delete(
@@ -1099,7 +1100,8 @@ mod tests {
         fn refresh_from_db<'ctx>(
             &'ctx self,
             _ctx: &'ctx mut crate::context::DjogiContext,
-        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
             async { unreachable!() }
         }
     }
