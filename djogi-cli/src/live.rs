@@ -635,6 +635,24 @@ pub fn refuse_offline_only(reason: impl Into<String>) -> LiveCmdError {
 
 // ── live show ─────────────────────────────────────────────────────────
 
+/// Converts a DB-sourced `current_step_index` (`i32`) to `u32`.
+///
+/// Returns `Err(LiveCmdError::Runtime(_))` if the value is negative, which
+/// indicates a corrupt ledger row rather than a programming error. The
+/// `djogi_live_plans.current_step_index` column is always written from a
+/// `usize` step ordinal (see
+/// [`djogi::live_migrate::executor::run_plan`]), so a negative value can
+/// only arise from external tampering or storage corruption — surfacing it
+/// as a runtime error keeps `show` / `resume` / `finalize` from silently
+/// substituting step `0` and re-running already-completed steps.
+fn checked_step_index(row_index: i32, plan_id: HeerId) -> Result<u32, LiveCmdError> {
+    u32::try_from(row_index).map_err(|_| {
+        LiveCmdError::Runtime(format!(
+            "corrupt ledger: plan {plan_id} has invalid current_step_index {row_index} — must be non-negative"
+        ))
+    })
+}
+
 /// `djogi live show` body. Resolves the plan row, reads + checksum-
 /// verifies the on-disk plan file, and prints metadata + active hooks.
 async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, LiveCmdError> {
@@ -648,7 +666,7 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
     verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
     let plan = read_plan(&migrations_root, &path)?;
 
-    let current_index = u32::try_from(row.current_step_index).unwrap_or(0);
+    let current_index = checked_step_index(row.current_step_index, row.plan_id)?;
     let hooks = active_hooks_at_step(&plan, current_index)
         .map_err(|e| LiveCmdError::Runtime(format!("hook walker: {e}")))?;
 
@@ -680,9 +698,9 @@ async fn show_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32, 
     println!();
     println!("steps ({} total):", plan.steps.len(),);
     for step in &plan.steps {
-        let marker = if (step.ordinal as i32) < row.current_step_index {
+        let marker = if step.ordinal < current_index {
             "[done]"
-        } else if (step.ordinal as i32) == row.current_step_index {
+        } else if step.ordinal == current_index {
             "[curr]"
         } else {
             "[ todo]"
@@ -816,7 +834,7 @@ async fn resume_cmd(
     verify_checksum(&migrations_root, &path, &row.plan_file_checksum)?;
     let _plan = read_plan(&migrations_root, &path)?;
     // Resume execution from current step
-    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    let start_idx = checked_step_index(row.current_step_index, row.plan_id)?;
     match djogi::live_migrate::executor::run_plan(
         &mut ctx,
         &migrations_root,
@@ -966,7 +984,7 @@ async fn finalize_cmd(
     // Resume execution from current step. `live finalize` implies the
     // destructive opt-in (5th arg `true`); the engine still requires the
     // non-empty `justify` checked above.
-    let start_idx = u32::try_from(row.current_step_index).unwrap_or(0);
+    let start_idx = checked_step_index(row.current_step_index, row.plan_id)?;
     match djogi::live_migrate::executor::run_plan(
         &mut ctx,
         &migrations_root,
@@ -1680,6 +1698,35 @@ mod tests {
     fn parse_plan_id_rejects_garbage() {
         let err = parse_plan_id("not-a-number").unwrap_err();
         assert!(matches!(err, LiveCmdError::MalformedPlanId(_)));
+    }
+
+    // ── checked_step_index ────────────────────────────────────────────
+
+    #[test]
+    fn checked_step_index_rejects_negative() {
+        // A negative ledger value is corruption, not a programming error:
+        // the old `unwrap_or(0)` silently substituted step 0, which would
+        // re-run already-completed steps. The guard must surface it.
+        let plan_id = HeerId::ZERO;
+        assert!(matches!(
+            checked_step_index(-1, plan_id),
+            Err(LiveCmdError::Runtime(_))
+        ));
+    }
+
+    #[test]
+    fn checked_step_index_accepts_valid() {
+        let plan_id = HeerId::ZERO;
+        assert_eq!(checked_step_index(5, plan_id).unwrap(), 5u32);
+    }
+
+    #[test]
+    fn checked_step_index_rejects_i32_min() {
+        let plan_id = HeerId::ZERO;
+        assert!(matches!(
+            checked_step_index(i32::MIN, plan_id),
+            Err(LiveCmdError::Runtime(_))
+        ));
     }
 
     // ── exit-code mapping ─────────────────────────────────────────────

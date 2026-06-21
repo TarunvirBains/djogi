@@ -2815,7 +2815,11 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::ReplayPlanShapeMismatch { .. }
         | RepairError::PhaseZeroArtifactRefused { .. }  // #386: refusal — operator must replace the stale file
         | RepairError::MissingResumeIdentity { .. }     // #386: refusal — operator must supply identity for resume
+        | RepairError::CorruptedLedgerStepCount { .. }  // #491: ledger corruption — operator must inspect row before resuming
         => 2,
+
+        // #[non_exhaustive]: future variants added by djogi will still be covered.
+        _ => 2,
     }
 }
 

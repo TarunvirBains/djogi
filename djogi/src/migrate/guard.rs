@@ -319,7 +319,18 @@ fn acquire_unix(path: &Path, timeout: Duration) -> Result<WorkspaceGuard, GuardE
 /// so a smaller decimal does not leave a tail from a previous holder.
 #[cfg(unix)]
 fn write_pid(file: &mut File, path: &Path) -> Result<(), GuardError> {
-    let pid: i32 = std::process::id() as i32;
+    // PID platform invariant: Linux pid_max is at most 2^22 (~4M) and
+    // every supported OS keeps PIDs well below i32::MAX (2^31 - 1), so
+    // this narrowing cast cannot truncate on any real platform. The
+    // debug_assert is a dev-build tripwire for that assumption; a release
+    // check would pay for a condition that cannot occur. read_pid rejects
+    // a negative (wrapped) value on the way back in.
+    let raw_pid = std::process::id();
+    debug_assert!(
+        raw_pid <= i32::MAX as u32,
+        "PID {raw_pid} exceeds i32::MAX — platform PID assumption violated"
+    );
+    let pid: i32 = raw_pid as i32;
     file.set_len(0).map_err(|e| GuardError::Io {
         path: path.to_path_buf(),
         source: e,
@@ -358,22 +369,18 @@ fn read_pid(path: &Path) -> Result<i32, std::io::Error> {
             "lock file is empty",
         ));
     }
-    // Accept an optional leading minus for symmetry with `i32`,
-    // although in practice PIDs are non-negative on every supported
-    // OS. Reject anything else.
+    // PIDs are non-negative on every supported OS. A leading minus can
+    // only appear if a truncated-PID write produced a wrapped negative
+    // value (see write_pid's debug_assert) or the file was corrupted, so
+    // reject it rather than returning a meaningless negative "holder".
     let bytes = trimmed.as_bytes();
-    let (sign_offset, _negative) = if bytes[0] == b'-' {
-        (1, true)
-    } else {
-        (0, false)
-    };
-    if sign_offset == bytes.len() {
+    if bytes[0] == b'-' {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "lock file PID is just a sign",
+            "lock file PID is negative — not a valid process id",
         ));
     }
-    for &b in &bytes[sign_offset..] {
+    for &b in bytes {
         if !b.is_ascii_digit() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -494,6 +501,16 @@ mod tests {
     fn read_pid_rejects_empty() {
         let path = temp_lock_path();
         crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"").unwrap();
+        let err = read_pid(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
+    }
+
+    #[test]
+    fn read_pid_rejects_negative() {
+        let path = temp_lock_path();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"-12345\n")
+            .unwrap();
         let err = read_pid(&path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);

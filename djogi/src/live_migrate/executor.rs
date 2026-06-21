@@ -9,6 +9,31 @@ use crate::context::DjogiContext;
 use crate::live_migrate::compose::StepResult;
 use crate::live_migrate::plan::{LivePlan, Step, StepKind};
 
+// ── Step-index casts ─────────────────────────────────────────────────────
+
+/// Narrows a plan-step iteration index (`usize`) to the `u32` width the
+/// step pointer and ledger use.
+///
+/// Panics if the index exceeds `u32::MAX`. A live plan with more than ~4
+/// billion steps is a structural impossibility (plans are authored from a
+/// bounded schema delta), so an overflow here is a programming error in the
+/// plan builder, not recoverable runtime state — panicking is the correct
+/// fail-fast rather than silently wrapping the step pointer.
+fn step_index_as_u32(idx: usize) -> u32 {
+    u32::try_from(idx).unwrap_or_else(|_| panic!("plan step index ({idx}) overflows u32"))
+}
+
+/// Narrows a plan-step iteration index (`usize`) to the signed `i32` width
+/// the `djogi_live_plans.current_step_index` column stores.
+///
+/// Panics if the index exceeds `i32::MAX`, on the same fail-fast rationale
+/// as [`step_index_as_u32`]: a plan large enough to overflow `i32` cannot
+/// arise from a real schema delta, so the overflow is a builder bug rather
+/// than data that should be saturated or wrapped silently into the ledger.
+fn step_index_as_i32(idx: usize) -> i32 {
+    i32::try_from(idx).unwrap_or_else(|_| panic!("plan step index ({idx}) overflows i32"))
+}
+
 // ── ExecutorError ────────────────────────────────────────────────────────
 
 /// Errors that can occur during live-plan execution.
@@ -108,7 +133,7 @@ pub async fn run_plan(
     let mut last_result = StepResult::Completed;
 
     for (idx, step) in plan.steps.iter().enumerate() {
-        if (idx as u32) < start_index {
+        if step_index_as_u32(idx) < start_index {
             continue; // Skip already-completed steps on resume
         }
 
@@ -124,7 +149,7 @@ pub async fn run_plan(
             plan.header.plan_id,
             &plan.header.target_database,
             &plan.header.app_label,
-            idx as i32,
+            step_index_as_i32(idx),
             Some(step.kind.as_db_str()),
         )
         .await
@@ -350,4 +375,35 @@ pub async fn handle_operator_gate(exec: ExecutionContext<'_>) -> Result<StepResu
     .map_err(ExecutorError::Db)?;
 
     Ok(StepResult::Paused)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_index_as_u32_passes_through_in_range() {
+        assert_eq!(step_index_as_u32(0), 0u32);
+        assert_eq!(step_index_as_u32(42), 42u32);
+        assert_eq!(step_index_as_u32(u32::MAX as usize), u32::MAX);
+    }
+
+    #[test]
+    fn step_index_as_i32_passes_through_in_range() {
+        assert_eq!(step_index_as_i32(0), 0i32);
+        assert_eq!(step_index_as_i32(42), 42i32);
+        assert_eq!(step_index_as_i32(i32::MAX as usize), i32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows u32")]
+    fn step_index_panics_on_u32_overflow() {
+        let _ = step_index_as_u32(usize::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "overflows i32")]
+    fn step_index_panics_on_i32_overflow() {
+        let _ = step_index_as_i32(usize::MAX);
+    }
 }

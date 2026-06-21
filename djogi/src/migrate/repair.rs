@@ -158,6 +158,7 @@ pub struct SnapshotChange {
 
 /// Failure modes for the repair entry points.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RepairError {
     /// The ledger row identified by `version` does not exist.
     VersionNotFound { version: String },
@@ -355,6 +356,21 @@ pub enum RepairError {
         actual_step_count: usize,
     },
 
+    /// A ledger step-count field read during resume carried a negative
+    /// value, which is only possible if the `djogi_schema_migrations` row
+    /// was corrupted (manually edited, or a DB-level write bypassed djogi).
+    /// The repair refuses rather than casting the negative `i32` to a
+    /// `usize` (which would wrap to a huge value and drive a runaway
+    /// replay loop).
+    CorruptedLedgerStepCount {
+        /// Migration version whose ledger row carried the bad value.
+        version: String,
+        /// Which ledger field was negative (`"applied_steps_count"` or `"total_steps"`).
+        field: &'static str,
+        /// The negative value read from the ledger.
+        value: i32,
+    },
+
     /// **#386** — The repair target is a Phase 0 migration whose on-disk
     /// artifact was not classified as identity-free replay-current. Repair
     /// refuses to operate on seed-capable runtime, seed-DML non-runtime,
@@ -548,6 +564,16 @@ impl std::fmt::Display for RepairError {
                 "D317 repair replay finalization on version {version}: \
                  completed {actual_step_count} step(s) but the materialized plan \
                  expected {expected_step_count}; plan shape invariant violated (GH #317)",
+            ),
+            RepairError::CorruptedLedgerStepCount {
+                version,
+                field,
+                value,
+            } => write!(
+                f,
+                "ledger corruption: {field} for migration {version} is \
+                 negative ({value}); a step count must be non-negative — \
+                 inspect the djogi_schema_migrations row before resuming"
             ),
             RepairError::LeafIdentityMismatch {
                 version,
@@ -1195,6 +1221,60 @@ async fn repair_resume_pinned(
     result
 }
 
+/// Boundary check run as the first statement of [`repair_resume_body`]
+/// after the ledger row is loaded — before any field read and before
+/// any `i32 -> usize` cast. Returns a structured
+/// [`RepairError::CorruptedLedgerStepCount`] if either field is negative,
+/// so the operator gets a clean refusal on the input path rather than
+/// the panic [`validate_ledger_step_count`] raises as an invariant
+/// tripwire further down. Running it first is load-bearing: a corrupt
+/// `total_steps = Some(-1)` would otherwise be swallowed by the
+/// `applied_steps_count >= total` short-circuit and reported as
+/// `NothingToResume`. `total_steps` is `Option` because transactional-only
+/// rows have no `total_steps`.
+#[allow(clippy::result_large_err)] // RepairError carries large variants (ResumeStepFailed)
+fn check_ledger_step_counts(
+    applied_steps_count: i32,
+    total_steps: Option<i32>,
+    version: &str,
+) -> Result<(), RepairError> {
+    if applied_steps_count < 0 {
+        return Err(RepairError::CorruptedLedgerStepCount {
+            version: version.to_string(),
+            field: "applied_steps_count",
+            value: applied_steps_count,
+        });
+    }
+    if let Some(total) = total_steps
+        && total < 0
+    {
+        return Err(RepairError::CorruptedLedgerStepCount {
+            version: version.to_string(),
+            field: "total_steps",
+            value: total,
+        });
+    }
+    Ok(())
+}
+
+/// Convert a ledger step-count field from its Postgres `INTEGER` (`i32`)
+/// representation to the `usize` the replay loop and shape-mismatch
+/// comparisons use. A negative value can only arise from ledger corruption;
+/// casting it to `usize` would wrap to a ~1.8e19 value and drive an
+/// out-of-bounds skip count or runaway loop bound, so this refuses loudly
+/// in every build profile rather than allowing silent corruption to propagate.
+///
+/// # Panics
+/// Panics if `value` is negative.
+fn validate_ledger_step_count(value: i32, field: &str, version: &str) -> usize {
+    usize::try_from(value).unwrap_or_else(|_| {
+        panic!(
+            "repair: ledger corruption — {field} ({value}) is negative \
+             for migration {version}; expected a non-negative step count"
+        )
+    })
+}
+
 /// Body of the resume-partial-apply logic, called inside the advisory lock.
 /// All `?` and early returns propagate to [`repair_resume_pinned`], which
 /// unconditionally releases the lock after this function returns (whether
@@ -1208,6 +1288,15 @@ async fn repair_resume_body(
     // Load row and run all validation inside the lock window to prevent
     // TOCTOU races (GH #274).
     let row = load_row(ctx, version, &bucket.app).await?;
+
+    // Refuse a corrupted ledger row (negative step counts) as the FIRST
+    // check after the row is loaded — before ensure_row_matches_bucket_app,
+    // the NothingToResume resolution (which reads total_steps /
+    // applied_steps_count), and every i32 -> usize cast in the replay
+    // path below. A corrupt total_steps = Some(-1) otherwise returns
+    // NothingToResume (0 >= -1 is true), masking the corruption.
+    check_ledger_step_counts(row.applied_steps_count, row.total_steps, version)?;
+
     ensure_row_matches_bucket_app(&row, bucket, version)?;
 
     let plan_checksum = compute_plan_checksum_up(plan);
@@ -1287,7 +1376,11 @@ async fn repair_resume_body(
                     // no longer exist).
                     RepairError::ResumePlanShapeMismatch {
                         version: row.version.clone(),
-                        ledger_total_steps: total as usize,
+                        ledger_total_steps: validate_ledger_step_count(
+                            total,
+                            "total_steps",
+                            &row.version,
+                        ),
                         replay_total_steps: 0,
                     }
                 }
@@ -1320,17 +1413,18 @@ async fn repair_resume_body(
 
     // **#317 REQ-12**: Compare ledger total steps vs materialized plan
     // total steps BEFORE replay loop; reject on mismatch.
-    if total as usize != replay_total_steps {
+    if validate_ledger_step_count(total, "total_steps", &row.version) != replay_total_steps {
         return Err(RepairError::ResumePlanShapeMismatch {
             version: row.version.clone(),
-            ledger_total_steps: total as usize,
+            ledger_total_steps: validate_ledger_step_count(total, "total_steps", &row.version),
             replay_total_steps,
         });
     }
 
     // Walk the non-transactional segments in materialized plan order,
     // skipping the first `applied_steps_count` statements globally.
-    let mut remaining_to_skip = row.applied_steps_count as usize;
+    let mut remaining_to_skip =
+        validate_ledger_step_count(row.applied_steps_count, "applied_steps_count", &row.version);
     let mut applied = row.applied_steps_count;
     let mut actions: Vec<String> = Vec::new();
 
@@ -1367,7 +1461,11 @@ async fn repair_resume_body(
                 let _ = ledger::mark_partial(ctx, ledger_id, applied, &note).await;
                 return Err(RepairError::ResumeStepFailed {
                     version: row.version.clone(),
-                    step_index: applied as usize,
+                    step_index: validate_ledger_step_count(
+                        applied,
+                        "applied_steps_count",
+                        &row.version,
+                    ),
                     statement_label: stmt.label.clone(),
                     applied_steps_count: applied,
                     source: e,
@@ -1378,7 +1476,11 @@ async fn repair_resume_body(
                 .await
                 .map_err(|e| RepairError::ResumeProgressAckFailed {
                     version: row.version.clone(),
-                    step_index: claimed_step.saturating_sub(1) as usize,
+                    step_index: validate_ledger_step_count(
+                        claimed_step.saturating_sub(1),
+                        "applied_steps_count",
+                        &row.version,
+                    ),
                     statement_label: stmt.label.clone(),
                     applied_steps_count: applied,
                     source: e,
@@ -1394,11 +1496,17 @@ async fn repair_resume_body(
     // successfully, verify total successful steps equals materialized
     // plan total. A mismatch means the replay loop diverged from the
     // expected plan shape.
-    if applied as usize != replay_total_steps {
+    if validate_ledger_step_count(applied, "applied_steps_count", &row.version)
+        != replay_total_steps
+    {
         return Err(RepairError::ReplayPlanShapeMismatch {
             version: row.version.clone(),
             expected_step_count: replay_total_steps,
-            actual_step_count: applied as usize,
+            actual_step_count: validate_ledger_step_count(
+                applied,
+                "applied_steps_count",
+                &row.version,
+            ),
         });
     }
 
@@ -2665,5 +2773,54 @@ mod tests {
             matches!(missing_result, Err(RepairError::VersionNotFound { .. })),
             "absent version must return VersionNotFound, got {missing_result:?}",
         );
+    }
+
+    // ── Ledger step count validation (#491) ────────────────────────
+
+    #[test]
+    fn validate_ledger_step_count_returns_value_when_non_negative() {
+        assert_eq!(
+            validate_ledger_step_count(0, "applied_steps_count", "V1"),
+            0
+        );
+        assert_eq!(validate_ledger_step_count(7, "total_steps", "V1"), 7);
+        assert_eq!(
+            validate_ledger_step_count(i32::MAX, "applied_steps_count", "V1"),
+            i32::MAX as usize
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ledger corruption")]
+    fn validate_ledger_step_count_panics_on_negative() {
+        let _ = validate_ledger_step_count(-1, "applied_steps_count", "V20260101__x");
+    }
+
+    #[test]
+    fn ledger_step_count_guard_flags_negative_applied() {
+        match check_ledger_step_counts(-3, Some(5), "V1") {
+            Err(RepairError::CorruptedLedgerStepCount { field, value, .. }) => {
+                assert_eq!(field, "applied_steps_count");
+                assert_eq!(value, -3);
+            }
+            other => panic!("expected CorruptedLedgerStepCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ledger_step_count_guard_flags_negative_total() {
+        match check_ledger_step_counts(0, Some(-1), "V1") {
+            Err(RepairError::CorruptedLedgerStepCount { field, value, .. }) => {
+                assert_eq!(field, "total_steps");
+                assert_eq!(value, -1);
+            }
+            other => panic!("expected CorruptedLedgerStepCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ledger_step_count_guard_accepts_non_negative() {
+        assert!(check_ledger_step_counts(2, Some(5), "V1").is_ok());
+        assert!(check_ledger_step_counts(0, None, "V1").is_ok());
     }
 }
