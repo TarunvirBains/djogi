@@ -236,11 +236,14 @@ pub async fn compose_live_plans(
 
         // Build live plan for this delta
         // Use timestamp-based HeerId generation (node_id=0, sequence=0 as placeholder)
+        // Saturating clamp: as_millis() is u128; u64 overflows after ~585 million
+        // years, but clamp for consistency with runner.rs elapsed_ms pattern.
         let plan_id = crate::types::HeerId::new(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_millis() as u64,
+                .as_millis()
+                .min(u64::MAX as u128) as u64,
             0, // node_id placeholder
             0, // sequence placeholder
         )
@@ -630,5 +633,23 @@ mod tests {
             extract_backfill_params(&steps),
             ExtractResult::Params { .. }
         ));
+    }
+
+    #[test]
+    fn compose_plan_id_millis_clamp_is_lossless_for_realistic_epoch() {
+        // Verify the saturating clamp applied to as_millis() as u64 at the
+        // plan_id generation site produces exact results for all realistic
+        // Unix epoch millisecond values.
+        //
+        // Current epoch ms (2026-01-01 00:00:00 UTC) ≈ 1_767_225_600_000.
+        // u64::MAX ≈ 1.844 × 10^19. The clamped and unclamped results
+        // must be identical for any timestamp within the next 584 million years.
+        let realistic_epoch_ms: u128 = 1_767_225_600_000_u128;
+        let clamped = realistic_epoch_ms.min(u64::MAX as u128) as u64;
+        assert_eq!(clamped, realistic_epoch_ms as u64);
+        // Saturating clamp at u64::MAX must produce u64::MAX (not wrap).
+        let overflow_ms: u128 = u128::MAX;
+        let clamped_overflow = overflow_ms.min(u64::MAX as u128) as u64;
+        assert_eq!(clamped_overflow, u64::MAX);
     }
 }

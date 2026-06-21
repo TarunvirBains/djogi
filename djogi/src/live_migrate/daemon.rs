@@ -579,6 +579,20 @@ async fn drive_under_lock(
     outcome
 }
 
+/// Convert an `i64` batch size from the plan descriptor into the `u32`
+/// chunk-size the backfill loop expects.
+///
+/// Returns [`DaemonError::Database`] when `batch_size` is negative or
+/// exceeds [`u32::MAX`], surfacing an actionable message rather than
+/// silently wrapping via a truncating `as u32` cast.
+fn chunk_size_from_batch_size(batch_size: i64) -> Result<u32, DaemonError> {
+    u32::try_from(batch_size).map_err(|_| {
+        DaemonError::Database(DjogiError::Db(DbError::other(format!(
+            "resume_backfill: batch_size ({batch_size}) overflows u32"
+        ))))
+    })
+}
+
 /// Drive a `backfill_chunked` candidate via the same
 /// [`crate::live_migrate::backfill::resume_backfill`] entry point the
 /// CLI's `live resume` calls.
@@ -633,7 +647,10 @@ async fn resume_backfill_for_candidate(
             filter,
             batch_size,
             ..
-        } => (table, filter, batch_size as u32),
+        } => {
+            let chunk_size = chunk_size_from_batch_size(batch_size)?;
+            (table, filter, chunk_size)
+        }
         super::compose::ExtractResult::NotBackfillChunked => {
             return Err(DaemonError::Database(DjogiError::Db(DbError::other(
                 "plan has no BackfillChunked step to resume",
@@ -1199,5 +1216,31 @@ mod tests {
         unsafe { std::env::set_var("HOSTNAME", "test-box.example") };
         let h = hostname_or_unknown();
         assert_eq!(h, "test-box.example");
+    }
+
+    #[test]
+    fn chunk_size_from_batch_size_rejects_overflow() {
+        let too_large = i64::from(u32::MAX) + 1;
+        assert!(matches!(
+            chunk_size_from_batch_size(too_large),
+            Err(DaemonError::Database(_))
+        ));
+    }
+
+    #[test]
+    fn chunk_size_from_batch_size_rejects_negative() {
+        assert!(matches!(
+            chunk_size_from_batch_size(-1i64),
+            Err(DaemonError::Database(_))
+        ));
+    }
+
+    #[test]
+    fn chunk_size_from_batch_size_accepts_valid() {
+        assert_eq!(
+            chunk_size_from_batch_size(i64::from(u32::MAX)).unwrap(),
+            u32::MAX
+        );
+        assert_eq!(chunk_size_from_batch_size(0i64).unwrap(), 0u32);
     }
 }

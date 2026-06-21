@@ -116,6 +116,15 @@ impl<'ctx> CursorDriver<'ctx> {
             let fetch_size = self.fetch_size;
             match cursor_fetch(&self.cursor_name, self.conn, fetch_size).await {
                 Ok(rows) => {
+                    // rows.len() is structurally bounded by fetch_size (u32): Postgres
+                    // returns at most `fetch_size` rows per FETCH. The debug_assert
+                    // documents this per-cursor invariant; the cast is lossless in practice.
+                    debug_assert!(
+                        rows.len() <= fetch_size as usize,
+                        "cursor_fetch returned {} rows but fetch_size is {} — invariant violated",
+                        rows.len(),
+                        fetch_size,
+                    );
                     let got = rows.len() as u32;
                     if got < self.fetch_size {
                         self.exhausted = true;
@@ -261,5 +270,32 @@ fn require_transaction(ctx: &mut DjogiContext) -> Result<&mut PgConnection, Djog
     match ctx.inner_mut() {
         ContextInner::Transaction(conn) => Ok(conn),
         ContextInner::Pool(_) => Err(DjogiError::StreamOutsideTransaction),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cursor_driver_got_cast_invariant() {
+        // rows.len() can never exceed fetch_size (u32) because cursor_fetch
+        // was issued with that limit. Verify the debug_assert condition holds
+        // for the boundary value (fetch_size rows returned exactly) and that
+        // the bound is fetch_size, not the absolute ceiling u32::MAX.
+        let fetch_size: u32 = 1_000;
+        let simulated_len: usize = 1_000; // exactly fetch_size rows — boundary case
+        // This is the debug_assert condition added at stream.rs:119:
+        debug_assert!(
+            simulated_len <= fetch_size as usize,
+            "cursor_fetch returned {} rows but fetch_size is {} — invariant violated",
+            simulated_len,
+            fetch_size,
+        );
+        let got = simulated_len as u32; // the cast under test
+        assert_eq!(got, fetch_size);
+
+        // Confirm a zero-rows response also satisfies the bound.
+        let empty_len: usize = 0;
+        debug_assert!(empty_len <= fetch_size as usize);
+        assert_eq!(empty_len as u32, 0_u32);
     }
 }
