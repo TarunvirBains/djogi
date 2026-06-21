@@ -133,6 +133,16 @@ fn read_f64(bytes: &[u8], pos: usize) -> Result<f64, GeoError> {
     ))
 }
 
+/// Guard helper used by all EWKB encode functions to convert a Rust `Vec::len()`
+/// count to the `u32` required by the Postgres EWKB wire format.
+///
+/// Panics if `n` exceeds `u32::MAX` (4,294,967,295), which would require encoding
+/// a geometry with more than 4 billion elements — not achievable in any practical
+/// deployment, but guarded to prevent silent truncation.
+pub(crate) fn encode_count_u32(n: usize, kind: &str) -> u32 {
+    u32::try_from(n).unwrap_or_else(|_| panic!("{kind} {n} overflows u32 wire limit"))
+}
+
 /// Write 16 bytes for a single coordinate pair `(lon, lat)`.
 fn push_coord_pair<B: BufMut + ?Sized>(buf: &mut B, lon: f64, lat: f64) {
     buf.put_slice(&lon.to_le_bytes());
@@ -189,7 +199,8 @@ pub(crate) fn decode_point(bytes: &[u8]) -> Result<(f64, f64), GeoError> {
 pub(crate) fn encode_linestring_into<B: BufMut + ?Sized>(ls: &super::LineString, buf: &mut B) {
     let n = ls.points.len();
     push_outer_header(buf, TYPE_LINESTRING);
-    buf.put_slice(&(n as u32).to_le_bytes());
+    let count = encode_count_u32(n, "LineString::encode: point count");
+    buf.put_slice(&count.to_le_bytes());
     for p in &ls.points {
         push_coord_pair(buf, p.lon, p.lat);
     }
@@ -224,9 +235,11 @@ pub(crate) fn decode_linestring(bytes: &[u8]) -> Result<super::LineString, GeoEr
 /// Encode a `Polygon` as `GEOGRAPHY(Polygon, 4326)` EWKB into `buf`.
 pub(crate) fn encode_polygon_into<B: BufMut + ?Sized>(poly: &super::Polygon, buf: &mut B) {
     push_outer_header(buf, TYPE_POLYGON);
-    buf.put_slice(&(poly.rings.len() as u32).to_le_bytes());
+    let ring_n = encode_count_u32(poly.rings.len(), "Polygon::encode: ring count");
+    buf.put_slice(&ring_n.to_le_bytes());
     for ring in &poly.rings {
-        buf.put_slice(&(ring.len() as u32).to_le_bytes());
+        let pt_n = encode_count_u32(ring.len(), "Polygon::encode: point count");
+        buf.put_slice(&pt_n.to_le_bytes());
         for p in ring {
             push_coord_pair(buf, p.lon, p.lat);
         }
@@ -288,7 +301,8 @@ fn decode_polygon_body(
 /// 21 bytes per sub-point. The SRID is carried only by the outer envelope.
 pub(crate) fn encode_multipoint_into<B: BufMut + ?Sized>(mp: &super::MultiPoint, buf: &mut B) {
     push_outer_header(buf, TYPE_MULTIPOINT);
-    buf.put_slice(&(mp.points.len() as u32).to_le_bytes());
+    let count = encode_count_u32(mp.points.len(), "MultiPoint::encode: point count");
+    buf.put_slice(&count.to_le_bytes());
     for p in &mp.points {
         buf.put_u8(ENDIAN_BYTE);
         buf.put_slice(&SUBTYPE_POINT);
@@ -355,11 +369,13 @@ pub(crate) fn encode_multilinestring_into<B: BufMut + ?Sized>(
     buf: &mut B,
 ) {
     push_outer_header(buf, TYPE_MULTILINESTRING);
-    buf.put_slice(&(mls.lines.len() as u32).to_le_bytes());
+    let line_n = encode_count_u32(mls.lines.len(), "MultiLineString::encode: line count");
+    buf.put_slice(&line_n.to_le_bytes());
     for ls in &mls.lines {
         buf.put_u8(ENDIAN_BYTE);
         buf.put_slice(&SUBTYPE_LINESTRING);
-        buf.put_slice(&(ls.points.len() as u32).to_le_bytes());
+        let pt_n = encode_count_u32(ls.points.len(), "MultiLineString::encode: point count");
+        buf.put_slice(&pt_n.to_le_bytes());
         for p in &ls.points {
             push_coord_pair(buf, p.lon, p.lat);
         }
@@ -436,13 +452,16 @@ pub(crate) fn decode_multilinestring(bytes: &[u8]) -> Result<super::MultiLineStr
 /// The SRID is carried only by the outer envelope.
 pub(crate) fn encode_multipolygon_into<B: BufMut + ?Sized>(mp: &super::MultiPolygon, buf: &mut B) {
     push_outer_header(buf, TYPE_MULTIPOLYGON);
-    buf.put_slice(&(mp.polygons.len() as u32).to_le_bytes());
+    let poly_n = encode_count_u32(mp.polygons.len(), "MultiPolygon::encode: polygon count");
+    buf.put_slice(&poly_n.to_le_bytes());
     for poly in &mp.polygons {
         buf.put_u8(ENDIAN_BYTE);
         buf.put_slice(&SUBTYPE_POLYGON);
-        buf.put_slice(&(poly.rings.len() as u32).to_le_bytes());
+        let ring_n = encode_count_u32(poly.rings.len(), "MultiPolygon::encode: ring count");
+        buf.put_slice(&ring_n.to_le_bytes());
         for ring in &poly.rings {
-            buf.put_slice(&(ring.len() as u32).to_le_bytes());
+            let pt_n = encode_count_u32(ring.len(), "MultiPolygon::encode: point count");
+            buf.put_slice(&pt_n.to_le_bytes());
             for p in ring {
                 push_coord_pair(buf, p.lon, p.lat);
             }
@@ -497,4 +516,87 @@ pub(crate) fn decode_multipolygon(bytes: &[u8]) -> Result<super::MultiPolygon, G
     super::MultiPolygon::new(polygons).map_err(|e| {
         GeoError::MalformedEwkb(format!("decoded MultiPolygon failed validation: {e}"))
     })
+}
+
+// ── tests ──────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::encode_count_u32;
+
+    // Overflow guard fires when count exceeds u32::MAX.
+    // We use (u32::MAX as usize) + 1 to produce the smallest overflow value.
+    // expected = substring of the full panic message:
+    //   "{kind} {n} overflows u32 wire limit"
+
+    #[test]
+    #[should_panic(expected = "LineString::encode: point count")]
+    fn linestring_point_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "LineString::encode: point count");
+    }
+
+    #[test]
+    #[should_panic(expected = "Polygon::encode: ring count")]
+    fn polygon_ring_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "Polygon::encode: ring count");
+    }
+
+    #[test]
+    #[should_panic(expected = "Polygon::encode: point count")]
+    fn polygon_point_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "Polygon::encode: point count");
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiPoint::encode: point count")]
+    fn multipoint_point_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "MultiPoint::encode: point count");
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiLineString::encode: line count")]
+    fn multilinestring_line_count_overflow_panics() {
+        encode_count_u32(
+            (u32::MAX as usize) + 1,
+            "MultiLineString::encode: line count",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiLineString::encode: point count")]
+    fn multilinestring_point_count_overflow_panics() {
+        encode_count_u32(
+            (u32::MAX as usize) + 1,
+            "MultiLineString::encode: point count",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiPolygon::encode: polygon count")]
+    fn multipolygon_polygon_count_overflow_panics() {
+        encode_count_u32(
+            (u32::MAX as usize) + 1,
+            "MultiPolygon::encode: polygon count",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiPolygon::encode: ring count")]
+    fn multipolygon_ring_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "MultiPolygon::encode: ring count");
+    }
+
+    #[test]
+    #[should_panic(expected = "MultiPolygon::encode: point count")]
+    fn multipolygon_point_count_overflow_panics() {
+        encode_count_u32((u32::MAX as usize) + 1, "MultiPolygon::encode: point count");
+    }
+
+    // Normal sizes (0 ..= u32::MAX) should produce the correct u32 value.
+    #[test]
+    fn small_counts_do_not_panic() {
+        assert_eq!(encode_count_u32(0, "any"), 0u32);
+        assert_eq!(encode_count_u32(1, "any"), 1u32);
+        assert_eq!(encode_count_u32(u32::MAX as usize, "any"), u32::MAX);
+    }
 }
