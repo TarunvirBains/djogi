@@ -509,9 +509,10 @@ mod tests {
     #[test]
     fn read_pid_rejects_negative() {
         let path = temp_lock_path();
-        std::fs::write(&path, "-12345\n").unwrap();
+        crate::migrate::common::write_workspace_file(&std::env::temp_dir(), &path, b"-12345\n")
+            .unwrap();
         let err = read_pid(&path).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-        let _ = std::fs::remove_file(&path);
+        let _ = crate::migrate::common::remove_workspace_file(&std::env::temp_dir(), &path);
     }
 }
