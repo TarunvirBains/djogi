@@ -58,6 +58,33 @@ pub enum Condition {
     /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::overlap`].
     ArrayOverlap(crate::array::ArrayOverlapLeaf),
 
+    /// `col >> $1` — INET contains. The LHS network contains the RHS
+    /// address or network.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contains`].
+    #[cfg(feature = "network")]
+    InetContains(crate::inet::InetContainsLeaf),
+
+    /// `col << $1` — INET contained by. The LHS address is within the
+    /// RHS network.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contained_by`].
+    #[cfg(feature = "network")]
+    InetContainedBy(crate::inet::InetContainedByLeaf),
+
+    /// `col >>= $1` — INET contains or equals.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contains_or_equals`].
+    #[cfg(feature = "network")]
+    InetContainsEq(crate::inet::InetContainsEqLeaf),
+
+    /// `col <<= $1` — INET contained by or equals.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::contained_by_or_equals`].
+    #[cfg(feature = "network")]
+    InetContainedByEq(crate::inet::InetContainedByEqLeaf),
+
+    /// `col && $1` — INET overlap. LHS and RHS share at least one address.
+    /// Produced by [`crate::query::field::DjogiField::<M, InetAddr>::overlaps`].
+    #[cfg(feature = "network")]
+    InetOverlap(crate::inet::InetOverlapLeaf),
+
     /// Postgres range predicate (`@>`, `<@`, `&&`, `<<`, `>>`, `&<`, `&>`,
     /// `-|-`) over a `Range<T>` column.
     /// Produced by the SQL-only range methods on
@@ -625,6 +652,13 @@ pub enum FilterValue {
     /// for the host-address case.
     #[cfg(feature = "network")]
     Inet(std::net::IpAddr),
+    /// Postgres `INET` column values carrying an explicit prefix
+    /// (`network` feature). Carries `djogi::InetAddr { addr, prefix }`
+    /// with construction-time prefix-bound validation. Distinct from
+    /// [`FilterValue::Inet`], which carries a bare `std::net::IpAddr`
+    /// (prefix collapsed to /32 or /128 by the native codec).
+    #[cfg(feature = "network")]
+    InetTyped(crate::InetAddr),
     /// Postgres `CIDR` column values (, `network` feature).
     /// Carries `djogi::CidrAddr { addr, prefix }` with construction-time
     /// host-bit-zero validation.
@@ -890,5 +924,14 @@ mod tests {
             LookupOp::IRegex.source_class(),
             LookupOpSourceClass::SqlOnly
         );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_typed_filter_value_is_constructible() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = crate::InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
+        let fv = FilterValue::InetTyped(inet);
+        assert!(matches!(fv, FilterValue::InetTyped(_)));
     }
 }

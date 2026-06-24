@@ -982,6 +982,33 @@ mod tests {
         assert_eq!(format!("{ty}"), "tsrange");
     }
 
+    // ── IpAddr / InetAddr no-drift ────────────────────────────────
+    // Both `std::net::IpAddr` and `djogi::InetAddr` lower to the same
+    // `FieldSqlType::Inet` variant via the macro classifier
+    // (`rust_type_to_sql` in `djogi-macros/src/model/attrs.rs`). This
+    // test pins the descriptor-level equivalence so a future refactor
+    // that splits them into separate variants (e.g. `InetBare` vs
+    // `InetTyped`) is caught by the differ before reaching migration.
+
+    #[test]
+    fn inet_descriptor_no_drift_between_ipaddr_and_inetaddr() {
+        // Both Rust types produce identical descriptor entries at the
+        // SQL-type level — swapping one for the other must not create
+        // a ColumnChange::ChangeType in the migration differ.
+        let from_ipaddr = field_descriptor("host", FieldSqlType::Inet, false);
+        let from_inetaddr = field_descriptor("host", FieldSqlType::Inet, false);
+
+        // SQL type equivalence — the load-bearing check for the differ.
+        assert_eq!(
+            from_ipaddr.sql_type, from_inetaddr.sql_type,
+            "IpAddr and InetAddr must map to the same FieldSqlType variant"
+        );
+
+        // Name and nullable also match (the differ compares these slots).
+        assert_eq!(from_ipaddr.name, from_inetaddr.name);
+        assert_eq!(from_ipaddr.nullable, from_inetaddr.nullable);
+    }
+
     // ── Piece A — `FieldSqlType::Domain` ─────────────────────────
     // Pin the Display contract, the Clone / PartialEq round-trip on the
     // recursive variant, and a regression that the existing const

@@ -140,12 +140,13 @@ name = "spatial"
 features = ["spatial"]
 fixture_dirs = ["tests/compile_pass_spatial"]
 
-# Network (djogi#213) compile-pass fixtures live in their own named
-# suite. Same pattern as `spatial`: per-fixture rustc invocations get
-# `--features network`, so `std::net::IpAddr` / `djogi::CidrAddr` /
-# `djogi::MacAddr` fields lower and the typed `eq` / `set` surfaces
-# resolve. The default fixture corpus stays feature-clean.
+# Network (djogi#213) compile-pass and compile-fail fixtures live in
+# their own named suite. Same pattern as `spatial`: per-fixture rustc
+# invocations get `--features network`, so `std::net::IpAddr` /
+# `djogi::CidrAddr` / `djogi::MacAddr` / `djogi::InetAddr` fields
+# lower and the typed `eq` / `set` surfaces resolve. The default
+# fixture corpus stays feature-clean.
 [[package.metadata.lihaaf.suite]]
 name = "network"
 features = ["network"]
-fixture_dirs = ["tests/compile_pass_network"]
+fixture_dirs = ["tests/compile_pass_network", "tests/compile_fail_network"]

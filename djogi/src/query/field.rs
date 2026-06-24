@@ -600,6 +600,8 @@ impl ExplicitPgOrderable for std::net::IpAddr {}
 impl ExplicitPgOrderable for crate::CidrAddr {}
 #[cfg(feature = "network")]
 impl ExplicitPgOrderable for crate::MacAddr {}
+#[cfg(feature = "network")]
+impl ExplicitPgOrderable for crate::InetAddr {}
 
 mod visage_scalar_seal {
     pub trait Sealed {}
@@ -674,7 +676,7 @@ impl_djogi_visage_scalar!(
 );
 
 #[cfg(feature = "network")]
-impl_djogi_visage_scalar!(crate::CidrAddr, crate::MacAddr);
+impl_djogi_visage_scalar!(crate::CidrAddr, crate::InetAddr, crate::MacAddr);
 #[cfg(feature = "network")]
 impl visage_scalar_seal::Sealed for std::net::IpAddr {}
 #[cfg(feature = "network")]
@@ -1967,6 +1969,169 @@ impl<M: Model> DjogiField<M, Option<crate::CidrAddr>> {
 }
 
 #[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, crate::InetAddr> {
+    /// `inet_column = value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// `inet_column <> value` using PostgreSQL `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// `inet_column IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// `inet_column NOT IN (v1, ...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+
+    /// `col >> rhs` — INET contains.
+    /// Returns rows where the column network contains the RHS address or network.
+    /// Accepts `InetAddr`, `CidrAddr`, or bare `IpAddr` as RHS (Postgres allows
+    /// all three for inet containment operators).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContains(crate::inet::InetContainsLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// `col << rhs` — INET contained by.
+    /// Returns rows where the column address is within the RHS network.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainedBy(crate::inet::InetContainedByLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// `col >>= rhs` — INET contains or equals.
+    /// Returns rows where the column network contains the RHS or they are equal.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains_or_equals(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainsEq(crate::inet::InetContainsEqLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// `col <<= rhs` — INET contained by or equals.
+    /// Returns rows where the column address is within the RHS network or equal.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by_or_equals(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainedByEq(crate::inet::InetContainedByEqLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// `col && rhs` — INET overlap.
+    /// Returns rows where the column and RHS share at least one address.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlaps(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetOverlap(crate::inet::InetOverlapLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiField<M, Option<crate::InetAddr>> {
+    /// Nullable `INET` equality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Nullable `INET` inequality.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Nullable `INET IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.not_in_list(values)
+    }
+
+    /// Nullable `col >> rhs` — INET contains.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContains(crate::inet::InetContainsLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// Nullable `col << rhs` — INET contained by.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainedBy(crate::inet::InetContainedByLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// Nullable `col >>= rhs` — INET contains or equals.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains_or_equals(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainsEq(crate::inet::InetContainsEqLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// Nullable `col <<= rhs` — INET contained by or equals.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by_or_equals(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetContainedByEq(crate::inet::InetContainedByEqLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    /// Nullable `col && rhs` — INET overlap.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlaps(self, rhs: impl IntoInetFilterValue) -> Condition {
+        Condition::InetOverlap(crate::inet::InetOverlapLeaf {
+            column: self.sql.column,
+            value: rhs.into_inet_filter_value(),
+        })
+    }
+}
+
+#[cfg(feature = "network")]
 impl<M: Model> DjogiField<M, crate::MacAddr> {
     /// `macaddr_column = value` using PostgreSQL `MACADDR` equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -2140,6 +2305,44 @@ impl<M: Model> DjogiPresentField<M, crate::MacAddr> {
     pub fn not_in<I>(self, values: I) -> Condition
     where
         I: IntoIterator<Item = crate::MacAddr>,
+    {
+        let mut values = values.into_iter().peekable();
+        if values.peek().is_none() {
+            self.sql.is_not_null()
+        } else {
+            self.sql.not_in_list(values)
+        }
+    }
+}
+
+#[cfg(feature = "network")]
+impl<M: Model> DjogiPresentField<M, crate::InetAddr> {
+    /// Present-only nullable `INET = value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn eq(self, value: crate::InetAddr) -> Condition {
+        self.sql.eq(value)
+    }
+
+    /// Present-only nullable `INET <> value`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn neq(self, value: crate::InetAddr) -> Condition {
+        self.sql.neq(value)
+    }
+
+    /// Present-only nullable `INET IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn in_<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
+    {
+        self.sql.in_list(values)
+    }
+
+    /// Present-only nullable `INET NOT IN (...)`.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn not_in<I>(self, values: I) -> Condition
+    where
+        I: IntoIterator<Item = crate::InetAddr>,
     {
         let mut values = values.into_iter().peekable();
         if values.peek().is_none() {
@@ -4335,6 +4538,12 @@ impl IntoFilterValue for crate::CidrAddr {
     }
 }
 #[cfg(feature = "network")]
+impl IntoFilterValue for crate::InetAddr {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::InetTyped(self)
+    }
+}
+#[cfg(feature = "network")]
 impl IntoFilterValue for crate::MacAddr {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Macaddr(self)
@@ -5260,6 +5469,55 @@ mod array_sealed {
     impl Sealed for crate::types::RanjId {}
     impl Sealed for crate::types::HeerIdDesc {}
     impl Sealed for crate::types::RanjIdDesc {}
+}
+
+// ── INET containment RHS conversion ─────────────────────────────────────────────
+// Sealed module prevents downstream crates from implementing the trait for
+// unsupported types. Only InetAddr, CidrAddr, and bare IpAddr are valid RHS
+// values for Postgres INET containment operators (`>>`, `<<`, `>>=`, `<=`, `&&`).
+
+#[cfg(feature = "network")]
+mod inet_sealed {
+    #[cfg(feature = "network")]
+    pub trait Sealed {}
+    #[cfg(feature = "network")]
+    impl Sealed for crate::InetAddr {}
+    #[cfg(feature = "network")]
+    impl Sealed for crate::CidrAddr {}
+    #[cfg(feature = "network")]
+    impl Sealed for std::net::IpAddr {}
+}
+
+/// Converts an INET/CIDR value into the matching [`FilterValue`] variant for
+/// use in INET containment operator conditions.
+/// Sealed so that only `InetAddr`, `CidrAddr`, and `std::net::IpAddr` can be
+/// used as RHS values. Postgres allows all three types for inet/cidr containment
+/// operators, so this trait covers the full set of valid inputs.
+#[cfg(feature = "network")]
+pub trait IntoInetFilterValue: inet_sealed::Sealed {
+    /// Wrap `self` in the corresponding `FilterValue::Inet*` variant.
+    fn into_inet_filter_value(self) -> FilterValue;
+}
+
+#[cfg(feature = "network")]
+impl IntoInetFilterValue for crate::InetAddr {
+    fn into_inet_filter_value(self) -> FilterValue {
+        FilterValue::InetTyped(self)
+    }
+}
+
+#[cfg(feature = "network")]
+impl IntoInetFilterValue for crate::CidrAddr {
+    fn into_inet_filter_value(self) -> FilterValue {
+        FilterValue::Cidr(self)
+    }
+}
+
+#[cfg(feature = "network")]
+impl IntoInetFilterValue for std::net::IpAddr {
+    fn into_inet_filter_value(self) -> FilterValue {
+        FilterValue::Inet(self)
+    }
 }
 
 /// Converts a `Vec<V>` element type into the matching [`FilterValue::Array*`]
@@ -9898,5 +10156,17 @@ mod distance_tests {
             FilterValue::Decimal(v) => assert_eq!(v, rust_decimal::Decimal::from(u64::MAX)),
             other => panic!("expected Decimal, got {other:?}"),
         }
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_addr_into_filter_value_is_inet_typed() {
+        use super::IntoFilterValue;
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet = crate::InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8).unwrap();
+        assert!(matches!(
+            inet.into_filter_value(),
+            FilterValue::InetTyped(_)
+        ));
     }
 }

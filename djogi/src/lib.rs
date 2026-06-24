@@ -61,6 +61,8 @@ pub mod fts_query;
 pub mod geo;
 pub mod hooks;
 pub(crate) mod ident;
+#[cfg(feature = "network")]
+pub mod inet;
 pub mod intent;
 pub mod jsonb;
 pub mod live_migrate;
@@ -70,12 +72,9 @@ pub mod model;
 pub mod notify;
 pub mod outbox;
 pub mod pg;
-// Djogi#170) — typed Postgres newtypes
-// with hand-rolled wire codecs. Ships `Interval`, `Range<T>`
-// (substrate), and the network family (`MacAddr` /
-// `CidrAddr`, , behind the `network` feature flag). Future
-// Future dispatches add more newtypes alongside without reshaping
-// the public surface.
+// Djogi#170 — typed Postgres newtypes with hand-rolled wire codecs.
+// Ships `Interval`, `Range<T>` (substrate), and the network family
+// (`MacAddr`, `CidrAddr`, `InetAddr` behind the `network` feature flag).
 pub mod pg_types;
 pub mod presentation;
 pub mod primary_key;
@@ -490,7 +489,7 @@ pub use types::{
 };
 // typed Postgres network types (`network` feature).
 #[cfg(feature = "network")]
-pub use types::{CidrAddr, CidrAddrError, MacAddr, MacAddrParseError};
+pub use types::{CidrAddr, CidrAddrError, InetAddr, InetAddrError, MacAddr, MacAddrParseError};
 pub use visage::{DjogiVisage, VisageError};
 
 /// The canonical adopter import.
@@ -730,7 +729,7 @@ pub mod prelude {
     // prelude (it is stdlib, not djogi); adopters spell it
     // `std::net::IpAddr` at the field declaration site.
     #[cfg(feature = "network")]
-    pub use crate::types::{CidrAddr, MacAddr};
+    pub use crate::types::{CidrAddr, InetAddr, MacAddr};
     // `DjogiVisageOf<M>` is the seal trait bounding every
     // `{Visage}` type to its source model `M`. Adopter code that writes
     // generic bounds over "any projection of M" names this trait, so it
