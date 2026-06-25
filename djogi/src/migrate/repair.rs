@@ -597,9 +597,7 @@ impl std::fmt::Display for RepairError {
                  runner identity for SQL replay",
             ),
             RepairError::Runner(e) => write!(f, "repair failed at runner level: {e}"),
-            RepairError::Verify(e) => {
-                write!(f, "repair live-DB projection failed: {e}")
-            }
+            RepairError::Verify(e) => write!(f, "repair live-DB projection failed: {e}"),
             RepairError::ArtifactIo { path, source } => write!(
                 f,
                 "repair could not read migration artifact at {}: {source}",
@@ -732,7 +730,7 @@ fn check_phase_zero_repair(
         )?;
     let bytes = common::read_workspace_file(&workspace_canon, &up_path_canon).map_err(|e| {
         RepairError::ArtifactIo {
-            path: up_path_canon.clone(),
+            path: up_path_canon,
             source: e,
         }
     })?;

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- migration: `RepairError` gains two typed variants — `Verify(VerifyRunError)`
+  (#414) and `ArtifactIo { path, source }` (#415) — so the underlying
+  projection / filesystem error chain stays reachable through
+  `Error::source()` instead of being flattened into a `LedgerIo` string.
+  The snapshot-rebuild live-projection failure and the Phase 0 artifact
+  read failure now carry their structured source. **Breaking (additive):**
+  exhaustive matches on `RepairError` must add the two arms; the CLI
+  classifies both as exit 1 (retryable). Acceptable under alpha semver.
+
 ### Fixed
 
 - fix(#312): the E_DJG_VDF_017 guard that rejects `Jsonb<T>` storage columns

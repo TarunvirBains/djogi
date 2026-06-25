@@ -2794,6 +2794,8 @@ fn repair_error_exit_code(err: &RepairError) -> i32 {
         | RepairError::ResumeStepFailed { .. }        // a replayed statement failed; partial state recorded, retryable
         | RepairError::ResumeProgressAckFailed { .. } // step committed but the progress ack write failed; retryable
         | RepairError::Runner(..)                     // runner-level failure during repair (identity binding, leaf-identity probe, plan materialization); wraps a transient SQL/connection/catalog source
+        | RepairError::Verify(..)                     // live-DB re-projection failed during snapshot rebuild; wraps VerifyRunError (transient catalog/ledger I/O), retryable
+        | RepairError::ArtifactIo { .. }              // failed to read a migration artifact off disk; wraps io::Error, retryable
         => 1,
 
         // ── Exit 2: refusals and structural / ledger-logic guards.
