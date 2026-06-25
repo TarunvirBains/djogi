@@ -401,6 +401,23 @@ pub enum RepairError {
     /// `repair_snapshot_rebuild_pinned` — the single source of truth for
     /// the live-DB projection that `verify` and `repair-rebuild` share.
     Verify(VerifyRunError),
+
+    /// Reading a migration artifact off disk during a repair pre-check
+    /// failed. Carries the exact [`path`] that could not be read and the
+    /// underlying [`std::io::Error`] (whose [`std::io::ErrorKind`] distinguishes
+    /// "file not found" from a permission or other I/O failure), reachable
+    /// through [`std::error::Error::source`].
+    ///
+    /// Producer: the Phase 0 artifact classifier (`check_phase_zero_repair`),
+    /// which refuses repair unless the on-disk Phase 0 up-file is present and
+    /// identity-free. A missing or unreadable up-file is an environment
+    /// problem, not a "safe to proceed" signal.
+    ArtifactIo {
+        /// The artifact path the repair pre-check attempted to read.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: std::io::Error,
+    },
 }
 
 impl std::fmt::Display for RepairError {
@@ -583,6 +600,11 @@ impl std::fmt::Display for RepairError {
             RepairError::Verify(e) => {
                 write!(f, "repair live-DB projection failed: {e}")
             }
+            RepairError::ArtifactIo { path, source } => write!(
+                f,
+                "repair could not read migration artifact at {}: {source}",
+                path.display()
+            ),
         }
     }
 }
@@ -598,6 +620,7 @@ impl std::error::Error for RepairError {
             RepairError::PinnedSessionCheckoutFailed { source } => Some(source),
             RepairError::Runner(e) => Some(e),
             RepairError::Verify(e) => Some(e),
+            RepairError::ArtifactIo { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -666,7 +689,7 @@ fn handle_repair_release<T>(
 ///
 /// Only checks when `version` matches [`PHASE_ZERO_VERSION`]. Non-Phase-0
 /// versions pass through without loading any files. On I/O failure (file not
-/// found, read error) returns [`RepairError::LedgerIo`] rather than silently
+/// found, read error) returns [`RepairError::ArtifactIo`] rather than silently
 /// skipping the guard — a missing Phase 0 up-file is an environment problem,
 /// not a "safe to proceed" signal.
 #[expect(
@@ -683,7 +706,6 @@ fn check_phase_zero_repair(
     }
     // Resolve the up-file path for this bucket + version.
     let bucket_dir = super::target::bucket_dir(workspace, bucket);
-    let up_path = bucket_dir.join(super::naming::up_filename(version));
 
     let workspace_canon =
         common::canonicalize_base(workspace).map_err(|e| RepairError::LedgerIo {
@@ -709,11 +731,9 @@ fn check_phase_zero_repair(
             },
         )?;
     let bytes = common::read_workspace_file(&workspace_canon, &up_path_canon).map_err(|e| {
-        RepairError::LedgerIo {
-            source: DjogiError::Db(crate::error::DbError::other(format!(
-                "read Phase 0 up-file at {}: {e}",
-                up_path.display()
-            ))),
+        RepairError::ArtifactIo {
+            path: up_path_canon.clone(),
+            source: e,
         }
     })?;
     super::phase_zero::require_identity_free_phase_zero_migration_artifact(&bytes).map_err(|_| {
@@ -1977,6 +1997,56 @@ mod tests {
         );
 
         safe_remove_dir_all(&root);
+    }
+
+    #[test]
+    fn repair_missing_phase_zero_up_file_surfaces_artifact_io() {
+        use std::error::Error as _;
+        let root = temp_root("artifact_io_missing_p0");
+        let bucket = phase_zero_bucket();
+        // Create the bucket directory so canonicalization succeeds (reaching
+        // the read_workspace_file call) but do NOT create the up-file.
+        let bucket_dir = super::super::target::bucket_dir(&root, &bucket);
+        fs::create_dir_all(&bucket_dir).expect("failed to create bucket dir in test");
+
+        let result = check_phase_zero_repair(&root, &bucket, PHASE_ZERO_VERSION);
+
+        let err = result.expect_err("missing Phase 0 up-file must error");
+        assert!(
+            matches!(err, RepairError::ArtifactIo { .. }),
+            "missing up-file must surface ArtifactIo, not a collapsed LedgerIo; got {err:?}"
+        );
+
+        // Display must frame the artifact context and include the path.
+        let display = err.to_string();
+        assert!(
+            display.contains("repair could not read migration artifact"),
+            "Display must frame the artifact context; got {display:?}"
+        );
+        let up_filename = super::super::naming::up_filename(PHASE_ZERO_VERSION);
+        assert!(
+            display.contains(&up_filename),
+            "Display must include the artifact filename; got {display:?}"
+        );
+        assert!(
+            display.contains("No such file") || display.contains("not found"),
+            "Display must include the I/O error indication (NotFound); got {display:?}"
+        );
+
+        // The io::Error kind/source must be reachable through source().
+        let src = err
+            .source()
+            .expect("ArtifactIo must expose its io::Error source");
+        let io_err = src
+            .downcast_ref::<std::io::Error>()
+            .expect("source() must downcast to std::io::Error");
+        assert_eq!(
+            io_err.kind(),
+            std::io::ErrorKind::NotFound,
+            "the io::Error kind must be preserved (NotFound for an absent file)"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
