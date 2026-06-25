@@ -72,6 +72,7 @@ use super::runner::{
 };
 use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
+use super::verify::VerifyRunError;
 
 // ── Confirmation witness ──────────────────────────────────────────────────
 
@@ -389,6 +390,17 @@ pub enum RepairError {
     /// reachable through `Error::source()` instead of being flattened
     /// into a string.
     Runner(RunnerError),
+
+    /// Re-projecting the live database during [`repair_snapshot_rebuild`]
+    /// failed. Wraps the verify-side [`VerifyRunError`] so the underlying
+    /// catalog / ledger / snapshot failure stays structured and reachable
+    /// through [`std::error::Error::source`] instead of being flattened
+    /// into a string. The repair did not write a snapshot.
+    ///
+    /// Producer: the `live_schema_for_repair` call in
+    /// `repair_snapshot_rebuild_pinned` — the single source of truth for
+    /// the live-DB projection that `verify` and `repair-rebuild` share.
+    Verify(VerifyRunError),
 }
 
 impl std::fmt::Display for RepairError {
@@ -568,6 +580,9 @@ impl std::fmt::Display for RepairError {
                  runner identity for SQL replay",
             ),
             RepairError::Runner(e) => write!(f, "repair failed at runner level: {e}"),
+            RepairError::Verify(e) => {
+                write!(f, "repair live-DB projection failed: {e}")
+            }
         }
     }
 }
@@ -582,6 +597,7 @@ impl std::error::Error for RepairError {
             RepairError::AdvisoryLockQueryFailed { source, .. } => Some(source),
             RepairError::PinnedSessionCheckoutFailed { source } => Some(source),
             RepairError::Runner(e) => Some(e),
+            RepairError::Verify(e) => Some(e),
             _ => None,
         }
     }
@@ -1524,16 +1540,7 @@ async fn repair_snapshot_rebuild_pinned(
     // inventory-driven scoping only, behavior unchanged.
     let projected = super::verify::live_schema_for_repair(ctx, bucket, None)
         .await
-        .map_err(|e| RepairError::LedgerIo {
-            // Re-using LedgerIo's source channel would conflate two
-            // failure modes; we pivot through a synthetic DjogiError
-            // (DbError::other) so the public surface stays narrow
-            // without adding a dedicated variant. The Display message
-            // keeps the projection origin clear.
-            source: DjogiError::Db(crate::error::DbError::other(format!(
-                "live-DB projection failed: {e}"
-            ))),
-        });
+        .map_err(RepairError::Verify);
 
     // Sanity-check: count applied rows for the bucket. A rebuild on
     // an empty ledger is suspicious but legal (a fresh bucket bootstrap
@@ -2664,6 +2671,32 @@ mod tests {
         assert!(
             matches!(missing_result, Err(RepairError::VersionNotFound { .. })),
             "absent version must return VersionNotFound, got {missing_result:?}",
+        );
+    }
+
+    #[test]
+    fn repair_error_verify_preserves_source_chain() {
+        use std::error::Error as _;
+        let inner = VerifyRunError::LedgerQueryFailed {
+            source: DjogiError::Db(crate::error::DbError::other("boom".to_string())),
+        };
+        let err = RepairError::Verify(inner);
+
+        let display = err.to_string();
+        assert!(
+            display.contains("repair live-DB projection failed"),
+            "Display must frame the projection origin; got {display:?}"
+        );
+
+        let lvl1 = err
+            .source()
+            .expect("RepairError::Verify must expose its VerifyRunError source");
+        let verify = lvl1
+            .downcast_ref::<VerifyRunError>()
+            .expect("source() must downcast to VerifyRunError");
+        assert!(
+            matches!(verify, VerifyRunError::LedgerQueryFailed { .. }),
+            "the typed VerifyRunError variant must be preserved",
         );
     }
 }
