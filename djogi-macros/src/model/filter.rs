@@ -90,19 +90,27 @@
 //!    setter's call site fails — with a localized
 //!    "trait bound `…: IntoFilterValue` is not satisfied" rather
 //!    than a whole-model reject.
-//! 2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
-//!    still go through `IntoFilterValue` (because
-//!    `Lookup<V>::into_op_value` is bounded on `V`). For columns
-//!    without such an impl, those setters are unusable — the
-//!    closure API's `.is_null()` remains the escape hatch.
-//!    Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly
-//!    the field type is read verbatim, so users write
-//!    `Lookup::Eq(Some("hello".to_string()))` /
-//!    `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
-//!    for nullable columns, so the two surfaces stay symmetric. (A later
-//!    phase may add a sugar layer that re-emits `Option<T>` setters as
-//!    `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
-//!    purely additive and does not need a change to this module.)
+//! 2. Nullable columns (outer `Option<T>`) get two extra monomorphic
+//!    setters — `<field>_is_null()` and `<field>_is_not_null()` — emitted
+//!    alongside the generic setter. These call the hidden
+//!    `filter_clause_is_null` / `filter_clause_is_not_null` helpers
+//!    (`::djogi::__private::query::*`), which build `IS NULL` /
+//!    `IS NOT NULL` clauses with no value and **no `IntoFilterValue`
+//!    bound**. So a nullable column whose inner type does not implement
+//!    `IntoFilterValue` (`Option<Jsonb<P>>`, `Option<GeoPoint>`, user
+//!    newtypes) can still be null-checked through the struct-filter path —
+//!    full parity with the closure API's [`FieldRef<M, V>`]`::is_null`. The
+//!    null setters are additive alongside the existing generic setter, and
+//!    provide the ONLY supported struct-filter path for null checks —
+//!    `PostFilter::new().score(Lookup::Eq(Some(7)))` does not compile
+//!    through the generic setter, since its `__V: IntoFilterValue` bound
+//!    (pinned to `Option<T>` by the `SameAs` witness) is unsatisfiable:
+//!    `IntoFilterValue` has no `Option<T>` impl. Detection is by
+//!    [`unwrap_option`] on the field's outer type, covering every
+//!    outer-`Option<T>` field — not just the portable subset. A null helper
+//!    whose name would collide with an existing user-field setter is
+//!    skipped, preserving backwards compatibility for models with a field
+//!    named e.g. `score_is_null`.
 //! # `pk = None` gate
 //! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see
@@ -127,10 +135,11 @@
 //! [`QuerySet`]: ::djogi::QuerySet
 //! [`unwrap_option`]: crate::model::attrs::unwrap_option
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
+use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, unwrap_option};
 use crate::model::portable_field_emit::{PortableFieldEmitInfo, PortableFieldKind};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::HashSet;
 use syn::ItemStruct;
 
 /// Emit `{Model}Filter` with one setter per user field plus the
@@ -159,11 +168,9 @@ pub fn expand(
     // and `updated_at`; everything else prepends `id`, `created_at`,
     // `updated_at`. A mismatch here would emit a `.id(...)` setter that
     // shadows the PK and disagrees with the descriptor — the single
-    // source of truth for the schema contract.
-    let n_framework = match &model_attrs.pk {
-        PkStrategy::None => 2,
-        _ => 3,
-    };
+    // source of truth for the schema contract. `framework_field_count`
+    // is the single source: `2` for `PkStrategy::None`, `3` otherwise.
+    let n_framework = model_attrs.framework_field_count();
 
     // Typed setters: the value's generic `__V` is pinned to the
     // column's declared Rust type through a reflexive `SameAs<#ty>`
@@ -198,15 +205,33 @@ pub fn expand(
     // The helper trait lives in `djogi::__private::SameAs` to keep it
     // out of the public namespace — users compose filters through
     // `Lookup<V>` and never need to name `SameAs` themselves.
-    // # Raw `Lookup::<#ty>::IsNull` still works
-    // `Lookup::IsNull` carries no value, but the variant is still
-    // generic in `V` — the user writes `Lookup::<#ty>::IsNull` or
-    // lets inference fill `__V = #ty` from the setter's signature.
-    // Once `__V = #ty` is pinned, the `__V: IntoFilterValue` bound
-    // applies; columns whose type doesn't implement that trait cannot
-    // use `IsNull` through the clause path and fall back to the
-    // closure API's `.is_null()` (which has its own set of impls to
-    // consult).
+    // # Nullable columns: dedicated null-only setters
+    // For outer-`Option<T>` fields the macro emits `<field>_is_null()` /
+    // `<field>_is_not_null()` below (issue #318), backed by the hidden
+    // `filter_clause_is_null` / `filter_clause_is_not_null` helpers —
+    // value-free, no `IntoFilterValue` bound. The generic
+    // `Lookup::<#ty>::IsNull` path through `from_lookup` still exists but is
+    // only reachable when `#ty: IntoFilterValue`; the dedicated setters are
+    // the supported way to null-check ANY nullable column, matching the
+    // closure API's `.is_null()`. A null helper colliding with an existing
+    // user-field setter name is skipped.
+    //
+    // Names of every user-field setter the macro will emit (stripped column
+    // names). A null helper whose name collides with one of these is skipped
+    // so a model with a field literally named e.g. `score_is_null` keeps its
+    // own generic setter and does not get a duplicate-method conflict. This
+    // deduplicates only *within* the macro-generated `impl {Model}Filter`
+    // block; a method the adopter defines in their own separate `impl` block
+    // is invisible to the macro (see the generated null-setter doc comments
+    // and the module-level design notes on that unavoidable limitation).
+    let user_method_names: HashSet<String> = struct_item
+        .fields
+        .iter()
+        .skip(n_framework)
+        .filter_map(|field| field.ident.as_ref())
+        .map(crate::syn_util::column_name_from_ident)
+        .collect();
+
     let setters: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -224,7 +249,8 @@ pub fn expand(
             let doc = format!(
                 "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `ctx.raw_execute` / `ctx.raw_scalar` directly in those cases."
             );
-            Some(quote! {
+
+            let generic_setter = quote! {
                 #[doc = #doc]
                 #[inline]
                 pub fn #ident<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
@@ -235,7 +261,79 @@ pub fn expand(
                     self.clauses.push(::djogi::FilterClause::from_lookup(#column, lookup));
                     self
                 }
-            })
+            };
+
+            // Outer-`Option<T>` fields additionally get two value-free
+            // null-only setters backed by `filter_clause_is_null` /
+            // `filter_clause_is_not_null`. They impose NO `IntoFilterValue`
+            // bound, so non-portable inners (`Option<Jsonb<P>>`,
+            // `Option<GeoPoint>`, user newtypes) can be null-checked through
+            // the struct-filter path (issue #318). Detection is
+            // `unwrap_option` (outer-Option only), covering ALL nullable
+            // fields — not just the `PortableFieldKind::is_optional()`
+            // portable subset.
+            let (_inner, is_optional) = unwrap_option(ty);
+            if !is_optional {
+                return Some(generic_setter);
+            }
+
+            let mut methods = vec![generic_setter];
+
+            // Method names derive from the stripped column base so they line
+            // up with the SQL column literal and the collision set.
+            let is_null_name = format!("{column}_is_null");
+            if !user_method_names.contains(&is_null_name) {
+                let is_null_ident = format_ident!("{}", is_null_name);
+                let null_doc = format!(
+                    "Append a `{column} IS NULL` check to the filter. Value-free — \
+                     requires no `IntoFilterValue` impl on the column's inner type, \
+                     so it works on every nullable column. Mirrors the closure API's \
+                     `f.{column}().is_null()`.\n\n\
+                     This is a generated inherent method on the filter struct. If \
+                     your crate already defines a method of this name in its own \
+                     `impl` block for this filter, the two collide \
+                     (`error[E0592]: duplicate definitions`); rename your method to \
+                     resolve it."
+                );
+                methods.push(quote! {
+                    #[doc = #null_doc]
+                    #[inline]
+                    pub fn #is_null_ident(mut self) -> Self {
+                        self.clauses.push(
+                            ::djogi::__private::query::filter_clause_is_null(#column)
+                        );
+                        self
+                    }
+                });
+            }
+
+            let is_not_null_name = format!("{column}_is_not_null");
+            if !user_method_names.contains(&is_not_null_name) {
+                let is_not_null_ident = format_ident!("{}", is_not_null_name);
+                let not_null_doc = format!(
+                    "Append a `{column} IS NOT NULL` check to the filter. Value-free — \
+                     requires no `IntoFilterValue` impl on the column's inner type, \
+                     so it works on every nullable column. Mirrors the closure API's \
+                     `f.{column}().is_not_null()`.\n\n\
+                     This is a generated inherent method on the filter struct. If \
+                     your crate already defines a method of this name in its own \
+                     `impl` block for this filter, the two collide \
+                     (`error[E0592]: duplicate definitions`); rename your method to \
+                     resolve it."
+                );
+                methods.push(quote! {
+                    #[doc = #not_null_doc]
+                    #[inline]
+                    pub fn #is_not_null_ident(mut self) -> Self {
+                        self.clauses.push(
+                            ::djogi::__private::query::filter_clause_is_not_null(#column)
+                        );
+                        self
+                    }
+                });
+            }
+
+            Some(quote! { #(#methods)* })
         })
         .collect();
 
@@ -569,5 +667,86 @@ mod tests {
             2,
             "plain bool/string fields should remain on the portable filter_struct path"
         );
+    }
+
+    fn probe_model_attrs() -> ModelAttrs {
+        // Minimal valid attrs: default PK (HeerIdRecencyBiased), so
+        // `framework_field_count()` == 3 and the `IntoQ` bridge IS emitted.
+        ModelAttrs::parse(quote::quote!(table = "probe")).expect("valid model attrs")
+    }
+
+    #[test]
+    fn expand_emits_null_helpers_for_option_fields() {
+        // Three framework fields first (id/created_at/updated_at), then
+        // user fields. The macro must emit null helpers for every outer
+        // `Option<T>`, including the non-portable `Option<Jsonb<_>>` inner.
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct Probe {
+                pub id: ::djogi::HeerId,
+                pub created_at: ::time::OffsetDateTime,
+                pub updated_at: ::time::OffsetDateTime,
+                pub maybe_count: Option<i32>,
+                pub maybe_meta: Option<::djogi::Jsonb<Meta>>,
+                pub maybe_label: std::option::Option<String>,
+            }
+        };
+
+        let tokens = expand(&item, &probe_model_attrs(), &[], &[]).to_string();
+
+        assert!(tokens.contains("maybe_count_is_null"));
+        assert!(tokens.contains("maybe_count_is_not_null"));
+        assert!(tokens.contains("maybe_meta_is_null"));
+        assert!(tokens.contains("maybe_meta_is_not_null"));
+        assert!(tokens.contains("maybe_label_is_null"));
+        assert!(tokens.contains("filter_clause_is_null"));
+        assert!(tokens.contains("filter_clause_is_not_null"));
+    }
+
+    #[test]
+    fn expand_skips_null_helpers_for_non_option_fields() {
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct Probe {
+                pub id: ::djogi::HeerId,
+                pub created_at: ::time::OffsetDateTime,
+                pub updated_at: ::time::OffsetDateTime,
+                pub count: i32,
+                pub metadata: ::djogi::Jsonb<Meta>,
+            }
+        };
+
+        let tokens = expand(&item, &probe_model_attrs(), &[], &[]).to_string();
+
+        assert!(!tokens.contains("count_is_null"));
+        assert!(!tokens.contains("metadata_is_null"));
+    }
+
+    #[test]
+    fn expand_skips_colliding_null_helper_names() {
+        // A user field literally named `maybe_count_is_null` makes the macro
+        // emit a generic setter `maybe_count_is_null<__V>(Lookup<__V>)`. The
+        // null helper for the sibling `maybe_count: Option<i32>` would also
+        // generate a no-arg `maybe_count_is_null()`, but collision-skipping
+        // must SKIP it so the impl block has exactly one
+        // `pub fn maybe_count_is_null` (the user's generic setter), not a
+        // duplicate. Same for `maybe_count_is_not_null`.
+        let item: syn::ItemStruct = parse_quote! {
+            pub struct Probe {
+                pub id: ::djogi::HeerId,
+                pub created_at: ::time::OffsetDateTime,
+                pub updated_at: ::time::OffsetDateTime,
+                pub maybe_count: Option<i32>,
+                pub maybe_count_is_null: bool,
+                pub maybe_count_is_not_null: bool,
+            }
+        };
+
+        let tokens = expand(&item, &probe_model_attrs(), &[], &[]).to_string();
+
+        // Exactly one `pub fn maybe_count_is_null` must exist (the user's bool
+        // field generic setter). The null helper for the `Option<i32>` field is
+        // suppressed due to collision-skipping. Same for
+        // `maybe_count_is_not_null`.
+        assert_eq!(tokens.matches("pub fn maybe_count_is_null").count(), 1);
+        assert_eq!(tokens.matches("pub fn maybe_count_is_not_null").count(), 1);
     }
 }

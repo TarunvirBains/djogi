@@ -380,6 +380,30 @@ notes above).
 `Lookup` is `#[non_exhaustive]` — new variants are added as needed without
 a breaking change.
 
+### Null checks on nullable columns
+
+For every nullable column (declared `Option<T>`) the macro also emits two
+value-free setters — `<field>_is_null()` and `<field>_is_not_null()` — the
+supported way to express `IS NULL` / `IS NOT NULL` through `{Model}Filter`:
+
+```rust
+let filter = PostFilter::new()
+    .score_is_null()          // score IS NULL
+    .published(Lookup::Eq(true));
+
+let filter = PostFilter::new().score_is_not_null();  // score IS NOT NULL
+```
+
+These mirror the closure API's `f.score().is_null()` / `.is_not_null()` and
+work on **any** nullable column — including those whose inner type does not
+implement `IntoFilterValue` (`Option<Jsonb<T>>`, `Option<GeoPoint>`, user
+newtypes). Prefer them over passing `Lookup::IsNull` to the generic setter:
+the generic setter pins its value type to the column's declared type, so
+`PostFilter::new().score(Lookup::IsNull)` does **not** compile for an
+`Option<i32>` column (`Option<i32>` has no `IntoFilterValue` impl). The
+`<field>_is_null()` setter is emitted only for nullable columns; a
+non-`Option` column has no such method.
+
 `filter_struct` preserves the same database result semantics as the same set
 of lookups expressed as `.filter(|f| ...)`. For cache and refresh admission,
 generated filters keep their stored `FilterClause` vector as the single source

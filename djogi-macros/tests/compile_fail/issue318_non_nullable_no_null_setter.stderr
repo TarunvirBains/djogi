@@ -1,0 +1,12 @@
+error[E0599]: no method named `name_is_null` found for struct `AccountFilter` in the current scope
+  --> $DIR/issue318_non_nullable_no_null_setter.rs:20:26
+   |
+11 | #[model(table = "issue318_non_nullable")]
+   | ----------------------------------------- method `name_is_null` not found for this struct
+...
+20 |     AccountFilter::new().name_is_null()
+   |                          ^^^^^^^^^^^^ method not found in `AccountFilter`
+
+error: aborting due to 1 previous error
+
+For more information about this error, try `rustc --explain E0599`.
