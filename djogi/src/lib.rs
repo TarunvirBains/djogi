@@ -496,7 +496,7 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, CachedPortableQuerySet,
     ClosureModel, ConditionExt, ConflictAction, ConflictColumns, ConflictCondition, ConflictExpr,
-    ConflictTarget, ConflictUpdate, CrossModelSetOpQuerySet, CteQuerySet, DjogiPortableEq,
+    ConflictTarget, ConflictUpdate, CrossModelSetOpQuerySet, CteQuerySet, CteRef, DjogiPortableEq,
     ExcludedRef, ExplicitPgOrderable, FieldRef, FilterClause, InnerLateral, InsertSelectColumn,
     InsertSelectSource, InsertSelectStmt, IntoAggregateTuple, IntoConflictColumn,
     IntoConflictCondition, IntoConflictExpr, IntoConflictUpdates, IntoCrossArm, IntoCteBody,
@@ -663,6 +663,8 @@ pub mod prelude {
         // Djogi#103 + GH#299 — VALUES join (inner, left, cross).
         CrossValuesJoinedQuerySet,
         CteQuerySet,
+        // djogi#483 — runtime-typed cross-CTE column reference.
+        CteRef,
         DjogiPortableEq,
         ExcludedRef,
         ExplicitPgOrderable,

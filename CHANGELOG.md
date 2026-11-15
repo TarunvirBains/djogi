@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Correlated subqueries, variadic functions & cross-CTE refs:** closes the
+  typed-surface gaps that forced these queries onto the raw-SQL bypass.
+  `InsertSelectSource::subquery(Subquery<T, V>)` embeds a correlated
+  single-table, single-column scalar subquery as an INSERT ... SELECT
+  projection column (correlate via `{Outer}OuterRef::col().as_qualified_expr()`).
+  `CteQuerySet::filter_expr` plus a runtime-typed `CteRef::new(alias,
+  column)?.as_expr::<V>()` helper plus `CteQuerySet::also_from_cte` (which brings
+  a sibling CTE into the consumer `FROM` so its columns resolve) plus a
+  two-expression `Expr::dwithin(lhs, rhs, radius_m)` (spatial) let a CTE consumer
+  `SELECT` filter on a sibling CTE's column. FTS predicates on a CTE consumer are
+  refused at build time (the tsvector is a generated column CTE bodies do not
+  project). `Expr::coalesce` / `least` / `greatest` (+ `_many`) and matching
+  `InsertSelectSource` constructors, comparison operators on `InsertSelectSource`
+  (`eq`/`neq`/`gt`/`gte`/`lt`/`lte` → `InsertSelectSource<S, bool>`), and
+  `Expr::now()` round out the variadic-function and boolean-projection surface
+  (#483, #485).
 - **Automatic soft-delete default filter:** `objects()` on a
   `#[model(soft_deletable)]` model now excludes `deleted_at IS NOT NULL`
   rows by default — no manual `.not_deleted()` call required. The filter

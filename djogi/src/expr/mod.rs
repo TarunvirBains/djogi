@@ -67,6 +67,7 @@ pub mod row_aggregate;
 pub(crate) mod spatial;
 pub(crate) mod sql;
 pub mod subquery;
+pub(crate) mod variadic;
 pub mod window;
 pub mod window_fn;
 
@@ -156,6 +157,35 @@ impl Expr<i32> {
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
     pub fn current_year() -> Expr<i32> {
         Expr::from_node(ExprNode::CurrentYear)
+    }
+}
+
+impl Expr<time::OffsetDateTime> {
+    /// `NOW()` — the transaction start timestamp as an
+    /// `Expr<time::OffsetDateTime>`, evaluated server-side.
+    /// # Why an associated constructor?
+    /// `now()` takes no arguments and is column-independent, the same shape as
+    /// [`Expr::current_year`] — routing it through the typed `Expr` surface
+    /// keeps the call site independent of any specific column.
+    /// # Volatility
+    /// `NOW()` is `STABLE` per Postgres — it returns the transaction start
+    /// time, constant within a transaction. Callers needing a per-row
+    /// wall-clock should use `clock_timestamp()` (not exposed; reach for
+    /// `ctx.raw_*`). Callers needing a frozen literal should bind an
+    /// `OffsetDateTime` via [`Expr::literal`].
+    /// # Example
+    /// ```ignore
+    /// // SQL: (expires_at < NOW()) — rows whose expiry has passed.
+    /// Session::objects()
+    ///     .filter_expr(|f| f.expires_at().as_expr().lt(Expr::now()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    /// # Where
+    /// - [`ExprNode::Now`] — the underlying IR variant.
+    /// - [`sql::emit_expr`] renders the `NOW()` token.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn now() -> Expr<time::OffsetDateTime> {
+        Expr::from_node(ExprNode::Now)
     }
 }
 
@@ -304,6 +334,42 @@ impl Expr<crate::geo::Polygon> {
             crate::expr::spatial::SpatialExpr::Intersection {
                 a_ewkb: a.to_ewkb_bytes(),
                 b_ewkb: b.to_ewkb_bytes(),
+            },
+        ))
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl Expr<crate::geo::GeoPoint> {
+    /// `ST_DWithin(<lhs>, <rhs>, $radius_m)` — true when two geography
+    /// expressions are within `radius_m` meters of each other (great-circle
+    /// distance). Both operands are arbitrary `Expr<GeoPoint>`, so this
+    /// composes a model column with a CTE alias column
+    /// ([`crate::query::cte_ref::CteRef::as_expr`]), two CTE columns, etc.
+    /// Unlike [`crate::query::field::FieldRef::within_km`] (column vs a
+    /// literal point), neither side need be a literal.
+    /// # Example
+    /// ```ignore
+    /// // Filter a CTE consumer on proximity to an anchor CTE's geography.
+    /// let near = Expr::dwithin(
+    ///     f.geo().as_expr(),
+    ///     CteRef::new("anchor", "geo")?.as_expr::<GeoPoint>(),
+    ///     50_000.0,
+    /// );
+    /// ```
+    /// # Where
+    /// - [`crate::expr::spatial::SpatialExpr::DWithinExprToExpr`] — IR variant.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn dwithin(
+        lhs: Expr<crate::geo::GeoPoint>,
+        rhs: Expr<crate::geo::GeoPoint>,
+        radius_m: f64,
+    ) -> Expr<bool> {
+        Expr::from_node(ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::DWithinExprToExpr {
+                lhs: Box::new(lhs.node),
+                rhs: Box::new(rhs.node),
+                radius_m,
             },
         ))
     }

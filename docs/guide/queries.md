@@ -923,6 +923,47 @@ inserted row into memory. For large copy operations, prefer `.execute(...)` for
 the count and then query the target table with a filter on the known ID range or
 a `created_at` window.
 
+### Correlated subquery projection columns
+
+A projection column can be a **correlated single-table, single-column scalar
+subquery** via `InsertSelectSource::subquery(...)`. The subquery correlates to
+the current outer source row through the macro-emitted
+`{Outer}OuterRef::col().as_qualified_expr()` handle, which resolves because
+INSERT ... SELECT emits `FROM <outer_table>` (the bare physical table name).
+
+```rust
+// INSERT INTO summaries (parent_id, score)
+// SELECT parents.id,
+//        (SELECT profiles.score FROM profiles WHERE profiles.parent_id = parents.id)
+// FROM parents
+Parent::objects()
+    .insert_into::<Summary, _, _>(|target, source| {
+        let profile_score = Subquery::new(
+            Profile::objects().filter_expr(|c| {
+                c.parent_id().as_expr().eq(ParentOuterRef::id().as_qualified_expr())
+            }),
+            <Profile as djogi::model::Model>::Fields::default().score(),
+        );
+        vec![
+            target.parent_id().copy_from(source.id().as_insert_source()),
+            target.score().copy_from(InsertSelectSource::subquery(profile_score)),
+        ]
+    })
+    .execute(&mut ctx).await?;
+```
+
+The correlation must be uniqueness-guaranteed — a 1:1 parent↔profile relation
+means the scalar subquery returns exactly one row. (`Subquery` drops
+ordering/limit, so a multi-row correlated scalar errors at runtime.) The
+projected scalar is a **column**; an aggregate projection like
+`(SELECT COUNT(*) FROM children WHERE …)` is a separate surface and stays on
+`ctx.raw_*`.
+
+Source operands can also be variadic compositions
+(`InsertSelectSource::{coalesce, least, greatest}` and the `_many` forms) and
+boolean comparisons (`InsertSelectSource::{eq, neq, gt, gte, lt, lte}` →
+`InsertSelectSource<S, bool>`).
+
 ### ON CONFLICT bulk upsert
 
 `insert_into(...)` also composes with `ON CONFLICT` for bulk upsert flows:
@@ -1059,6 +1100,50 @@ let summary = Category::materialize_closure::<CategoryAncestry>(
 Adopters that hit the closure table from a queryset use the pair-tuple
 substrate below to JOIN both sides of a candidate pair to the
 materialised closure in one round-trip.
+
+### Cross-CTE column references
+
+A CTE consumer `SELECT` can filter on a column projected by a *sibling* CTE
+term. Reference the sibling column with `CteRef::new(alias, column)?.as_expr::<V>()`
+inside `filter_expr`, and bring the sibling term into the consumer `FROM` with
+`also_from_cte(alias)` — Postgres requires a `WITH` term to appear in `FROM`
+before its columns are referenceable (a merely-declared term raises `42P01`).
+
+```rust
+use djogi::geo::GeoPoint;
+
+// Filter a full place set against a single anchor place, by proximity.
+// WITH anchor AS (SELECT ... FROM places WHERE id = $1),
+//      places_cte AS (SELECT ... FROM places)
+// SELECT places_cte.* FROM places_cte, anchor
+// WHERE ST_DWithin(places_cte.geo, anchor.geo, 50000)
+let near = Place::objects()
+    .with("anchor", Place::objects().filter(|p| p.id().eq(anchor_id)))?
+    .with("places_cte", Place::objects())?
+    .from_cte("places_cte")?
+    // Bring the sibling `anchor` term into the consumer FROM so its column
+    // resolves. `anchor` is a single-row lookup → a 1×N correlation.
+    .also_from_cte("anchor")?
+    .filter_expr(|p| {
+        Expr::dwithin(
+            p.geo().as_expr(),
+            CteRef::new("anchor", "geo")?.as_expr::<GeoPoint>(),
+            50_000.0,
+        )
+    })
+    .fetch_all(&mut ctx).await?;
+```
+
+When `also_from_cte` is used, every model-column reference in the consumer
+SELECT list, WHERE predicate, and ORDER BY is automatically qualified to the
+`from_cte` term so the two-term `FROM` is unambiguous. Prefer single-row anchor
+terms — a multi-row `also_from_cte` term produces a full cartesian product.
+
+Full-text-search predicates (`f.search().matches(...)` / `.rank(...)`) are **not
+supported** on a CTE consumer: a CTE body projects only declared struct fields,
+and the FTS tsvector is a generated column absent from that projection. A
+terminal on such a consumer fails at build time with `DjogiError::Validation` —
+filter FTS on the base queryset before entering the CTE builder.
 
 ---
 

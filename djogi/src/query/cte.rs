@@ -195,6 +195,174 @@ fn validate_cte_consumer<M: Model>(consumer: &QuerySet<M>, site: &str) -> Result
     )))
 }
 
+// ── Full-text-search guard for CTE consumers ───────────────────────────────
+//
+// FTS predicates reference the model's `GENERATED ALWAYS AS` tsvector column
+// (e.g. `search`), which CTE bodies never project (bodies carry only declared
+// struct fields). A `search @@ …` / `ts_rank(search, …)` reference against a CTE
+// term raises Postgres `42703` at runtime. The guard below detects FTS anywhere
+// in the consumer predicate tree so the build boundary can refuse it (see
+// `build_cte_select_inner`). The consumer predicate is a `Q<T>` tree, and FTS
+// leaves can arrive wrapped several layers deep, so the walk descends
+// `Q<T>` → `Condition` → `ExprNode`.
+
+/// Walk an [`ExprNode`](crate::expr::node::ExprNode) and report whether it
+/// carries an FTS leaf (`TsMatch` / `TsRank` / `TsRankCd`) anywhere in the
+/// tree. Mirrors the exhaustive, no-wildcard discipline of
+/// `expr_node_contains_excluded` (`crate::query::insert_select`): every variant
+/// with inner `ExprNode` children recurses; every leaf / separate-scope variant
+/// returns `false`. The exhaustive match means a future FTS-bearing variant
+/// forces a compile error here rather than silently slipping past the guard.
+fn expr_node_contains_fts(node: &crate::expr::node::ExprNode) -> bool {
+    use crate::expr::node::ExprNode;
+    match node {
+        // FTS leaves — the thing we are looking for.
+        ExprNode::TsMatch { .. } | ExprNode::TsRank { .. } | ExprNode::TsRankCd { .. } => true,
+
+        // Leaf variants with no inner ExprNode — cannot carry FTS.
+        ExprNode::Field { .. }
+        | ExprNode::RawSql(_)
+        | ExprNode::Literal(_)
+        | ExprNode::ArrayLength { .. }
+        | ExprNode::CurrentYear
+        | ExprNode::Now
+        | ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::OuterRefAlias { .. }
+        | ExprNode::CteAliasField { .. }
+        | ExprNode::Excluded { .. }
+        | ExprNode::IntervalLiteral { .. } => false,
+
+        // Binary arithmetic / boolean nodes recurse into both operands.
+        ExprNode::Cmp { lhs, rhs, .. }
+        | ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => expr_node_contains_fts(lhs) || expr_node_contains_fts(rhs),
+
+        // Unary wrappers recurse into the single inner node.
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            expr_node_contains_fts(inner)
+        }
+
+        // Variadic expressions recurse into every operand.
+        ExprNode::Coalesce(operands)
+        | ExprNode::Least(operands)
+        | ExprNode::Greatest(operands)
+        | ExprNode::GroupingVariadic { args: operands } => {
+            operands.iter().any(expr_node_contains_fts)
+        }
+
+        // CASE recurses into each arm's condition and value, plus the default.
+        ExprNode::Case { arms, otherwise } => {
+            arms.iter()
+                .any(|(cond, val)| expr_node_contains_fts(cond) || expr_node_contains_fts(val))
+                || expr_node_contains_fts(otherwise)
+        }
+
+        // Aggregate recurses into the argument and optional expression fields.
+        ExprNode::Aggregate {
+            arg, arg2, filter, ..
+        } => {
+            expr_node_contains_fts(arg)
+                || arg2.as_deref().is_some_and(expr_node_contains_fts)
+                || filter.as_deref().is_some_and(expr_node_contains_fts)
+        }
+
+        // Subquery bodies are separate scopes; only the lhs expression belongs
+        // to this scope (Exists / Subquery open a fresh FROM).
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
+        ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
+            expr_node_contains_fts(lhs)
+        }
+
+        // Trigram leaves carry no inner ExprNode.
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
+
+        // Spatial: the `DWithinExprToExpr` variant carries two boxed ExprNode
+        // operands that can hide an FTS leaf (e.g. inside a CASE used as a
+        // geography operand); every other spatial variant is a pure leaf.
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(s) => spatial_expr_contains_fts(s),
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { .. } => false,
+    }
+}
+
+/// Walk a [`SpatialExpr`](crate::expr::spatial::SpatialExpr) and report whether
+/// it carries an FTS leaf. Only `DWithinExprToExpr` has `ExprNode` children;
+/// every other variant holds column names, `GeoPoint`, `f64`, or EWKB bytes,
+/// which cannot nest a `TsMatch` / `TsRank` / `TsRankCd`. The match is
+/// exhaustive (no wildcard) so a future spatial variant with `ExprNode`
+/// children forces an update here, preserving the fail-safe property against
+/// `SpatialExpr`'s `#[non_exhaustive]`.
+#[cfg(feature = "spatial")]
+fn spatial_expr_contains_fts(s: &crate::expr::spatial::SpatialExpr) -> bool {
+    use crate::expr::spatial::SpatialExpr;
+    match s {
+        // Only variant carrying ExprNode operands — recurse into both.
+        SpatialExpr::DWithinExprToExpr { lhs, rhs, .. } => {
+            expr_node_contains_fts(lhs) || expr_node_contains_fts(rhs)
+        }
+        // Pure spatial variants: column names, GeoPoint, f64, EWKB bytes —
+        // no ExprNode children, so no FTS can hide here.
+        SpatialExpr::Within { .. }
+        | SpatialExpr::Distance { .. }
+        | SpatialExpr::Contains { .. }
+        | SpatialExpr::Intersects { .. }
+        | SpatialExpr::Touches { .. }
+        | SpatialExpr::WithinShape { .. }
+        | SpatialExpr::BoundedBy { .. }
+        | SpatialExpr::Area { .. }
+        | SpatialExpr::Intersection { .. }
+        | SpatialExpr::AreaOfIntersection { .. } => false,
+    }
+}
+
+/// Walk a [`Condition`](crate::query::condition::Condition) tree and report
+/// whether it carries an FTS leaf. The only bridge into the `ExprNode` layer is
+/// `Condition::Expr` (where `f.search().matches(…)` lands); the boolean
+/// combinators recurse. Exhaustive match (no wildcard) — a future `Condition`
+/// variant that can carry an `Expr` forces a compile error here.
+fn condition_contains_fts(cond: &crate::query::condition::Condition) -> bool {
+    use crate::query::condition::Condition;
+    match cond {
+        Condition::Expr(expr) => expr_node_contains_fts(&expr.node),
+        Condition::And(parts) | Condition::Or(parts) => parts.iter().any(condition_contains_fts),
+        Condition::Not(inner) => condition_contains_fts(inner),
+        Condition::True
+        | Condition::Leaf(_)
+        | Condition::ArrayContains(_)
+        | Condition::ArrayContainedBy(_)
+        | Condition::ArrayOverlap(_)
+        | Condition::RangePredicate(_)
+        | Condition::JsonbPath(_)
+        | Condition::RawSql(_) => false,
+    }
+}
+
+/// Walk the consumer's [`Q<T>`](crate::query::q::Q) predicate tree and report
+/// whether it carries an FTS leaf. `Q::Expression` is the `rank(q).gt(…)`
+/// ingress and `Q::Condition` the `matches(q)` ingress; the combinators
+/// recurse. Exhaustive same-crate match — a new FTS-bearing `Q` variant forces
+/// an update here even though `Q<T>` is `#[non_exhaustive]` across crates.
+fn q_contains_fts<T: Model>(q: &crate::query::q::Q<T>) -> bool {
+    use crate::query::q::Q;
+    match q {
+        Q::Expression(expr) => expr_node_contains_fts(&expr.node),
+        Q::Condition(cond) => condition_contains_fts(cond),
+        Q::Compound { parts, .. } => parts.iter().any(q_contains_fts),
+        Q::Xor(a, b) => q_contains_fts(a) || q_contains_fts(b),
+        Q::Negated(inner) => q_contains_fts(inner),
+        Q::Portable(_) | Q::Ilike(_, _) | Q::JsonbPath(_) | Q::Regex(_, _, _) | Q::Array(_) => {
+            false
+        }
+    }
+}
+
 fn validate_recursive_join_columns<M: FromPgRow>(
     table_col: &'static str,
     cte_col: &'static str,
@@ -329,6 +497,12 @@ impl<M: Model> RecursiveArm<M> {
 pub struct CteQuerySet<M: Model> {
     pub(crate) terms: Vec<CteTerm>,
     pub(crate) from: Option<&'static str>,
+    /// Additional CTE-term names appended to the consumer `FROM` list after
+    /// `from`, so a cross-CTE `CteRef` predicate can name a sibling term that
+    /// is in the FROM clause (Postgres requires a `WITH` term to appear in
+    /// `FROM` before its columns are referenceable). Insertion order is
+    /// preserved; the emitted FROM is `<from>, <also_from[0]>, <also_from[1]>, …`.
+    pub(crate) also_from: Vec<&'static str>,
     pub(crate) consumer: QuerySet<M>,
     pub(crate) consumer_exclude_cycle_rows: bool,
     _model: PhantomData<fn() -> M>,
@@ -340,6 +514,7 @@ impl<M: Model> std::fmt::Debug for CteQuerySet<M> {
             .field("table", &M::table_name())
             .field("terms", &self.terms)
             .field("from", &self.from)
+            .field("also_from", &self.also_from)
             .field("consumer", &self.consumer)
             .field(
                 "consumer_exclude_cycle_rows",
@@ -370,6 +545,7 @@ impl<M: Model> CteQuerySet<M> {
                 cycle: None,
             }],
             from: None,
+            also_from: Vec::new(),
             consumer,
             consumer_exclude_cycle_rows: false,
             _model: PhantomData,
@@ -389,6 +565,21 @@ impl<M: Model> CteQuerySet<M> {
         {
             return Err(DjogiError::Validation(format!(
                 "from_cte({name:?}) cannot retarget a query with exclude_cycle_rows() onto a term without a CYCLE clause"
+            )));
+        }
+        // A term brought into the consumer FROM via `also_from_cte` must not
+        // also become the primary `from_cte` target — `FROM walk, walk` is a
+        // duplicate-alias error in Postgres (42712). Guard the inverse of the
+        // `also_from_cte` duplicate checks so the "each term appears in the
+        // consumer FROM at most once" invariant holds in either call order.
+        if self
+            .also_from
+            .iter()
+            .any(|existing| sql_ident_eq(existing, name))
+        {
+            return Err(DjogiError::Validation(format!(
+                "from_cte({name:?}) names a term already added via also_from_cte; a CTE term may \
+                 appear in the consumer FROM at most once"
             )));
         }
         self.from = Some(name);
@@ -483,6 +674,7 @@ impl<M: Model> CteQuerySet<M> {
         let mut cte = Self {
             terms: Vec::new(),
             from: None,
+            also_from: Vec::new(),
             consumer,
             consumer_exclude_cycle_rows: false,
             _model: PhantomData,
@@ -501,6 +693,104 @@ impl<M: Model> CteQuerySet<M> {
     {
         self.consumer = self.consumer.filter(f);
         self
+    }
+
+    /// AND an expression-IR predicate onto the consumer `SELECT`.
+    /// The closure receives the consumer model's `M::Fields` handle and
+    /// returns an [`Expr<bool>`](crate::expr::Expr). Use this to compose
+    /// cross-CTE column references via
+    /// [`crate::query::cte_ref::CteRef`] — e.g. filter the consumer on
+    /// proximity to a column projected by another CTE term:
+    /// ```ignore
+    /// places_query
+    ///     .with("anchor", anchor_select)?
+    ///     .with("places_cte", all_places)?
+    ///     .from_cte("places_cte")?
+    ///     // `anchor` is a sibling term referenced below — it must be in the
+    ///     // consumer FROM, so bring it in (emits `FROM places_cte, anchor`):
+    ///     .also_from_cte("anchor")?
+    ///     .filter_expr(|p| Expr::dwithin(
+    ///         p.geo().as_expr(),
+    ///         CteRef::new("anchor", "geo")?.as_expr::<GeoPoint>(),
+    ///         50_000.0,
+    ///     ))
+    /// ```
+    /// # Scope note
+    /// A [`CteRef`](crate::query::cte_ref::CteRef) names a `<alias>.<column>`
+    /// pair; the named CTE term must be in the consumer SELECT's `FROM`
+    /// clause for the column to resolve (Postgres requires a `WITH` term in
+    /// `FROM` before its columns are referenceable — a merely-declared term
+    /// raises `42P01`). If the `CteRef` names the
+    /// [`from_cte`](Self::from_cte) target, it is already in `FROM`. To
+    /// reference a *sibling* term, bring it into the consumer `FROM` with
+    /// [`also_from_cte`](Self::also_from_cte). See
+    /// [`crate::query::cte_ref::CteRef`] for the full limitation note.
+    /// # Full-text search
+    /// FTS predicates (`f.search().matches(...)` / `.rank(...)` /
+    /// `.rank_cd(...)`) are **not supported** on a CTE consumer, because a CTE
+    /// body projects only declared struct fields and the FTS tsvector is a
+    /// generated column absent from that projection. A terminal on a consumer
+    /// carrying an FTS predicate fails with [`DjogiError::Validation`] naming
+    /// the FTS surface — filter FTS on the base `QuerySet` before entering the
+    /// CTE builder.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter_expr<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(M::Fields) -> crate::expr::Expr<bool>,
+    {
+        self.consumer = self.consumer.filter_expr(f);
+        self
+    }
+
+    /// Bring an additional CTE term into the consumer `SELECT`'s `FROM`
+    /// clause, after the [`from_cte`](Self::from_cte) target. Use this when a
+    /// [`filter_expr`](Self::filter_expr) predicate references a *sibling*
+    /// CTE's column via [`CteRef`](crate::query::cte_ref::CteRef): Postgres
+    /// requires the sibling term to appear in `FROM` before `<alias>.<column>`
+    /// resolves (a merely-declared `WITH` term is not in scope — referencing
+    /// it raises `42P01`). The emitted `FROM` becomes
+    /// `<from_cte target>, <this alias>` (an implicit cross join).
+    /// # Single-row anchor caveat
+    /// The added term is cross-joined (comma form). If it returns a single
+    /// row (e.g. an anchor lookup `WHERE id = $1`), the result is the natural
+    /// 1×N correlation. If it returns **multiple** rows, the consumer produces
+    /// a full cartesian product — usually not intended. Add only single-row
+    /// anchor terms unless a cartesian product is what you want.
+    /// # Errors
+    /// [`DjogiError::Validation`] if `name` is not a valid CTE identifier, does
+    /// not name a declared term, or already appears in the consumer `FROM`
+    /// (as the `from_cte` target or a prior `also_from_cte` entry — a CTE term
+    /// may appear in the consumer FROM at most once).
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn also_from_cte(mut self, name: &'static str) -> Result<Self, DjogiError> {
+        validate_cte_name(name)?;
+        if find_term(&self.terms, name).is_none() {
+            return Err(DjogiError::Validation(format!(
+                "also_from_cte({name:?}) references an undeclared CTE term"
+            )));
+        }
+        // Each CTE term may appear in the consumer FROM at most once — a
+        // repeat produces `FROM walk, walk`, which Postgres rejects as a
+        // duplicate alias (42712). Reject a name equal to the primary target
+        // or to an already-appended sibling.
+        if self.from.is_some_and(|primary| sql_ident_eq(primary, name)) {
+            return Err(DjogiError::Validation(format!(
+                "also_from_cte({name:?}) duplicates the from_cte target; a CTE term may appear \
+                 in the consumer FROM at most once"
+            )));
+        }
+        if self
+            .also_from
+            .iter()
+            .any(|existing| sql_ident_eq(existing, name))
+        {
+            return Err(DjogiError::Validation(format!(
+                "also_from_cte({name:?}) is already in the consumer FROM; a CTE term may appear at \
+                 most once"
+            )));
+        }
+        self.also_from.push(name);
+        Ok(self)
     }
 
     /// Append ordering to the consumer `SELECT`.
@@ -591,9 +881,44 @@ impl<M: Model + FromPgRow> CteQuerySet<M> {
             ));
         }
 
-        let last = self.terms.last_mut().ok_or_else(|| {
-            DjogiError::Validation("cycle(...) called before any CTE term was added".to_string())
-        })?;
+        // Empty-list early return — mirrors the last_mut() error message below
+        // so the earlier-term slice subtraction is proven in-bounds (len >= 1)
+        // and the error contract is unchanged.
+        if self.terms.is_empty() {
+            return Err(DjogiError::Validation(
+                "cycle(...) called before any CTE term was added".to_string(),
+            ));
+        }
+        // Reject a CYCLE SET/USING column that duplicates a mark or path column
+        // already attached to an *earlier* CTE term. Each term's mark/path
+        // becomes a synthetic output column; two terms sharing a mark name make
+        // a multi-term consumer FROM (also_from_cte) ambiguous. The `from`-term
+        // mark is qualified at emission; this guard keeps even unqualified /
+        // sibling-referencing uses unambiguous by construction. Scan every term
+        // except the last (the one being configured here) so a replacement
+        // cycle() call does not collide with its own prior mark.
+        for term in &self.terms[..self.terms.len() - 1] {
+            let Some(existing) = &term.cycle else {
+                continue;
+            };
+            if sql_ident_eq(existing.mark_column, mark_column)
+                || sql_ident_eq(existing.path_column, mark_column)
+                || sql_ident_eq(existing.mark_column, path_column)
+                || sql_ident_eq(existing.path_column, path_column)
+            {
+                return Err(DjogiError::Validation(format!(
+                    "CYCLE SET/USING column {mark_column:?}/{path_column:?} duplicates a mark \
+                     or path column already declared on CTE term {:?}; mark and path columns \
+                     must be unique across all CTE terms",
+                    term.name
+                )));
+            }
+        }
+
+        let last = self
+            .terms
+            .last_mut()
+            .expect("non-empty: guarded by the is_empty() early return above");
         if !last.recursive {
             return Err(DjogiError::Validation(
                 "cycle(...) requires the most-recent CTE term to be recursive".to_string(),
@@ -664,18 +989,21 @@ fn emit_cte_preamble<M: Model>(
 fn push_consumer_where<M: Model>(
     acc: &mut SqlAccumulator,
     cte: &CteQuerySet<M>,
+    // The resolved consumer-FROM CTE name, needed for column qualification
+    // when `also_from` is non-empty (two-term consumer FROM).
+    from: &'static str,
+    // The emission context for the consumer tail — computed once in
+    // `push_consumer_select` and shared with the SELECT-list / ORDER-BY
+    // qualification so every path reads the same qualifier and cannot drift.
+    // Root (bare columns) for a single-term FROM; `joined(from)` (columns
+    // qualified `<from>.<col>`) when a sibling CTE is in the consumer FROM.
+    ctx: SqlEmitContext,
 ) -> Result<(), DjogiError> {
     if cte.consumer.is_empty() {
         acc.push_sql(" WHERE FALSE");
         return Ok(());
     }
     let exclude_cycle_mark = if cte.consumer_exclude_cycle_rows {
-        let from = cte.from.ok_or_else(|| {
-            DjogiError::Validation(
-                "CTE query has no consumer target — call `.from_cte(<name>)` before a terminal"
-                    .to_string(),
-            )
-        })?;
         Some(find_selected_cycle_mark(&cte.terms, from).ok_or_else(|| {
             DjogiError::Validation(format!(
                 "exclude_cycle_rows() requires selected term {from:?} to carry a CYCLE clause"
@@ -690,17 +1018,21 @@ fn push_consumer_where<M: Model>(
     ) {
         (Some(mark), true) => {
             acc.push_sql(" WHERE NOT ");
-            acc.push_sql(mark);
+            // The cycle mark belongs to the `from` term (find_selected_cycle_mark
+            // resolves the from-term's mark). `ctx.push_column` leaves it bare
+            // at root and qualifies it `<from>.<mark>` under also_from_cte, so a
+            // two-term consumer FROM does not make it ambiguous.
+            ctx.push_column(acc, mark);
             acc.push_sql(" AND ");
-            crate::query::sql::push_consumer_predicate_only::<M>(acc, &cte.consumer)
+            crate::query::sql::push_consumer_predicate_only_with_ctx::<M>(acc, &cte.consumer, ctx)
                 .map_err(DjogiError::from)?;
         }
         (Some(mark), false) => {
             acc.push_sql(" WHERE NOT ");
-            acc.push_sql(mark);
+            ctx.push_column(acc, mark);
         }
         (None, true) => {
-            crate::query::sql::push_where_with_ctx(acc, &cte.consumer, SqlEmitContext::root())
+            crate::query::sql::push_where_with_ctx(acc, &cte.consumer, ctx)
                 .map_err(DjogiError::from)?;
         }
         (None, false) => {}
@@ -720,13 +1052,36 @@ fn push_consumer_select<M: Model + FromPgRow>(
                 .to_string(),
         )
     })?;
+    // Emission context for the whole consumer tail, computed once and shared
+    // with the WHERE / ORDER BY qualification. When a sibling CTE is in the
+    // consumer FROM (`also_from_cte`), every bare model-column reference is
+    // ambiguous across the two terms, so qualify to the `from` term.
+    let ctx = if cte.also_from.is_empty() {
+        SqlEmitContext::root()
+    } else {
+        SqlEmitContext::joined(from)
+    };
     acc.push_sql(" SELECT ");
-    acc.push_sql(projection);
+    if cte.also_from.is_empty() || projection == "1" {
+        // Single-term consumer FROM, or the count/exists `1` sub-projection —
+        // emit the projection unqualified.
+        acc.push_sql(projection);
+    } else {
+        // Multi-term consumer FROM (also_from_cte used): qualify every model
+        // column as `<from>.<column>` to disambiguate columns shared by both
+        // CTE terms. `COLUMN_LIST` is a baked static string that cannot be
+        // prefixed per-column, so re-emit the column list from `COLUMNS`.
+        push_qualified_columns_for_arm::<M>(acc, from);
+    }
     acc.push_sql(" FROM ");
     acc.push_sql(from);
-    push_consumer_where(acc, cte)?;
+    for extra in &cte.also_from {
+        acc.push_sql(", ");
+        acc.push_sql(extra);
+    }
+    push_consumer_where(acc, cte, from, ctx)?;
     if include_order_limit_offset {
-        crate::query::sql::push_consumer_order_limit_offset(acc, &cte.consumer);
+        crate::query::sql::push_consumer_order_limit_offset(acc, &cte.consumer, ctx);
     }
     Ok(())
 }
@@ -781,6 +1136,25 @@ fn build_cte_select_inner<M: Model + FromPgRow>(
     cte: &CteQuerySet<M>,
     tail: ConsumerTail,
 ) -> Result<SqlAccumulator, DjogiError> {
+    // Full-text-search predicates reference the model's GENERATED ALWAYS AS
+    // tsvector column (e.g. `search`), which CTE bodies never project (bodies
+    // carry only declared struct fields). A `search @@ …` / `ts_rank(search, …)`
+    // reference against a CTE term would raise Postgres 42703 at runtime. The
+    // consumer predicate tree can be mutated after construction by
+    // `CteQuerySet::filter` / `filter_expr`, so this guard lives at the shared
+    // build boundary (reached by every terminal) rather than at the
+    // construction-time `validate_cte_consumer` sites. Tracking: CTE FTS
+    // projection follow-up — once the tsvector column is projected into CTE
+    // bodies, this guard is lifted and FTS gains support.
+    if q_contains_fts(&cte.consumer.condition) {
+        return Err(DjogiError::Validation(
+            "CTE consumer SELECT does not support full-text-search predicates \
+             (search().matches(...) / rank(...) / rank_cd(...)): the FTS tsvector \
+             is a generated column that CTE bodies do not project. Filter FTS on \
+             the base QuerySet before entering the CTE builder."
+                .to_string(),
+        ));
+    }
     let mut acc = SqlAccumulator::new("");
     if matches!(tail, ConsumerTail::ExistsWrapped) {
         acc.push_sql("SELECT EXISTS (");
@@ -956,6 +1330,40 @@ mod tests {
             crate::__private::query::__make_djogi_field("active", |_| {
                 static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                 ACTIVE.get_or_init(|| false)
+            })
+        }
+
+        // FTS accessor — exercises the construction-time-equivalent ingress
+        // the CTE-consumer FTS guard rejects at the build boundary.
+        fn search(&self) -> crate::fts_query::FtsFieldRef<MiniNode> {
+            crate::fts_query::__macro_support::__make_fts_ref::<MiniNode>("search", "english")
+        }
+
+        // String accessor for the boolean-combinator FTS rejection test.
+        fn title(&self) -> DjogiField<MiniNode, String> {
+            crate::__private::query::__make_djogi_field("title", |_| {
+                static TITLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+                TITLE.get_or_init(String::new)
+            })
+        }
+
+        // Array accessor for the array_length qualification test — `.len()`
+        // produces an `ExprNode::ArrayLength` that must be qualified under a
+        // two-term consumer FROM.
+        fn tags(&self) -> DjogiField<MiniNode, Vec<i32>> {
+            crate::__private::query::__make_djogi_field("tags", |_| {
+                static TAGS: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
+                TAGS.get_or_init(Vec::new)
+            })
+        }
+
+        // Geography accessor for the FTS-hidden-in-dwithin spatial rejection
+        // test. Gated on `spatial` because `GeoPoint` is feature-gated.
+        #[cfg(feature = "spatial")]
+        fn geo(&self) -> DjogiField<MiniNode, crate::geo::GeoPoint> {
+            crate::__private::query::__make_djogi_field("geo", |_| {
+                static GEO: std::sync::OnceLock<crate::geo::GeoPoint> = std::sync::OnceLock::new();
+                GEO.get_or_init(|| crate::geo::GeoPoint::new(0.0, 0.0).expect("valid coordinate"))
             })
         }
     }
@@ -1896,5 +2304,331 @@ mod tests {
         let (sql, _binds) = build_cte_exists(&cte).expect("exists build").into_parts();
         assert!(sql.starts_with("SELECT EXISTS (WITH recent AS ("), "{sql}");
         assert!(sql.contains(" SELECT 1 FROM recent LIMIT 1)"), "{sql}");
+    }
+
+    // ── Task 8: filter_expr reaches the consumer WHERE with a CteRef ──────────
+    #[test]
+    fn cte_filter_expr_emits_cte_alias_ref_in_consumer_where() {
+        use crate::query::cte_ref::CteRef;
+        // WITH anchor AS (...), walk AS (...) SELECT ... FROM walk, anchor
+        // WHERE active = anchor.active   (illustrative cross-CTE ref)
+        let cte = MiniNode::objects()
+            .with("anchor", MiniNode::objects())
+            .expect("with anchor")
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("anchor")
+            .expect("also_from_cte anchor")
+            .filter_expr(|f| {
+                f.active().as_expr().eq(CteRef::new("anchor", "active")
+                    .expect("valid cte ref")
+                    .as_expr::<bool>())
+            });
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+        assert!(
+            sql.contains("anchor.active"),
+            "cross-CTE ref must appear: {sql}"
+        );
+    }
+
+    // ── Task 8b: also_from_cte appends the sibling and qualifies the SELECT ───
+    #[test]
+    fn also_from_cte_appends_sibling_to_consumer_from() {
+        let cte = MiniNode::objects()
+            .with("anchor", MiniNode::objects())
+            .expect("with anchor")
+            .with("places_cte", MiniNode::objects())
+            .expect("with places_cte")
+            .from_cte("places_cte")
+            .expect("from_cte")
+            .also_from_cte("anchor")
+            .expect("also_from_cte anchor");
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+        // Both terms in the consumer FROM, comma-separated, primary first.
+        assert!(sql.contains("FROM places_cte, anchor"), "{sql}");
+        // Under also_from, the SELECT projection is qualified to the `from`
+        // term (R4 Change 1) — no bare column list.
+        assert!(
+            sql.contains("places_cte.id") && sql.contains("places_cte.active"),
+            "qualified projection expected: {sql}"
+        );
+    }
+
+    #[test]
+    fn also_from_cte_rejects_undeclared_term() {
+        let err = MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("nope")
+            .expect_err("undeclared term must be rejected");
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+    }
+
+    // ── duplicate FROM terms are rejected (both directions) ──────────────────
+    #[test]
+    fn also_from_cte_rejects_duplicate_of_from_target() {
+        let err = MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("walk")
+            .expect_err("duplicate of from_cte target must be rejected");
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+
+        // Same name added twice via also_from_cte is also rejected.
+        let err2 = MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .with("sibling", MiniNode::objects())
+            .expect("with sibling")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("sibling")
+            .expect("first also_from_cte")
+            .also_from_cte("sibling")
+            .expect_err("duplicate also_from_cte must be rejected");
+        assert!(matches!(err2, crate::DjogiError::Validation(_)));
+    }
+
+    #[test]
+    fn from_cte_rejects_name_already_in_also_from() {
+        // Build the chain in the inverse order — also_from_cte first, then
+        // from_cte onto the same name — and assert from_cte rejects it.
+        let err = MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .with("sibling", MiniNode::objects())
+            .expect("with sibling")
+            .from_cte("walk")
+            .expect("from_cte walk")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .from_cte("sibling")
+            .expect_err("from_cte onto an also_from term must be rejected");
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+    }
+
+    // ── cross-term cycle-mark uniqueness ─────────────────────────────────────
+    #[test]
+    fn duplicate_cycle_mark_across_terms_is_rejected() {
+        let err = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle walk")
+            .with_recursive(
+                "sibling",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("sibling")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive sibling")
+            // Same mark name as `walk` — must be rejected before any terminal.
+            .cycle(&["id"], "is_cycle", "sibling_path")
+            .expect_err("duplicate mark name must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("duplicates a mark") && msg.contains("unique across all CTE terms"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn replacement_cycle_on_same_term_is_accepted() {
+        // Calling cycle() twice on the SAME term (an idempotent re-config)
+        // must NOT self-collide via the cross-term uniqueness loop.
+        let cte = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("first cycle")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("replacement cycle must be accepted");
+        let _ = cte;
+    }
+
+    // ── cycle + filter qualified under also_from_cte ─────────────────────────
+    #[test]
+    fn exclude_cycle_rows_with_filter_qualifies_columns_under_also_from_cte() {
+        let cte = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle")
+            .with("sibling", MiniNode::objects())
+            .expect("with sibling")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .filter(|f| f.active().eq(true))
+            .exclude_cycle_rows()
+            .expect("exclude_cycle_rows");
+        let sql = cte.render_cte_sql_for_testing().expect("render");
+
+        // The consumer FROM has two terms.
+        assert!(sql.contains("FROM walk, sibling"), "{sql}");
+
+        // Scope the WHERE assertions to the consumer tail — the segment
+        // beginning at the final `FROM walk, sibling`. CTE-body projections
+        // (which emit the bare column list) precede this split point.
+        let from_idx = sql
+            .rfind("FROM walk, sibling")
+            .expect("consumer FROM walk, sibling present");
+        let consumer = &sql[from_idx..];
+
+        // The cycle mark is qualified to the `from` term and the user predicate
+        // column is qualified too.
+        assert!(
+            consumer.contains("WHERE NOT walk.is_cycle AND walk.active = $"),
+            "consumer WHERE not qualified; consumer = {consumer}"
+        );
+
+        // The consumer SELECT projection precedes the consumer FROM, so locate
+        // it in the full SQL by anchoring on the consumer FROM index and
+        // searching backward for the nearest `SELECT `.
+        let select_list = {
+            let sel_kw = sql[..from_idx]
+                .rfind("SELECT ")
+                .expect("consumer SELECT before FROM")
+                + "SELECT ".len();
+            sql[sel_kw..from_idx].trim()
+        };
+        assert!(
+            select_list.contains("walk.id"),
+            "SELECT missing walk.id; list = {select_list}"
+        );
+        assert!(
+            select_list.contains("walk.parent_id"),
+            "SELECT missing walk.parent_id; list = {select_list}"
+        );
+        assert!(
+            select_list.contains("walk.active"),
+            "SELECT missing walk.active; list = {select_list}"
+        );
+    }
+
+    // ── FTS predicates on a CTE consumer are refused at build ────────────────
+    fn fts_cte_fixture() -> CteQuerySet<MiniNode> {
+        MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .from_cte("walk")
+            .expect("from_cte")
+    }
+
+    #[test]
+    fn cte_consumer_rejects_fts_matches_leaf() {
+        use crate::fts::TsQuery;
+        let err = fts_cte_fixture()
+            .filter(|f| f.search().matches(TsQuery::new("planet")))
+            .render_cte_sql_for_testing()
+            .unwrap_err();
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+        assert!(err.to_string().contains("full-text"), "got: {err}");
+    }
+
+    #[test]
+    fn cte_consumer_rejects_fts_rank_comparison() {
+        use crate::fts::TsQuery;
+        let err = fts_cte_fixture()
+            .filter(|f| f.search().rank(TsQuery::new("planet")).gt(0.0_f32))
+            .render_cte_sql_for_testing()
+            .unwrap_err();
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+        assert!(err.to_string().contains("full-text"), "got: {err}");
+    }
+
+    #[test]
+    fn cte_consumer_rejects_fts_inside_boolean_combinator() {
+        use crate::fts::TsQuery;
+        let err = fts_cte_fixture()
+            .filter(|f| {
+                f.title().explicit_pg_predicate().contains("planet")
+                    | f.search().matches(TsQuery::new("planet"))
+            })
+            .render_cte_sql_for_testing()
+            .unwrap_err();
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+        assert!(err.to_string().contains("full-text"), "got: {err}");
+    }
+
+    // ── array_length is qualified under also_from_cte ────────────────────────
+    #[test]
+    fn array_length_qualifies_column_under_also_from_cte() {
+        let cte = MiniNode::objects()
+            .with("walk", MiniNode::objects())
+            .expect("with walk")
+            .with("sibling", MiniNode::objects())
+            .expect("with sibling")
+            .from_cte("walk")
+            .expect("from_cte")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .filter_expr(|f| f.tags().len().gt(0))
+            .render_cte_sql_for_testing()
+            .expect("render");
+        // Scope to the consumer tail so CTE-body projections cannot interfere.
+        let from_idx = cte
+            .rfind("FROM walk, sibling")
+            .expect("consumer FROM walk, sibling present");
+        let consumer = &cte[from_idx..];
+        assert!(
+            consumer.contains("array_length(walk.tags, 1)"),
+            "array_length column must be qualified; consumer = {consumer}"
+        );
+        assert!(
+            !consumer.contains("array_length(tags, 1)"),
+            "bare array_length column must not appear; consumer = {consumer}"
+        );
+    }
+
+    // ── FTS hidden inside a DWithinExprToExpr operand is refused ─────────────
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cte_consumer_rejects_fts_hidden_in_dwithin_case_operand() {
+        use crate::Expr;
+        use crate::expr::case::Case;
+        use crate::fts::TsQuery;
+        let err = fts_cte_fixture()
+            .filter_expr(|f| {
+                Expr::dwithin(
+                    Case::when(
+                        f.search().rank(TsQuery::new("planet")).gt(0.0_f32),
+                        f.geo().as_expr(),
+                    )
+                    .otherwise(f.geo().as_expr()),
+                    f.geo().as_expr(),
+                    100.0,
+                )
+            })
+            .render_cte_sql_for_testing()
+            .unwrap_err();
+        assert!(matches!(err, crate::DjogiError::Validation(_)));
+        assert!(err.to_string().contains("full-text"), "got: {err}");
     }
 }

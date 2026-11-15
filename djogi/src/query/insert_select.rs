@@ -260,6 +260,155 @@ impl<S: Model, V> InsertSelectSource<S, V> {
             _phantom: PhantomData,
         }
     }
+
+    /// `COALESCE(nullable, fallback)` as a source projection — first non-NULL
+    /// value. `nullable` is `InsertSelectSource<S, Option<V>>` (a nullable
+    /// source column); `fallback` is `InsertSelectSource<S, V>` (a non-null
+    /// default). Emits `COALESCE($1, $2)`. N-operand homogeneous form:
+    /// [`Self::coalesce_many`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn coalesce(
+        nullable: InsertSelectSource<S, Option<V>>,
+        fallback: InsertSelectSource<S, V>,
+    ) -> Self {
+        Self::from_node(ExprNode::Coalesce(vec![nullable.node, fallback.node]))
+    }
+
+    /// `COALESCE(e1, …, eN)` as a source projection — first non-NULL of N
+    /// homogeneous operands. The `Vec` must be non-empty; an empty list
+    /// surfaces an emit-time [`crate::query::PortablePredicateError`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn coalesce_many(exprs: Vec<Self>) -> Self {
+        Self::from_node(ExprNode::Coalesce(
+            exprs.into_iter().map(|e| e.node).collect(),
+        ))
+    }
+
+    /// `LEAST(a, b)` as a source projection — smaller non-NULL operand.
+    /// N-operand form: [`Self::least_many`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn least(a: Self, b: Self) -> Self {
+        Self::from_node(ExprNode::Least(vec![a.node, b.node]))
+    }
+
+    /// `LEAST(e1, …, eN)` as a source projection — smallest non-NULL operand.
+    /// Non-empty `Vec`; empty surfaces an emit-time
+    /// [`crate::query::PortablePredicateError`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn least_many(exprs: Vec<Self>) -> Self {
+        Self::from_node(ExprNode::Least(exprs.into_iter().map(|e| e.node).collect()))
+    }
+
+    /// `GREATEST(a, b)` as a source projection — larger non-NULL operand.
+    /// N-operand form: [`Self::greatest_many`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn greatest(a: Self, b: Self) -> Self {
+        Self::from_node(ExprNode::Greatest(vec![a.node, b.node]))
+    }
+
+    /// `GREATEST(e1, …, eN)` as a source projection — largest non-NULL operand.
+    /// Non-empty `Vec`; empty surfaces an emit-time
+    /// [`crate::query::PortablePredicateError`].
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn greatest_many(exprs: Vec<Self>) -> Self {
+        Self::from_node(ExprNode::Greatest(
+            exprs.into_iter().map(|e| e.node).collect(),
+        ))
+    }
+
+    /// Embed a correlated scalar subquery as a source projection column.
+    /// The subquery's inner model is consumed; the resulting projection is
+    /// tagged with the **outer** source model `S` (inferred from the
+    /// enclosing `insert_into::<T, _, _>` closure, like [`Self::literal`]).
+    /// The subquery's `V` becomes this projection's `V`, so the target
+    /// column's type is checked against the subquery's scalar type at compile
+    /// time.
+    /// # Correlation
+    /// Correlate the inner subquery to the outer source row with the
+    /// macro-emitted `{Outer}OuterRef::col().as_qualified_expr()` handle
+    /// inside the subquery's `filter_expr`. In INSERT...SELECT the outer
+    /// FROM clause is the source model's bare physical table name, so the
+    /// qualified outer-ref form (`<outer_table>.<col>`) resolves correctly.
+    /// # Scope
+    /// The inner subquery is **single-table** — `SELECT <scalar> FROM
+    /// <one table> WHERE <correlated predicate>`. A subquery whose source
+    /// needs a JOIN (e.g. a self-join) is not expressible through
+    /// [`crate::expr::subquery::Subquery`]; reach for `ctx.raw_*` for that
+    /// shape. The projected scalar is a **column** (the selector
+    /// `Subquery::new` accepts); an aggregate projection (`COUNT(*)`, `SUM`)
+    /// is a separate surface not expressible through `Subquery` today.
+    /// # Example
+    /// ```ignore
+    /// Parent::objects().insert_into::<Summary, _, _>(|target, source| {
+    ///     let profile_score = Subquery::new(
+    ///         Profile::objects().filter_expr(|c|
+    ///             c.parent_id().as_expr().eq(ParentOuterRef::id().as_qualified_expr())),
+    ///         <Profile as Model>::Fields::default().score(),
+    ///     );
+    ///     vec![
+    ///         target.parent_id().copy_from(source.id().as_insert_source()),
+    ///         target.score().copy_from(InsertSelectSource::subquery(profile_score)),
+    ///     ]
+    /// }).execute(&mut ctx).await?;
+    /// ```
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn subquery<Tinner: Model>(sq: crate::expr::subquery::Subquery<Tinner, V>) -> Self {
+        // `Subquery::as_expr()` wraps the inner node in ExprNode::Subquery;
+        // re-tag the resulting node with the outer model `S`.
+        let expr: Expr<V> = sq.as_expr();
+        Self::from_node(expr.node)
+    }
+
+    /// `<self> = <rhs>` — boolean comparison as a source projection,
+    /// producing an `InsertSelectSource<S, bool>` (a boolean column). No
+    /// ordering bound on `V`: Postgres compares server-side, matching the
+    /// no-`T`-bound stance of [`crate::expr::Expr`]'s comparison surface.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn eq(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Eq, rhs)
+    }
+
+    /// `<self> <> <rhs>` — boolean inequality as a source projection.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn neq(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Neq, rhs)
+    }
+
+    /// `<self> > <rhs>` — boolean greater-than as a source projection.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn gt(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Gt, rhs)
+    }
+
+    /// `<self> >= <rhs>` — boolean greater-or-equal as a source projection.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn gte(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Gte, rhs)
+    }
+
+    /// `<self> < <rhs>` — boolean less-than as a source projection.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn lt(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Lt, rhs)
+    }
+
+    /// `<self> <= <rhs>` — boolean less-or-equal as a source projection.
+    #[must_use = "InsertSelectSource is lazy — drop one and the source projection is silently omitted"]
+    pub fn lte(self, rhs: Self) -> InsertSelectSource<S, bool> {
+        self.cmp_source(CmpOp::Lte, rhs)
+    }
+
+    /// Build a boolean comparison source node, retyping `V` → `bool`. The
+    /// explicit `InsertSelectSource::<S, bool>::from_node` turbofish is
+    /// required: an unqualified `Self::from_node` would return
+    /// `InsertSelectSource<S, V>`, not `<S, bool>`.
+    fn cmp_source(self, op: CmpOp, rhs: Self) -> InsertSelectSource<S, bool> {
+        InsertSelectSource::<S, bool>::from_node(ExprNode::Cmp {
+            op,
+            lhs: Box::new(self.node),
+            rhs: Box::new(rhs.node),
+        })
+    }
 }
 
 // ── Arithmetic operator overloads on `InsertSelectSource<S, V>` ──────────────
@@ -1760,9 +1909,11 @@ fn expr_node_contains_excluded(node: &ExprNode) -> bool {
         | ExprNode::Literal(_)
         | ExprNode::ArrayLength { .. }
         | ExprNode::CurrentYear
+        | ExprNode::Now
         | ExprNode::OuterRef { .. }
         | ExprNode::OuterRefColumn { .. }
         | ExprNode::OuterRefAlias { .. }
+        | ExprNode::CteAliasField { .. }
         | ExprNode::TsMatch { .. }
         | ExprNode::TsRank { .. }
         | ExprNode::TsRankCd { .. }
@@ -1788,7 +1939,9 @@ fn expr_node_contains_excluded(node: &ExprNode) -> bool {
         }
 
         // Variadic expressions recurse into every operand.
-        ExprNode::Coalesce(operands) => operands.iter().any(expr_node_contains_excluded),
+        ExprNode::Coalesce(operands) | ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            operands.iter().any(expr_node_contains_excluded)
+        }
         ExprNode::GroupingVariadic { args } => args.iter().any(expr_node_contains_excluded),
 
         // CASE recurses into each arm's condition and value, plus the default.
@@ -2730,6 +2883,91 @@ mod tests {
         let v: Vec<InsertSelectColumn<Source, Target>> = mapping.into_insert_columns();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].target_column(), "view_count");
+    }
+
+    #[test]
+    fn insert_source_least_emits_least_keyword() {
+        use crate::expr::sql::emit_expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
+        // Two literal sources composed via LEAST.
+        let a: InsertSelectSource<Source, i32> = InsertSelectSource::literal(3i32);
+        let b: InsertSelectSource<Source, i32> = InsertSelectSource::literal(7i32);
+        let src = InsertSelectSource::<Source, i32>::least(a, b);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &src.node, SqlEmitContext::root()).expect("least source emission");
+        assert_eq!(qb.sql().trim(), "LEAST($1, $2)", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn insert_source_greatest_emits_greatest_keyword() {
+        use crate::expr::sql::emit_expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
+        let a: InsertSelectSource<Source, i32> = InsertSelectSource::literal(3i32);
+        let b: InsertSelectSource<Source, i32> = InsertSelectSource::literal(7i32);
+        let src = InsertSelectSource::<Source, i32>::greatest(a, b);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &src.node, SqlEmitContext::root()).expect("greatest source emission");
+        assert_eq!(qb.sql().trim(), "GREATEST($1, $2)", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn insert_source_coalesce_emits_coalesce_keyword() {
+        use crate::expr::sql::emit_expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
+        // Nullable first operand (Option<i32>), non-null fallback (i32) —
+        // mirrors `COALESCE(nullable_col, default)`. The first operand is a
+        // nullable column ref so it is `Option`-typed without depending on a
+        // nullable-literal constructor.
+        let nullable: InsertSelectSource<Source, Option<i32>> =
+            InsertSelectSource::from_node(ExprNode::Field { column: "score" });
+        let fallback: InsertSelectSource<Source, i32> = InsertSelectSource::literal(1i32);
+        let src = InsertSelectSource::<Source, i32>::coalesce(nullable, fallback);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &src.node, SqlEmitContext::root()).expect("coalesce source emission");
+        assert_eq!(qb.sql().trim(), "COALESCE(score, $1)", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn insert_source_lt_emits_comparison_and_retypes_to_bool() {
+        use crate::expr::sql::emit_expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::portable::SqlEmitContext;
+        let a: InsertSelectSource<Source, i32> = InsertSelectSource::literal(3i32);
+        let b: InsertSelectSource<Source, i32> = InsertSelectSource::literal(7i32);
+        // The explicit `InsertSelectSource<Source, bool>` binding proves the
+        // V → bool retype type-checks.
+        let src: InsertSelectSource<Source, bool> = a.lt(b);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &src.node, SqlEmitContext::root()).expect("comparison emission");
+        assert_eq!(qb.sql().trim(), "$1 < $2", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn insert_source_subquery_emits_parenthesized_scalar_subquery() {
+        use crate::expr::sql::emit_expr;
+        use crate::expr::subquery::Subquery;
+        use crate::pg::accumulator::SqlAccumulator;
+        use crate::query::field::FieldRef;
+        use crate::query::portable::SqlEmitContext;
+        use crate::query::queryset::QuerySet;
+        // A scalar subquery over the inner model `Source` (table "sources"),
+        // no filter. The inner model is consumed and erased; the projection
+        // is tagged with the OUTER model `Target`.
+        let id_col: FieldRef<Source, i64> = FieldRef::new("id");
+        let inner: QuerySet<Source> = QuerySet::new();
+        let sq: Subquery<Source, i64> = Subquery::new(inner, id_col);
+        let src: InsertSelectSource<Target, i64> = InsertSelectSource::subquery(sq);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &src.node, SqlEmitContext::root()).expect("subquery source emission");
+        assert_eq!(
+            qb.sql().trim(),
+            "(SELECT id FROM sources)",
+            "got: {}",
+            qb.sql()
+        );
     }
 
     #[test]

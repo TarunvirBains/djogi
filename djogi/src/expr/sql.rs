@@ -238,6 +238,16 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             }
             Ok(())
         }
+        // LEAST / GREATEST are variadic scalar functions whose operands may
+        // nest a sub-expression; recurse into each operand exactly like the
+        // `Coalesce` arm above, so an aggregate buried inside a LEAST/GREATEST
+        // operand is subject to the same legality checking as COALESCE.
+        ExprNode::Least(args) | ExprNode::Greatest(args) => {
+            for arg in args {
+                check_aggregate_legality(arg)?;
+            }
+            Ok(())
+        }
         // Row aggregates (#92) carry no modifier slots at all — the typed
         // `RowAggregate<Out, K>` wrapper exposes no `.distinct()` /
         // `.filter()` / `.over()` / `.order_by()` /
@@ -341,6 +351,17 @@ pub(crate) fn emit_expr(
             emit_expr(acc, expr, ctx)?;
             acc.push_sql(" IS NOT NULL");
         }
+        // Empty-operand guard for the variadic scalar functions. Postgres
+        // rejects `COALESCE()` / `LEAST()` / `GREATEST()` with zero args as a
+        // syntax error; refuse it here rather than emit invalid SQL. Placed
+        // before the three normal arms so it takes precedence. Retroactively
+        // protects the pre-existing `Coalesce` arm (empty COALESCE was always
+        // invalid SQL).
+        ExprNode::Coalesce(args) | ExprNode::Least(args) | ExprNode::Greatest(args)
+            if args.is_empty() =>
+        {
+            return Err(PortablePredicateError::EmptyVariadicFunction);
+        }
         ExprNode::Coalesce(args) => {
             acc.push_sql("COALESCE(");
             for (idx, arg) in args.iter().enumerate() {
@@ -351,8 +372,40 @@ pub(crate) fn emit_expr(
             }
             acc.push_sql(")");
         }
+        ExprNode::Least(args) => {
+            acc.push_sql("LEAST(");
+            for (idx, arg) in args.iter().enumerate() {
+                if idx > 0 {
+                    acc.push_sql(", ");
+                }
+                emit_expr(acc, arg, ctx)?;
+            }
+            acc.push_sql(")");
+        }
+        ExprNode::Greatest(args) => {
+            acc.push_sql("GREATEST(");
+            for (idx, arg) in args.iter().enumerate() {
+                if idx > 0 {
+                    acc.push_sql(", ");
+                }
+                emit_expr(acc, arg, ctx)?;
+            }
+            acc.push_sql(")");
+        }
         ExprNode::Cmp { op, lhs, rhs } => {
-            emit_expr(acc, lhs, ctx)?;
+            // Comparison operators are %nonassoc in Postgres's grammar — they
+            // cannot be chained without explicit parentheses. When an operand
+            // is itself a `Cmp` node (e.g. `a.lt(b).eq(c.lt(d))`), wrap it in
+            // parens so `($1 < $2) = ($3 < $4)` parses instead of the rejected
+            // `$1 < $2 = $3 < $4`.
+            let needs_parens = |n: &ExprNode| matches!(n, ExprNode::Cmp { .. });
+            if needs_parens(lhs) {
+                acc.push_sql("(");
+                emit_expr(acc, lhs, ctx)?;
+                acc.push_sql(")");
+            } else {
+                emit_expr(acc, lhs, ctx)?;
+            }
             acc.push_sql(match op {
                 CmpOp::Eq => " = ",
                 CmpOp::Neq => " <> ",
@@ -363,7 +416,13 @@ pub(crate) fn emit_expr(
                 CmpOp::IsDistinctFrom => " IS DISTINCT FROM ",
                 CmpOp::IsNotDistinctFrom => " IS NOT DISTINCT FROM ",
             });
-            emit_expr(acc, rhs, ctx)?;
+            if needs_parens(rhs) {
+                acc.push_sql("(");
+                emit_expr(acc, rhs, ctx)?;
+                acc.push_sql(")");
+            } else {
+                emit_expr(acc, rhs, ctx)?;
+            }
         }
         ExprNode::Aggregate {
             op,
@@ -1035,8 +1094,11 @@ pub(crate) fn emit_expr(
         ExprNode::ArrayLength { column } => {
             // array_length(column, 1) — dimension is always 1 (Djogi arrays
             // are 1-dimensional; multi-dimensional arrays are not supported).
+            // Routed through `ctx.push_column` so a two-term consumer FROM
+            // (`also_from_cte`) qualifies the reference as `<alias>.<col>`
+            // instead of a bare name that Postgres rejects as ambiguous.
             acc.push_sql("array_length(");
-            acc.push_sql(column);
+            ctx.push_column(acc, column);
             acc.push_sql(", 1)");
         }
         ExprNode::CurrentYear => {
@@ -1046,6 +1108,11 @@ pub(crate) fn emit_expr(
             // result here. No bind parameter — the year is read from the
             // server clock, never user-supplied.
             acc.push_sql("EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER");
+        }
+        ExprNode::Now => {
+            // NOW() — transaction start timestamp, read server-side. No bind
+            // parameter; the value never originates from user input.
+            acc.push_sql("NOW()");
         }
         ExprNode::OuterRef { column } => {
             // Outer-scope column reference — emitted unqualified.
@@ -1078,6 +1145,13 @@ pub(crate) fn emit_expr(
             // declarations, column from sealed macro entry points).
             // Safe to push as raw SQL tokens.
             acc.push_sql(table);
+            acc.push_sql(".");
+            acc.push_sql(column);
+        }
+        ExprNode::CteAliasField { alias, column } => {
+            // `<alias>.<column>` — both validated at CteRef construction.
+            // No SqlEmitContext qualifier: the CTE alias already qualifies.
+            acc.push_sql(alias);
             acc.push_sql(".");
             acc.push_sql(column);
         }
@@ -1135,8 +1209,9 @@ pub(crate) fn emit_expr(
         } => {
             // `<col> @@ to_tsquery('<dictionary>', $n)`. Column and dictionary
             // identifiers are validated at construction; query_text is user-
-            // supplied so it always rides as a bound parameter.
-            emit_ts(acc, "", column, dictionary, query_text, " @@ ", ")");
+            // supplied so it always rides as a bound parameter. `ctx` qualifies
+            // the column on joined / self-pair emission paths.
+            emit_ts(acc, "", column, dictionary, query_text, " @@ ", ")", ctx);
         }
         ExprNode::TsRank {
             column,
@@ -1145,7 +1220,9 @@ pub(crate) fn emit_expr(
         } => {
             // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`. Standard
             // relevance score — higher = more relevant.
-            emit_ts(acc, "ts_rank(", column, dictionary, query_text, ", ", "))");
+            emit_ts(
+                acc, "ts_rank(", column, dictionary, query_text, ", ", "))", ctx,
+            );
         }
         ExprNode::TsRankCd {
             column,
@@ -1162,6 +1239,7 @@ pub(crate) fn emit_expr(
                 query_text,
                 ", ",
                 "))",
+                ctx,
             );
         }
 
@@ -1193,10 +1271,9 @@ pub(crate) fn emit_expr(
             // thresholds. NOT index-accelerated by the trgm opclasses
             // those target the operator family, not the function form.
             // column: routed through `ctx.push_column` for the same
-            // joined-query qualification as `TrgmSimilarTo` above.
-            // Follow-up: the FTS arms (`TsMatch` / `TsRank` / `TsRankCd`)
-            // have the same bare-push bug via `emit_ts`; fix is tracked
-            // separately so this commit stays narrow to #147.
+            // joined-query qualification as `TrgmSimilarTo` above. The FTS
+            // arms (`TsMatch` / `TsRank` / `TsRankCd`) share this
+            // qualification through `emit_ts`'s `ctx` parameter.
             acc.push_sql("similarity(");
             ctx.push_column(acc, column);
             acc.push_sql(", ");
@@ -1208,8 +1285,10 @@ pub(crate) fn emit_expr(
         #[cfg(feature = "spatial")]
         ExprNode::Spatial(s) => {
             // Delegate entirely to `SpatialExpr::emit`, which handles all
-            // bind-parameter placement for PostGIS functions.
-            s.emit(acc);
+            // bind-parameter placement for PostGIS functions. `ctx` is threaded
+            // so column-bearing spatial arms qualify under a joined / two-term
+            // consumer FROM.
+            s.emit(acc, ctx)?;
         }
 
         ExprNode::GroupingVariadic { args } => {
@@ -1316,18 +1395,25 @@ fn emit_row_aggregate(acc: &mut SqlAccumulator, op: &crate::expr::node::RowAggOp
 ///   `column` is a `&'static str` macro-validated via `assert_plain_ident`.
 ///   `dictionary` is byte-level validated at attribute parse time; embedded
 ///   literally as a single-quoted string. `query_text` is user-supplied
-///   and always rides through `push_bind`.
+///   and always rides through `push_bind`. `ctx` qualifies the column on
+///   joined / self-pair emission paths (bare at root).
+// FTS emit slots (prefix / column / dictionary / query_text / sep / suffix)
+// are intrinsically numerous and the added `ctx` carries the join qualifier;
+// a wrapper struct would add single-use noise for a crate-private helper that
+// callers never construct. Mirrors emit_spatial_unary_agg's exemption.
+#[allow(clippy::too_many_arguments)]
 fn emit_ts(
     acc: &mut SqlAccumulator,
     prefix: &'static str,
-    column: &str,
+    column: &'static str,
     dictionary: &str,
     query_text: &str,
     sep: &'static str,
     suffix: &'static str,
+    ctx: SqlEmitContext,
 ) {
     acc.push_sql(prefix);
-    acc.push_sql(column);
+    ctx.push_column(acc, column);
     acc.push_sql(sep);
     acc.push_sql("to_tsquery('");
     acc.push_sql(dictionary);
@@ -1834,6 +1920,75 @@ mod tests {
         emit_expr(&mut acc, &node, SqlEmitContext::root()).unwrap();
         assert_eq!(acc.sql(), "COALESCE(value)");
         assert_eq!(acc.bind_count(), 0);
+    }
+
+    #[test]
+    fn least_emits_least_keyword_and_commas() {
+        let node = ExprNode::Least(vec![
+            ExprNode::Field { column: "a" },
+            ExprNode::Field { column: "b" },
+        ]);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &node, SqlEmitContext::root()).expect("least emission");
+        assert_eq!(qb.sql().trim(), "LEAST(a, b)", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn greatest_emits_greatest_keyword_and_commas() {
+        let node = ExprNode::Greatest(vec![
+            ExprNode::Field { column: "a" },
+            ExprNode::Field { column: "b" },
+        ]);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &node, SqlEmitContext::root()).expect("greatest emission");
+        assert_eq!(qb.sql().trim(), "GREATEST(a, b)", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn cte_alias_field_emits_alias_dot_column_ignoring_context() {
+        let node = ExprNode::CteAliasField {
+            alias: "anchor",
+            column: "geo",
+        };
+        // Even under a joined context, the CTE alias is the qualifier —
+        // the parent-table qualifier must NOT be prepended.
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &node, SqlEmitContext::joined("places")).expect("cte ref emission");
+        assert_eq!(qb.sql().trim(), "anchor.geo", "got: {}", qb.sql());
+    }
+
+    #[test]
+    fn nested_cmp_emits_with_parentheses() {
+        use crate::query::condition::FilterValue;
+        // a.lt(b).eq(c.lt(d)) → ($1 < $2) = ($3 < $4). Comparison operators
+        // are %nonassoc in Postgres; each Cmp operand must be parenthesized.
+        let a = ExprNode::Literal(FilterValue::I32(1));
+        let b = ExprNode::Literal(FilterValue::I32(2));
+        let c = ExprNode::Literal(FilterValue::I32(3));
+        let d = ExprNode::Literal(FilterValue::I32(4));
+        let lhs_cmp = ExprNode::Cmp {
+            op: CmpOp::Lt,
+            lhs: Box::new(a),
+            rhs: Box::new(b),
+        };
+        let rhs_cmp = ExprNode::Cmp {
+            op: CmpOp::Lt,
+            lhs: Box::new(c),
+            rhs: Box::new(d),
+        };
+        let nested = ExprNode::Cmp {
+            op: CmpOp::Eq,
+            lhs: Box::new(lhs_cmp),
+            rhs: Box::new(rhs_cmp),
+        };
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &nested, SqlEmitContext::root()).expect("nested cmp emission");
+        assert_eq!(
+            qb.sql().trim(),
+            "($1 < $2) = ($3 < $4)",
+            "got: {}",
+            qb.sql()
+        );
     }
 
     #[test]

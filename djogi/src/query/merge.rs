@@ -485,6 +485,16 @@ fn check_target_only_predicate(node: &ExprNode, table: &'static str) -> Result<(
             check_target_only_predicate(lhs, table)?;
             check_target_only_predicate(rhs, table)
         }
+        // LEAST / GREATEST are scalar functions over target-only operands;
+        // allow them for family-consistency with the rest of the variadic
+        // surface (window / INSERT-SELECT accept them), recursing into each
+        // operand like the arithmetic arms above.
+        ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            for operand in operands {
+                check_target_only_predicate(operand, table)?;
+            }
+            Ok(())
+        }
         _ => Err(DjogiError::MergeBranchInvalid {
             table,
             reason: "BY SOURCE branch condition uses an unsupported expression shape".to_string(),
@@ -532,6 +542,15 @@ fn check_source_only_expr(
         ExprNode::Cmp { lhs, rhs, .. } => {
             check_source_only_expr(lhs, table, context)?;
             check_source_only_expr(rhs, table, context)
+        }
+        // LEAST / GREATEST are scalar functions over source-only operands;
+        // allow them for family-consistency with the rest of the variadic
+        // surface, recursing into each operand like the arithmetic arms above.
+        ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            for operand in operands {
+                check_source_only_expr(operand, table, context)?;
+            }
+            Ok(())
         }
         _ => Err(DjogiError::MergeBranchInvalid {
             table,

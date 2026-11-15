@@ -166,6 +166,16 @@ pub enum PortablePredicateError {
         /// The Sassi `field_name` reported on the predicate leaf.
         field: &'static str,
     },
+
+    /// A variadic scalar function (`COALESCE` / `LEAST` / `GREATEST`) reached
+    /// SQL emission with an empty operand list. Postgres rejects the
+    /// zero-argument forms (`COALESCE()` / `LEAST()` / `GREATEST()`) as syntax
+    /// errors, so the emitter refuses an empty list rather than produce invalid
+    /// SQL. The typed constructors (`Expr::coalesce_many` and siblings) accept
+    /// a `Vec` that may be empty; this is the emit-time guard that surfaces the
+    /// error.
+    #[error("variadic function (COALESCE/LEAST/GREATEST) requires at least one operand")]
+    EmptyVariadicFunction,
 }
 
 /// SQL-emission context threaded through the direct-`Q<T>` walker.

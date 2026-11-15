@@ -8325,7 +8325,8 @@ mod spatial_field_tests {
         let cond = field.contains(&poly);
         let s = unwrap_spatial(cond);
         let mut acc = SqlAccumulator::new("");
-        s.emit(&mut acc);
+        s.emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
         assert_eq!(acc.bind_count(), 1, "EWKB must flow through push_bind");
         assert!(acc.sql().contains("$1"), "expected $1 placeholder");
     }
@@ -8412,7 +8413,8 @@ mod spatial_field_tests {
         let cond = field.touches(&poly);
         let s = unwrap_spatial(cond);
         let mut acc = SqlAccumulator::new("");
-        s.emit(&mut acc);
+        s.emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
         assert_eq!(acc.bind_count(), 1);
         assert!(acc.sql().contains("$1"));
     }
@@ -8448,7 +8450,8 @@ mod spatial_field_tests {
         let cond = field.within(&poly);
         let s = unwrap_spatial(cond);
         let mut acc = SqlAccumulator::new("");
-        s.emit(&mut acc);
+        s.emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
         assert_eq!(acc.bind_count(), 1);
         assert!(acc.sql().contains("$1"));
     }
@@ -8584,7 +8587,8 @@ mod bbox_tests {
         let expr = field.bounded_by(37.0, -123.0, 38.0, -122.0);
         let s = unwrap_spatial_from_expr(expr);
         let mut acc = SqlAccumulator::new("");
-        s.emit(&mut acc);
+        s.emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_MakeEnvelope("),
@@ -8613,7 +8617,8 @@ mod bbox_tests {
         let expr = field.bounded_by(55.5555, 66.6666, 77.7777, 88.8888);
         let s = unwrap_spatial_from_expr(expr);
         let mut acc = SqlAccumulator::new("");
-        s.emit(&mut acc);
+        s.emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
         let sql = acc.sql();
         assert!(!sql.contains("55.5555"), "min_lat leaked; got: {sql}");
         assert!(!sql.contains("66.6666"), "min_lon leaked; got: {sql}");
@@ -8757,7 +8762,8 @@ mod distance_tests {
                 field_column,
                 center: c,
             }
-            .emit(&mut acc);
+            .emit(&mut acc, crate::query::SqlEmitContext::root())
+            .expect("emit");
             let sql = acc.sql();
             assert!(
                 sql.contains("ST_Distance"),

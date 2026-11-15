@@ -38,6 +38,7 @@ pub mod closure;
 // names the module path.
 pub mod condition;
 pub mod cte;
+pub mod cte_ref;
 pub mod field;
 pub mod filter;
 pub mod grouped;
@@ -193,6 +194,7 @@ pub use predicate::{IntoPortablePredicate, PortablePredicate, Predicate};
 // keeps adopter code from naming them while letting macro-expanded
 // `impl Model for {Model}` blocks compile.
 pub use cte::{CteQuerySet, IntoCteBody, RecursiveArm};
+pub use cte_ref::CteRef;
 #[doc(hidden)]
 pub use portable::{PortablePredicateError, SqlEmitContext};
 pub use q::{ArrayPredicate, IntoQ, Q};

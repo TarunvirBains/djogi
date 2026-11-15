@@ -156,3 +156,58 @@ Account::objects()
 The `CaseBuilder<V>` typestate rejects `.otherwise()` before any
 `.when()` (compile error on `CaseBuilder<Empty>`) and rejects `.when()`
 calls whose `then` type differs from earlier arms.
+
+## Variadic scalar functions — COALESCE / LEAST / GREATEST
+
+Dedicated constructors for the Postgres variadic scalar functions compose
+through the same IR. All are generic over `T` with no ordering bound —
+Postgres orders server-side.
+
+```rust
+// COALESCE(score, 0) — default a nullable score column to 0.
+// `coalesce`'s first operand is Expr<Option<T>> (the nullable column); the
+// fallback is Expr<T>.
+let scored = Expr::coalesce(f.score().as_expr(), Expr::literal(0i32));
+
+// LEAST(cap, 100) / GREATEST(floor, 0) — clamp / floor a value.
+let clamped = Expr::least(f.cap().as_expr(), Expr::literal(100i32));
+let floored = Expr::greatest(f.floor().as_expr(), Expr::literal(0i32));
+
+// N-operand homogeneous forms take a non-empty Vec:
+let first_set = Expr::coalesce_many(vec![a.as_expr(), b.as_expr(), c.as_expr()]);
+```
+
+An empty `_many` `Vec` is rejected at SQL-emit time — `COALESCE()` / `LEAST()`
+/ `GREATEST()` with no arguments is invalid SQL. The same three constructors
+(plus `_many`) exist on `InsertSelectSource` for INSERT ... SELECT projection
+columns.
+
+`Expr::now()` emits `NOW()` (the transaction-start timestamp, `STABLE` —
+constant within a transaction):
+
+```rust
+// Rows whose expiry has passed.
+Session::objects()
+    .filter_expr(|f| f.expires_at().as_expr().lt(Expr::now()))
+    .fetch_all(&mut ctx).await?;
+```
+
+## Two-expression spatial proximity (`spatial` feature)
+
+`Expr::dwithin(lhs, rhs, radius_m)` emits `ST_DWithin(<lhs>, <rhs>, $radius)` —
+a great-circle proximity predicate where **both** operands are arbitrary
+`Expr<GeoPoint>`. Unlike `FieldRef::within_km` (a column versus a literal
+point), neither side need be a literal, so it composes a model column with a
+CTE column, two CTE columns, etc.
+
+```rust
+// Filter a CTE consumer on proximity to an anchor CTE's geography.
+let near = Expr::dwithin(
+    f.geo().as_expr(),
+    CteRef::new("anchor", "geo")?.as_expr::<GeoPoint>(),
+    50_000.0,
+);
+```
+
+See the [Queries guide](./queries.md) for the full cross-CTE proximity-filter
+example.

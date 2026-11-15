@@ -607,6 +607,14 @@ path = "../tests/integration/spatial_live.rs"
 harness = true
 required-features = ["spatial"]
 
+# Issue #483 — cross-CTE column reference in a consumer WHERE predicate
+# (CteRef + also_from_cte + Expr::dwithin), live against PostGIS.
+[[test]]
+name = "cte_cross_ref"
+path = "../tests/integration/cte_cross_ref.rs"
+harness = true
+required-features = ["spatial"]
+
 [[test]]
 name = "spatial_scalar_live"
 path = "../tests/internal/spatial_scalar_live.rs"
@@ -988,6 +996,13 @@ harness = true
 [[test]]
 name = "insert_select_on_conflict"
 path = "../tests/integration/insert_select_on_conflict.rs"
+harness = true
+
+# Issue #485 — correlated single-table scalar subquery embedded in an
+# INSERT ... SELECT projection column via InsertSelectSource::subquery.
+[[test]]
+name = "insert_select_correlated"
+path = "../tests/integration/insert_select_correlated.rs"
 harness = true
 
 # Issue #178 — typed MERGE INTO live coverage.

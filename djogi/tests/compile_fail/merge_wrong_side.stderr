@@ -14,9 +14,9 @@ error[E0277]: the trait bound `Vec<MergeUpdateAssignment<..., ...>>: IntoMergeUp
     |
 help: the trait `IntoMergeUpdates<WrongSideSource, WrongSideTarget>` is not implemented for `Vec<MergeUpdateAssignment<WrongSideTarget, WrongSideSource>>`
       but trait `IntoMergeUpdates<WrongSideTarget, WrongSideSource>` is implemented for it
-   --> djogi/src/query/merge.rs:869:1
+   --> djogi/src/query/merge.rs:888:1
     |
-869 | impl<S: Model, T: Model> IntoMergeUpdates<S, T> for Vec<MergeUpdateAssignment<S, T>> {
+888 | impl<S: Model, T: Model> IntoMergeUpdates<S, T> for Vec<MergeUpdateAssignment<S, T>> {
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `MergeStmt::<S, T>::when_matched_and_update`
    --> djogi/src/query/merge.rs:97:12

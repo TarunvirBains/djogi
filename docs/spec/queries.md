@@ -164,10 +164,63 @@ Contract:
   state that cannot be safely represented in INSERT...SELECT
   (`prefetch`, `select_related`, `cache`, a non-default `LockMode`, or
   a non-default `DistinctMode`).
+- Source operands may be `COALESCE` / `LEAST` / `GREATEST` compositions
+  (`InsertSelectSource::{coalesce, least, greatest}` and the `_many` forms,
+  see [5.10](#510-variadic-scalar-functions--coalesce--least--greatest)) and
+  boolean comparisons (`InsertSelectSource::{eq, neq, gt, gte, lt, lte}`, each
+  producing `InsertSelectSource<S, bool>` — a boolean projection column).
+- A source operand may be a **correlated single-table, single-column scalar
+  subquery** via `InsertSelectSource::subquery(Subquery<T, V>)`. Correlate the
+  inner subquery to the outer source row with
+  `{Outer}OuterRef::col().as_qualified_expr()`; the outer FROM is the source
+  model's physical table name, so the qualified outer-ref form resolves. The
+  subquery projects a **column** (the scalar selector `Subquery::new` accepts),
+  and the correlation must be uniqueness-guaranteed (`Subquery` drops
+  ordering/limit, so a multi-row correlated scalar errors at runtime). Two
+  shapes stay on `ctx.raw_*`: **self-joins inside the subquery** and
+  **aggregate projections** like `(SELECT COUNT(*) FROM …)` (`Subquery` projects
+  a column, not an aggregate). See [5.7c](#57c-correlated-subquery-projection-columns).
 
 `VALUES` inline relations as join sources are presently not supported by this
 surface. For `MERGE INTO ... USING ...`, use the typed MERGE surface described
 in [5.8 Typed MERGE INTO](#58-typed-merge-into).
+
+### 5.7c Correlated subquery projection columns
+
+`InsertSelectSource::subquery(Subquery<T, V>)` embeds a correlated single-table,
+single-column scalar subquery as a projection column of an INSERT ... SELECT.
+The correlation is 1:1 (the subquery returns exactly one row per outer row), so
+the projected scalar is well-defined.
+
+```sql
+-- Project a correlated child's column as a scalar column in an INSERT ... SELECT.
+INSERT INTO summaries (parent_id, score)
+SELECT
+    parents.id,
+    (SELECT profiles.score FROM profiles WHERE profiles.parent_id = parents.id)
+FROM parents
+```
+
+```rust
+Parent::objects()
+    .insert_into::<Summary, _, _>(|target, source| {
+        // Correlated profile-score subquery for the current outer parent row.
+        let profile_score = Subquery::new(
+            Profile::objects().filter_expr(|c| {
+                c.parent_id().as_expr().eq(ParentOuterRef::id().as_qualified_expr())
+            }),
+            <Profile as djogi::model::Model>::Fields::default().score(),
+        );
+        vec![
+            target.parent_id().copy_from(source.id().as_insert_source()),
+            target.score().copy_from(InsertSelectSource::subquery(profile_score)),
+        ]
+    })
+    .execute(&mut ctx).await?;
+```
+
+The aggregate-count shape (`SELECT COUNT(*) FROM children WHERE …`) is a separate
+surface — `Subquery` projects a column, not an aggregate — and stays on `ctx.raw_*`.
 
 ### 5.7a PG18 OLD/NEW RETURNING
 
@@ -352,3 +405,79 @@ Additional v0.1.0 restrictions on the expression path:
   `IsNull`/`IsNotNull`, `Coalesce`, `Cmp`, `Case` (over accepted nodes),
   and trgm similarity expressions (`TrgmSimilarTo`, `TrgmSimilarityScore`)
   when the `trgm` feature is enabled.
+
+### 5.10 Variadic scalar functions — COALESCE / LEAST / GREATEST
+
+`Expr<T>` and `InsertSelectSource<S, V>` expose dedicated constructors for the
+Postgres variadic scalar functions:
+
+- `Expr::<T>::coalesce(nullable, fallback)` → `COALESCE(nullable, fallback)` —
+  the nullable-default common case. The first operand is `Expr<Option<T>>` (a
+  nullable column reference — `f.col().as_expr()` for an `Option<T>` column),
+  the fallback is `Expr<T>` (non-null). `Expr::<T>::coalesce_many(Vec<Expr<T>>)`
+  is the N-operand homogeneous form.
+- `Expr::<T>::least(a, b)` / `greatest(a, b)` → `LEAST(...)` / `GREATEST(...)`,
+  with `least_many` / `greatest_many` for the N-operand form.
+- The same three (`coalesce` / `least` / `greatest`, plus `_many`) are available
+  as `InsertSelectSource` constructors for INSERT ... SELECT projection columns.
+
+All are generic over `T` with **no ordering bound** — Postgres orders
+server-side, matching the comparison surface. An empty `_many` `Vec` is rejected
+at SQL-emit time (`COALESCE()` / `LEAST()` / `GREATEST()` with no args is invalid
+SQL), surfacing a `PortablePredicateError`.
+
+These are **dedicated IR variants**, not a generic function-call surface: the
+emitter never handles a user-supplied function-name string, matching the
+no-regex / no-user-function-name-string posture recorded in `decisions.md`.
+
+`Expr::<time::OffsetDateTime>::now()` emits `NOW()` (the transaction-start
+timestamp, `STABLE` — constant within a transaction). Callers needing a frozen
+literal should bind an `OffsetDateTime` via `Expr::literal(...)`.
+
+### 5.11 Cross-CTE column references
+
+A CTE consumer `SELECT` can filter on a column projected by another CTE term:
+
+- `CteQuerySet::filter_expr(|m_fields| Expr<bool>)` — an expression-IR predicate
+  on the consumer `SELECT` (the expression-IR sibling of `filter`).
+- `CteRef::new(alias, column)?.as_expr::<V>()` — a runtime-typed reference to a
+  column projected by a CTE term. `V` is caller-asserted; the `alias` and
+  `column` strings are identifier-validated at construction. The named term must
+  be in the consumer `FROM` for the column to resolve.
+- `CteQuerySet::also_from_cte(alias)` — append a sibling CTE term to the consumer
+  `FROM` list, so a `CteRef` predicate can name it. The emitted `FROM` becomes
+  `<from_cte target>, <alias>` (an implicit cross join). A CTE term may appear in
+  the consumer `FROM` at most once (duplicate `from_cte` / `also_from_cte` names
+  are rejected with `DjogiError::Validation`).
+- `Expr::dwithin(lhs, rhs, radius_m)` — a two-expression `ST_DWithin` composing a
+  model column with a CTE column (requires the `spatial` feature).
+
+**Scope boundary (the emitted SQL).** djogi#483's target shape:
+
+```sql
+WITH anchor AS (SELECT id, geo FROM places WHERE id = $1),
+     places_cte AS (SELECT ... FROM places)
+SELECT places_cte.id, places_cte.created_at, places_cte.updated_at, places_cte.name, places_cte.geo
+FROM places_cte, anchor
+WHERE ST_DWithin(places_cte.geo, anchor.geo, $1)
+```
+
+A cross-CTE `CteRef` resolves **only** when its term is in that `FROM` list —
+Postgres requires a `WITH` term in `FROM` before its columns are referenceable;
+a merely-declared sibling term raises `42P01`. When `also_from` is non-empty,
+every model-column reference in the consumer SELECT list, WHERE predicate, and
+ORDER BY is automatically qualified to the `from_cte` term to disambiguate
+columns shared by the two CTE terms.
+
+`also_from_cte` with a **single-row** term (e.g. an anchor lookup) gives the
+intended 1×N correlation; with a **multi-row** term it gives a full cartesian
+product — prefer single-row anchor terms. The general `FROM <model> m, <cte> a`
+shape (a base model table mixed into the consumer `FROM`) is out of scope;
+`also_from_cte` adds only declared CTE terms.
+
+**Full-text search is not supported on a CTE consumer.** FTS predicates
+(`f.search().matches(...)` / `.rank(...)` / `.rank_cd(...)`) reference the
+model's generated tsvector column, which CTE bodies never project (bodies carry
+only declared struct fields). A terminal on a consumer carrying an FTS predicate
+fails at build time with `DjogiError::Validation` naming the FTS surface — filter
+FTS on the base `QuerySet` before entering the CTE builder.

@@ -85,6 +85,22 @@ pub enum SpatialExpr {
         center: GeoPoint,
     },
 
+    /// `ST_DWithin(<lhs>, <rhs>, $radius_m)` — two-operand great-circle
+    /// distance predicate. Unlike [`Self::Within`] (one column + a literal
+    /// point), both operands are arbitrary expressions, so the predicate
+    /// composes one model column with a CTE alias column, two CTE alias
+    /// columns, etc. Returns boolean (`true` when the two geographies are
+    /// within `radius_m` meters). The operands carry whatever casts their
+    /// own emission applies; `radius_m` is bound as a parameter.
+    DWithinExprToExpr {
+        /// Left geography operand (an already-built [`crate::expr::node::ExprNode`]).
+        lhs: Box<crate::expr::node::ExprNode>,
+        /// Right geography operand.
+        rhs: Box<crate::expr::node::ExprNode>,
+        /// Search radius in meters; bound as `$n`, never interpolated.
+        radius_m: f64,
+    },
+
     // ── Shape-based predicates ────────────────────────────────────────────────
     /// `ST_Contains(<col>::geometry, $1::bytea::geometry)`
     /// Returns `true` when the geometry stored in `<col>` entirely contains
@@ -294,7 +310,23 @@ impl SpatialExpr {
     /// The parameter numbers shown are relative to when `emit` is called
     /// the accumulator's global counter determines the actual `$n` values
     /// in context.
-    pub(crate) fn emit(&self, acc: &mut SqlAccumulator) {
+    /// ## Column qualification
+    /// `ctx` carries the join qualifier: column-bearing arms route
+    /// `field_column` through [`crate::query::portable::SqlEmitContext::push_column`],
+    /// so a two-term consumer `FROM` (`also_from_cte`) qualifies the column as
+    /// `<alias>.<col>` instead of a bare name Postgres rejects as ambiguous.
+    /// Pure-EWKB arms carry no column and ignore `ctx`.
+    /// ## Fallibility
+    /// Returns `Result` because the [`SpatialExpr::DWithinExprToExpr`] arm
+    /// renders arbitrary operands through [`crate::expr::sql::emit_expr`], which
+    /// can surface a [`crate::query::PortablePredicateError`] (e.g. an
+    /// out-of-scope lateral outer ref). The literal-point / pure-EWKB arms never
+    /// fail and simply end with `Ok(())`.
+    pub(crate) fn emit(
+        &self,
+        acc: &mut SqlAccumulator,
+        ctx: crate::query::portable::SqlEmitContext,
+    ) -> Result<(), crate::query::PortablePredicateError> {
         match self {
             SpatialExpr::Within {
                 field_column,
@@ -303,7 +335,7 @@ impl SpatialExpr {
             } => {
                 // ST_DWithin(col, ST_Point($lon, $lat)::geography, $radius)
                 acc.push_sql("ST_DWithin(");
-                acc.push_sql(field_column);
+                ctx.push_column(acc, field_column);
                 acc.push_sql(", ST_Point(");
                 acc.push_bind(center.lon);
                 acc.push_sql(", ");
@@ -311,6 +343,7 @@ impl SpatialExpr {
                 acc.push_sql(")::geography, ");
                 acc.push_bind(*radius_meters);
                 acc.push_sql(")");
+                Ok(())
             }
             SpatialExpr::Distance {
                 field_column,
@@ -318,37 +351,62 @@ impl SpatialExpr {
             } => {
                 // ST_Distance(col, ST_Point($lon, $lat)::geography)
                 acc.push_sql("ST_Distance(");
-                acc.push_sql(field_column);
+                ctx.push_column(acc, field_column);
                 acc.push_sql(", ST_Point(");
                 acc.push_bind(center.lon);
                 acc.push_sql(", ");
                 acc.push_bind(center.lat);
                 acc.push_sql(")::geography)");
+                Ok(())
+            }
+            SpatialExpr::DWithinExprToExpr { lhs, rhs, radius_m } => {
+                // ST_DWithin(<lhs>, <rhs>, $radius) — both operands are
+                // arbitrary geography expressions, rendered through the shared
+                // emitter so a Field operand is qualified by `ctx` and a
+                // CteAliasField operand emits `<alias>.<col>` verbatim.
+                acc.push_sql("ST_DWithin(");
+                crate::expr::sql::emit_expr(acc, lhs, ctx)?;
+                acc.push_sql(", ");
+                crate::expr::sql::emit_expr(acc, rhs, ctx)?;
+                acc.push_sql(", ");
+                acc.push_bind(*radius_m);
+                acc.push_sql(")");
+                Ok(())
             }
             // ── Shape predicates ──────────────────────────────────────────────
             SpatialExpr::Contains {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, ShapePredicate::Contains, field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Contains, field_column, other_ewkb, ctx);
+                Ok(())
             }
             SpatialExpr::Intersects {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, ShapePredicate::Intersects, field_column, other_ewkb);
+                emit_binary_predicate(
+                    acc,
+                    ShapePredicate::Intersects,
+                    field_column,
+                    other_ewkb,
+                    ctx,
+                );
+                Ok(())
             }
             SpatialExpr::Touches {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, ShapePredicate::Touches, field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Touches, field_column, other_ewkb, ctx);
+                Ok(())
             }
             SpatialExpr::WithinShape {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, ShapePredicate::Within, field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Within, field_column, other_ewkb, ctx);
+                Ok(())
             }
             SpatialExpr::BoundedBy {
                 field_column,
@@ -369,9 +427,10 @@ impl SpatialExpr {
                 acc.push_sql(", ");
                 acc.push_bind(*max_lat);
                 acc.push_sql(", 4326)::geography && ");
-                acc.push_sql(field_column);
+                ctx.push_column(acc, field_column);
+                Ok(())
             }
-            // Scalar geometry / area helpers
+            // Scalar geometry / area helpers (pure EWKB — no column, ignore ctx)
             SpatialExpr::Area { geom_ewkb } => {
                 // ST_Area($n::bytea::geography) — geography overload returns
                 // square meters; the geometry overload returns square degrees
@@ -379,6 +438,7 @@ impl SpatialExpr {
                 acc.push_sql("ST_Area(");
                 push_ewkb_arg(acc, geom_ewkb, EwkbCast::Geography);
                 acc.push_sql(")");
+                Ok(())
             }
             SpatialExpr::Intersection { a_ewkb, b_ewkb } => {
                 // ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography
@@ -397,6 +457,7 @@ impl SpatialExpr {
                 acc.push_sql(", ");
                 push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
                 acc.push_sql(")::geography");
+                Ok(())
             }
             SpatialExpr::AreaOfIntersection { a_ewkb, b_ewkb } => {
                 // ST_Area(ST_Intersection(..)::geography) — composed inline
@@ -408,6 +469,7 @@ impl SpatialExpr {
                 acc.push_sql(", ");
                 push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
                 acc.push_sql(")::geography)");
+                Ok(())
             }
         }
     }
@@ -492,15 +554,17 @@ impl ShapePredicate {
 /// (or `$n::geometry`) would make `tokio_postgres` prepare the parameter
 /// as `geography` and reject the `Vec<u8>` bind, because `Vec<u8>` cannot
 /// satisfy a `geography`-typed slot.
-/// The column name flows through `push_sql` (already validated as a
-/// plain identifier by `assert_plain_ident`); the EWKB bytes flow through
-/// `push_bind`.
+/// The column name flows through [`crate::query::portable::SqlEmitContext::push_column`]
+/// (already validated as a plain identifier by `assert_plain_ident`) so a
+/// joined / two-term-FROM context qualifies it as `<alias>.<col>`; the EWKB
+/// bytes flow through `push_bind`.
 #[cfg(feature = "spatial")]
 fn emit_binary_predicate(
     acc: &mut SqlAccumulator,
     predicate: ShapePredicate,
     field_column: &'static str,
     other_ewkb: &[u8],
+    ctx: crate::query::portable::SqlEmitContext,
 ) {
     let use_geometry = predicate.needs_geometry_cast();
     let col_cast = if use_geometry { "::geometry" } else { "" };
@@ -512,7 +576,7 @@ fn emit_binary_predicate(
 
     acc.push_sql(predicate.function_name());
     acc.push_sql("(");
-    acc.push_sql(field_column);
+    ctx.push_column(acc, field_column);
     acc.push_sql(col_cast);
     acc.push_sql(", ");
     push_ewkb_arg(acc, other_ewkb, bind_cast);
@@ -524,6 +588,7 @@ mod tests {
     use super::*;
     use crate::geo::GeoPoint;
     use crate::pg::accumulator::SqlAccumulator;
+    use crate::query::portable::SqlEmitContext;
 
     /// `Within` must emit `ST_DWithin(...)` with the column name, and
     /// bind exactly three parameters: lon, lat, radius_meters.
@@ -536,7 +601,7 @@ mod tests {
             radius_meters: 5000.0,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_DWithin"),
@@ -570,7 +635,7 @@ mod tests {
             center,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Distance"),
@@ -607,7 +672,7 @@ mod tests {
             radius_meters: 1234.5,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         // The coordinate strings must not appear verbatim in the SQL.
         assert!(
@@ -636,7 +701,7 @@ mod tests {
             radius_meters: 100.0,
         };
         let mut acc = SqlAccumulator::new("");
-        within.emit(&mut acc);
+        within.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         assert!(
             acc.sql().contains("::geography"),
             "Within must include ::geography cast; got: {}",
@@ -648,7 +713,9 @@ mod tests {
             center,
         };
         let mut acc2 = SqlAccumulator::new("");
-        distance.emit(&mut acc2);
+        distance
+            .emit(&mut acc2, SqlEmitContext::root())
+            .expect("emit");
         assert!(
             acc2.sql().contains("::geography"),
             "Distance must include ::geography cast; got: {}",
@@ -670,7 +737,7 @@ mod tests {
             other_ewkb: other_poly_bytes.clone(),
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Contains"),
@@ -707,7 +774,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Intersects"),
@@ -740,7 +807,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Touches"),
@@ -777,7 +844,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(sql.contains("ST_Within"), "expected ST_Within, got: {sql}");
         assert!(
@@ -818,7 +885,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         // The raw bytes must not appear as "103000020" or similar decimal string.
         // The key invariant: SQL contains exactly one placeholder and the byte
@@ -842,7 +909,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert_eq!(acc.bind_count(), 1);
         assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
@@ -857,7 +924,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert_eq!(acc.bind_count(), 1);
         assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
@@ -872,7 +939,7 @@ mod tests {
             other_ewkb: ewkb,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert_eq!(acc.bind_count(), 1);
         assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
@@ -896,7 +963,7 @@ mod tests {
             max_lon: -122.0,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         // Must use ST_MakeEnvelope with the geography cast and && operator.
         assert!(
@@ -938,7 +1005,7 @@ mod tests {
             max_lon: 44.4444,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         // None of the coordinate values may appear literally.
         assert!(
@@ -977,7 +1044,7 @@ mod tests {
             max_lon: 1.0,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         assert!(
             acc.sql().contains("4326"),
             "expected literal 4326 SRID in SQL; got: {}",
@@ -997,7 +1064,7 @@ mod tests {
             center,
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Distance"),
@@ -1033,9 +1100,9 @@ mod tests {
             other_ewkb: ewkb_b,
         };
         let mut acc = SqlAccumulator::new("");
-        expr_a.emit(&mut acc);
+        expr_a.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         acc.push_sql(" AND ");
-        expr_b.emit(&mut acc);
+        expr_b.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert_eq!(
             acc.bind_count(),
@@ -1058,7 +1125,7 @@ mod tests {
             geom_ewkb: vec![0x01, 0x02, 0x03],
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(sql.contains("ST_Area("), "expected ST_Area, got: {sql}");
         assert!(
@@ -1086,7 +1153,7 @@ mod tests {
             b_ewkb: vec![0xBB],
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(
             sql.contains("ST_Intersection("),
@@ -1132,7 +1199,7 @@ mod tests {
             b_ewkb: vec![0xDD],
         };
         let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
+        expr.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         assert!(sql.contains("ST_Area("), "got: {sql}");
         assert!(sql.contains("ST_Intersection("), "got: {sql}");
@@ -1178,7 +1245,9 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         // `expr.node` is crate-private; reach through ExprNode::Spatial.
         if let ExprNode::Spatial(spatial) = &expr.node {
-            spatial.emit(&mut acc);
+            spatial
+                .emit(&mut acc, SqlEmitContext::root())
+                .expect("emit");
         } else {
             panic!("intersection_of must wrap ExprNode::Spatial");
         }
@@ -1232,7 +1301,9 @@ mod tests {
         let expr: Expr<Polygon> = Expr::intersection_of(&poly_a, &poly_b);
         let mut acc = SqlAccumulator::new("");
         if let ExprNode::Spatial(spatial) = &expr.node {
-            spatial.emit(&mut acc);
+            spatial
+                .emit(&mut acc, SqlEmitContext::root())
+                .expect("emit");
         } else {
             panic!("intersection_of must wrap ExprNode::Spatial");
         }
@@ -1268,15 +1339,96 @@ mod tests {
             b_ewkb: vec![0x33],
         };
         let mut acc = SqlAccumulator::new("");
-        area_int.emit(&mut acc);
+        area_int
+            .emit(&mut acc, SqlEmitContext::root())
+            .expect("emit");
         acc.push_sql(" / ");
-        area_a.emit(&mut acc);
+        area_a.emit(&mut acc, SqlEmitContext::root()).expect("emit");
         let sql = acc.sql();
         // 2 binds from AreaOfIntersection ($1, $2), 1 from Area ($3) = 3 total.
         assert_eq!(acc.bind_count(), 3);
         assert!(
             sql.contains("$1") && sql.contains("$2") && sql.contains("$3"),
             "expected $1 $2 $3, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn dwithin_expr_to_expr_emits_two_operand_st_dwithin() {
+        use crate::Expr;
+        use crate::expr::node::ExprNode;
+        use crate::expr::sql::emit_expr;
+        // lhs = a model column `geo`; rhs = a CTE alias column `anchor.geo`.
+        let lhs: Expr<crate::geo::GeoPoint> = Expr::from_node(ExprNode::Field { column: "geo" });
+        let rhs: Expr<crate::geo::GeoPoint> = Expr::from_node(ExprNode::CteAliasField {
+            alias: "anchor",
+            column: "geo",
+        });
+        let pred: Expr<bool> = Expr::dwithin(lhs, rhs, 50000.0);
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &pred.node, SqlEmitContext::root()).expect("dwithin emission");
+        // ST_DWithin(geo, anchor.geo, $1) — radius bound as $1.
+        assert_eq!(
+            qb.sql().trim(),
+            "ST_DWithin(geo, anchor.geo, $1)",
+            "got: {}",
+            qb.sql()
+        );
+    }
+
+    #[test]
+    fn distance_qualifies_column_when_table_qualifier_present() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let expr = SpatialExpr::Distance {
+            field_column: "geo",
+            center,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc, SqlEmitContext::joined("places_cte"))
+            .expect("emit");
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Distance(places_cte.geo,"),
+            "qualifier must prefix the column; got: {sql}"
+        );
+        assert!(
+            !sql.contains("ST_Distance(geo,"),
+            "bare column must not appear; got: {sql}"
+        );
+    }
+
+    #[test]
+    fn within_qualifies_column_when_table_qualifier_present() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let expr = SpatialExpr::Within {
+            field_column: "geo",
+            center,
+            radius_meters: 5000.0,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc, SqlEmitContext::joined("places_cte"))
+            .expect("emit");
+        assert!(
+            acc.sql().contains("ST_DWithin(places_cte.geo,"),
+            "qualifier must prefix the column; got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn shape_predicate_qualifies_column_when_table_qualifier_present() {
+        // ST_Contains(places_cte.geo::geometry, $1::bytea::geometry)
+        let expr = SpatialExpr::Contains {
+            field_column: "geo",
+            other_ewkb: vec![0u8; 4],
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc, SqlEmitContext::joined("places_cte"))
+            .expect("emit");
+        assert!(
+            acc.sql().contains("ST_Contains(places_cte.geo::geometry,"),
+            "shape predicate column must be qualified; got: {}",
+            acc.sql()
         );
     }
 }

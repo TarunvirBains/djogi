@@ -485,9 +485,12 @@ pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) ->
         // `Field` routes through `ctx.push_column`, so it qualifies as
         // `<alias>.<col>` under a joined context.
         ExprNode::Field { .. } => true,
-        // `Literal` / `CurrentYear` / `IntervalLiteral` emit no column
-        // reference at all — they are context-free constants.
-        ExprNode::Literal(_) | ExprNode::CurrentYear | ExprNode::IntervalLiteral { .. } => true,
+        // `Literal` / `CurrentYear` / `Now` / `IntervalLiteral` emit no column
+        // reference at all — they are context-free server-side constants.
+        ExprNode::Literal(_)
+        | ExprNode::CurrentYear
+        | ExprNode::Now
+        | ExprNode::IntervalLiteral { .. } => true,
 
         // ── ALLOWED structural: recurse into EVERY child ──
         // Binary arithmetic / boolean nodes thread `ctx` into both operands
@@ -505,8 +508,10 @@ pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) ->
         ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
             is_allowed_window_expr_node(inner)
         }
-        // `Coalesce` recurses into every operand.
-        ExprNode::Coalesce(operands) => operands.iter().all(is_allowed_window_expr_node),
+        // `Coalesce` / `Least` / `Greatest` recurse into every operand.
+        ExprNode::Coalesce(operands) | ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            operands.iter().all(is_allowed_window_expr_node)
+        }
         // `Cmp` recurses into both operands.
         ExprNode::Cmp { lhs, rhs, .. } => {
             is_allowed_window_expr_node(lhs) && is_allowed_window_expr_node(rhs)
@@ -538,10 +543,13 @@ pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) ->
         ExprNode::InSubquery { .. } | ExprNode::QuantifiedSubquery { .. } => false,
         // Outer / lateral / EXCLUDED references belong to other emit contexts
         // (correlated subqueries, INSERT ... ON CONFLICT) and never produce a
-        // pair-alias-qualified column in a window slot.
+        // pair-alias-qualified column in a window slot. `CteAliasField` emits a
+        // CTE-alias-qualified column (`<alias>.<col>`), not the pair-alias the
+        // window context would supply, so it is equally unresolvable here.
         ExprNode::OuterRef { .. }
         | ExprNode::OuterRefColumn { .. }
         | ExprNode::OuterRefAlias { .. }
+        | ExprNode::CteAliasField { .. }
         | ExprNode::Excluded { .. } => false,
 
         // ── Trigram (gated): ALLOWED — emit arms route through `ctx.push_column` ──

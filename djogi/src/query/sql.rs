@@ -1257,21 +1257,36 @@ pub(crate) fn has_consumer_where<T: Model>(qs: &QuerySet<T>) -> bool {
     !q_is_vacuously_true(&qs.condition)
 }
 
-pub(crate) fn push_consumer_predicate_only<T: Model>(
+/// Context-threading variant of [`push_consumer_predicate_only`]. The caller
+/// supplies the emission context so the cycle-exclusion branch of a CTE
+/// consumer can qualify columns (`<from>.<col>`) when a sibling CTE is in the
+/// consumer `FROM` (`also_from_cte`). Emits the predicate body only — no
+/// leading ` WHERE ` — so the caller controls the `WHERE NOT <mark> AND …`
+/// prefix.
+pub(crate) fn push_consumer_predicate_only_with_ctx<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
+    ctx: SqlEmitContext,
 ) -> Result<(), PortablePredicateError> {
     if q_is_vacuously_true(&qs.condition) {
         return Ok(());
     }
-    emit_q::<T>(acc, &qs.condition, SqlEmitContext::root())
+    emit_q::<T>(acc, &qs.condition, ctx)
+}
+
+pub(crate) fn push_consumer_predicate_only<T: Model>(
+    acc: &mut SqlAccumulator,
+    qs: &QuerySet<T>,
+) -> Result<(), PortablePredicateError> {
+    push_consumer_predicate_only_with_ctx(acc, qs, SqlEmitContext::root())
 }
 
 pub(crate) fn push_consumer_order_limit_offset<T: Model>(
     acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
+    ctx: SqlEmitContext,
 ) {
-    push_order_limit_offset(acc, qs, SqlEmitContext::root());
+    push_order_limit_offset(acc, qs, ctx);
 }
 
 /// Emit the consumer-side tail for a CTE query's outer SELECT.

@@ -126,6 +126,21 @@ pub(crate) enum ExprNode {
     /// Operand order is preserved exactly as built by the typed surface.
     Coalesce(Vec<ExprNode>),
 
+    /// `LEAST(expr1, expr2, …)` — return the smallest non-NULL operand
+    /// (Postgres returns NULL only if every operand is NULL). Operand
+    /// order does not affect the result. Dedicated variant rather than a
+    /// generic function call so the emitter never handles a user-supplied
+    /// function-name string — the keyword `LEAST` is framework-baked.
+    /// The operand list is non-empty (Postgres rejects `LEAST()` with no
+    /// args); the typed constructors enforce this and the emitter rejects
+    /// an empty list at SQL-emit time.
+    Least(Vec<ExprNode>),
+
+    /// `GREATEST(expr1, expr2, …)` — return the largest non-NULL operand
+    /// (NULL only if every operand is NULL). Sibling of [`Self::Least`];
+    /// same non-empty-operand and framework-baked-keyword discipline.
+    Greatest(Vec<ExprNode>),
+
     /// `lhs <op> rhs` — comparison producing an `Expr<bool>` at the
     /// typed-wrapper layer. See [`CmpOp`] for the operator set.
     Cmp {
@@ -400,6 +415,16 @@ pub(crate) enum ExprNode {
     /// transaction should bind a literal `i32` instead of using this helper.
     CurrentYear,
 
+    /// `NOW()` — the transaction start timestamp, evaluated server-side.
+    /// Zero-argument server-side function, mirroring [`Self::CurrentYear`].
+    /// Produced by [`crate::expr::Expr::now`] and emitted as the bare token
+    /// `NOW()`.
+    /// # Volatility note
+    /// `NOW()` is `STABLE` per Postgres — it returns the transaction start
+    /// time, constant within a transaction (not a per-row wall clock). No
+    /// bind parameter — the value is read from the server clock.
+    Now,
+
     /// Outer-scope column reference inside a correlated subquery.
     /// Emits the column name unqualified — Postgres resolves the name
     /// against the enclosing query scope when there is no matching
@@ -458,6 +483,25 @@ pub(crate) enum ExprNode {
         /// Source model diagnostic name (`type_name::<M>()`) for error
         /// messages when lateral scoping validation fails.
         model_name: &'static str,
+    },
+
+    /// `<cte_alias>.<column>` — a reference to a column projected by a CTE
+    /// term, qualified by the CTE's alias. Distinct from
+    /// [`Self::OuterRefColumn`] (which qualifies by a physical table name)
+    /// and [`Self::Field`] (unqualified / parent-table-qualified): a CTE
+    /// alias is neither the consumer model's table nor an outer-scope
+    /// correlated table — it is a `WITH`-term name in scope of the
+    /// consumer query. Both fields are user-supplied identifiers validated
+    /// at [`crate::query::cte_ref::CteRef::new`] construction via
+    /// [`crate::ident::check_user_supplied_ident`]; safe to push as raw SQL.
+    /// The emitter renders `<alias>.<column>` verbatim — no
+    /// [`crate::query::portable::SqlEmitContext`] qualifier is applied,
+    /// because the alias is already the qualifier.
+    CteAliasField {
+        /// CTE term name used as the SQL qualifier (e.g. `"anchor"`).
+        alias: &'static str,
+        /// Column projected by that CTE term (e.g. `"geo"`).
+        column: &'static str,
     },
 
     /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
