@@ -177,10 +177,7 @@ fn try_expand(
     // field_attrs was collected BEFORE injection (user fields only, 0-indexed).
     // struct_item.fields now has framework fields at the front — skip them so
     // zip() aligns field_attrs[0] with the first USER field, not id.
-    let n_framework = match &model_attrs.pk {
-        PkStrategy::None => 2, // created_at, updated_at only
-        _ => 3,                // id, created_at, updated_at
-    };
+    let n_framework = model_attrs.framework_field_count();
     let user_fields: Vec<_> = struct_item
         .fields
         .iter()

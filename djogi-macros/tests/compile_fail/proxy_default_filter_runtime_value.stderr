@@ -255,12 +255,12 @@ help: the trait `Model` is implemented for `Vehicle`
  18 | #[model(table = "phase8_proxy_runtime_vehicles")]
     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `djogi::query::filter::clauses_into_q`
-   --> djogi/src/query/filter.rs:373:8
+   --> djogi/src/query/filter.rs:374:8
     |
-371 | pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> Q<M>
+372 | pub fn clauses_into_q<M, F>(clauses: Vec<FilterClause>, mut map: F) -> Q<M>
     |        -------------- required by a bound in this function
-372 | where
-373 |     M: Model,
+373 | where
+374 |     M: Model,
     |        ^^^^^ required by this bound in `clauses_into_q`
     = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
 
