@@ -246,6 +246,21 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
         // make the variant explicit on this walker's match.
         #[cfg(feature = "spatial")]
         ExprNode::RowAggregate { .. } => Ok(()),
+        // INET binary arithmetic/bitwise variants carry address
+        // sub-expressions; recurse so a nested aggregate inside an operand is
+        // still caught. (The leaf-shaped INET function variants AND the
+        // column-bound unary `InetBitNot` fall through to `_ => Ok(())`.)
+        #[cfg(feature = "network")]
+        ExprNode::InetAddOffset { addr, .. } | ExprNode::InetSubOffset { addr, .. } => {
+            check_aggregate_legality(addr)
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetAddrDiff { lhs, rhs }
+        | ExprNode::InetBitAnd { lhs, rhs }
+        | ExprNode::InetBitOr { lhs, rhs } => {
+            check_aggregate_legality(lhs)?;
+            check_aggregate_legality(rhs)
+        }
         // Leaf nodes and variants with no sub-expressions are trivially valid.
         _ => Ok(()),
     }
@@ -1253,6 +1268,128 @@ pub(crate) fn emit_expr(
         ExprNode::RowAggregate { op, columns: _ } => {
             emit_row_aggregate(acc, op);
         }
+
+        // ── INET scalar functions + arithmetic (gated on `network`) ──────
+        // Column-bound functions emit `fn(<col>)`. The column is a
+        // `&'static str` validated at `FieldRef::new` (assert_plain_ident),
+        // pushed through `ctx.push_column` so a joined/select_related query
+        // applies the parent-table qualifier. `set_masklen` and the offset
+        // operators bind their integer argument via `push_bind`.
+        #[cfg(feature = "network")]
+        ExprNode::InetAbbrev { column } => {
+            acc.push_sql("abbrev(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetBroadcast { column } => {
+            acc.push_sql("broadcast(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetFamily { column } => {
+            acc.push_sql("family(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetHost { column } => {
+            acc.push_sql("host(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetHostmask { column } => {
+            acc.push_sql("hostmask(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetMasklen { column } => {
+            acc.push_sql("masklen(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetNetmask { column } => {
+            acc.push_sql("netmask(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetNetwork { column } => {
+            acc.push_sql("network(");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetSetMasklen { column, prefix } => {
+            acc.push_sql("set_masklen(");
+            ctx.push_column(acc, column);
+            acc.push_sql(", ");
+            acc.push_bind(*prefix);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetServerAddr => {
+            // No column, no bind — read from server connection state.
+            acc.push_sql("inet_server_addr()");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetServerPort => {
+            acc.push_sql("inet_server_port()");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetAddOffset { addr, offset } => {
+            // Parens pin precedence under further composition; the offset is
+            // a bigint bound parameter.
+            acc.push_sql("(");
+            emit_expr(acc, addr, ctx)?;
+            acc.push_sql(" + ");
+            acc.push_bind(*offset);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetSubOffset { addr, offset } => {
+            acc.push_sql("(");
+            emit_expr(acc, addr, ctx)?;
+            acc.push_sql(" - ");
+            acc.push_bind(*offset);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetAddrDiff { lhs, rhs } => {
+            acc.push_sql("(");
+            emit_expr(acc, lhs, ctx)?;
+            acc.push_sql(" - ");
+            emit_expr(acc, rhs, ctx)?;
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetBitNot { column } => {
+            // Unary `~ inet`; column-bound, no bind. Parens pin precedence
+            // under further composition.
+            acc.push_sql("(~");
+            ctx.push_column(acc, column);
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetBitAnd { lhs, rhs } => {
+            acc.push_sql("(");
+            emit_expr(acc, lhs, ctx)?;
+            acc.push_sql(" & ");
+            emit_expr(acc, rhs, ctx)?;
+            acc.push_sql(")");
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetBitOr { lhs, rhs } => {
+            acc.push_sql("(");
+            emit_expr(acc, lhs, ctx)?;
+            acc.push_sql(" | ");
+            emit_expr(acc, rhs, ctx)?;
+            acc.push_sql(")");
+        }
     }
     Ok(())
 }
@@ -2145,5 +2282,154 @@ mod tests {
             "exactly one bind (pattern); got {}",
             acc.bind_count()
         );
+    }
+
+    /// INET scalar-function + arithmetic emit arms (#496). Each test builds
+    /// the `ExprNode` variant directly and asserts the lowered SQL string +
+    /// bind count — the `emit_current_year_no_binds` pattern. The field
+    /// methods (`DjogiField<M, InetAddr>::abbrev()` etc.) are thin wrappers
+    /// that produce exactly these nodes, so these tests pin the node shape
+    /// the method layer emits; end-to-end behavior is covered by the live-PG
+    /// integration tests in `tests/integration/network.rs`.
+    #[cfg(feature = "network")]
+    mod inet_fn_emit {
+        use super::*;
+        use crate::expr::node::ExprNode;
+
+        // `acc.bind_count()` returns `u32` (accumulator.rs); the tuple MUST be
+        // `u32`, not `usize` — Rust does not implicitly coerce between them.
+        fn emit(node: &ExprNode) -> (String, u32) {
+            let mut acc = SqlAccumulator::new("");
+            emit_expr(&mut acc, node, SqlEmitContext::root())
+                .expect("inet expression should lower to SQL");
+            (acc.sql().trim().to_string(), acc.bind_count())
+        }
+
+        #[test]
+        fn abbrev_emits_function_call_no_binds() {
+            let (sql, binds) = emit(&ExprNode::InetAbbrev { column: "addr" });
+            assert_eq!(sql, "abbrev(addr)", "got: {sql}");
+            assert_eq!(binds, 0, "abbrev binds no parameter");
+        }
+
+        #[test]
+        fn family_emits_function_call() {
+            let (sql, _) = emit(&ExprNode::InetFamily { column: "addr" });
+            assert_eq!(sql, "family(addr)", "got: {sql}");
+        }
+
+        #[test]
+        fn network_emits_function_call() {
+            let (sql, _) = emit(&ExprNode::InetNetwork { column: "addr" });
+            assert_eq!(sql, "network(addr)", "got: {sql}");
+        }
+
+        #[test]
+        fn set_masklen_emits_function_call_with_bound_prefix() {
+            let (sql, binds) = emit(&ExprNode::InetSetMasklen {
+                column: "addr",
+                prefix: 16,
+            });
+            assert_eq!(sql, "set_masklen(addr, $1)", "got: {sql}");
+            assert_eq!(binds, 1, "set_masklen binds the new prefix length");
+        }
+
+        #[test]
+        fn inet_server_addr_emits_call_no_binds() {
+            let (sql, binds) = emit(&ExprNode::InetServerAddr);
+            assert_eq!(sql, "inet_server_addr()", "got: {sql}");
+            assert_eq!(binds, 0);
+        }
+
+        #[test]
+        fn inet_server_port_emits_call_no_binds() {
+            let (sql, binds) = emit(&ExprNode::InetServerPort);
+            assert_eq!(sql, "inet_server_port()", "got: {sql}");
+            assert_eq!(binds, 0);
+        }
+
+        #[test]
+        fn add_offset_emits_parenthesized_bigint_addition() {
+            let node = ExprNode::InetAddOffset {
+                addr: Box::new(ExprNode::Field { column: "addr" }),
+                offset: 256,
+            };
+            let (sql, binds) = emit(&node);
+            assert_eq!(sql, "(addr + $1)", "got: {sql}");
+            assert_eq!(binds, 1, "the offset is bound");
+        }
+
+        #[test]
+        fn sub_offset_emits_parenthesized_bigint_subtraction() {
+            let node = ExprNode::InetSubOffset {
+                addr: Box::new(ExprNode::Field { column: "addr" }),
+                offset: 1,
+            };
+            let (sql, binds) = emit(&node);
+            assert_eq!(sql, "(addr - $1)", "got: {sql}");
+            assert_eq!(binds, 1);
+        }
+
+        #[test]
+        fn sub_addr_emits_parenthesized_address_difference_no_binds() {
+            let node = ExprNode::InetAddrDiff {
+                lhs: Box::new(ExprNode::Field { column: "addr" }),
+                rhs: Box::new(ExprNode::Field {
+                    column: "other_addr",
+                }),
+            };
+            let (sql, binds) = emit(&node);
+            assert_eq!(sql, "(addr - other_addr)", "got: {sql}");
+            assert_eq!(binds, 0, "field-vs-field difference binds nothing");
+        }
+
+        #[test]
+        fn bitnot_emits_parenthesized_unary_not_no_binds() {
+            let (sql, binds) = emit(&ExprNode::InetBitNot { column: "addr" });
+            assert_eq!(sql, "(~addr)", "got: {sql}");
+            assert_eq!(binds, 0, "bitnot binds no parameter (column-bound unary)");
+        }
+
+        #[test]
+        fn bitand_addr_emits_parenthesized_and_no_binds() {
+            let node = ExprNode::InetBitAnd {
+                lhs: Box::new(ExprNode::Field { column: "addr" }),
+                rhs: Box::new(ExprNode::Field {
+                    column: "other_addr",
+                }),
+            };
+            let (sql, binds) = emit(&node);
+            assert_eq!(sql, "(addr & other_addr)", "got: {sql}");
+            assert_eq!(binds, 0, "field-vs-field AND binds nothing");
+        }
+
+        #[test]
+        fn bitor_addr_emits_parenthesized_or_no_binds() {
+            let node = ExprNode::InetBitOr {
+                lhs: Box::new(ExprNode::Field { column: "addr" }),
+                rhs: Box::new(ExprNode::Field {
+                    column: "other_addr",
+                }),
+            };
+            let (sql, binds) = emit(&node);
+            assert_eq!(sql, "(addr | other_addr)", "got: {sql}");
+            assert_eq!(binds, 0, "field-vs-field OR binds nothing");
+        }
+
+        #[test]
+        fn expr_inet_server_addr_constructor_lowers() {
+            let e = crate::expr::Expr::inet_server_addr();
+            let (sql, binds) = emit(&e.node);
+            assert_eq!(sql, "inet_server_addr()", "got: {sql}");
+            assert_eq!(binds, 0);
+        }
+
+        #[test]
+        fn expr_inet_server_port_constructor_lowers() {
+            let e = crate::expr::Expr::inet_server_port();
+            let (sql, binds) = emit(&e.node);
+            assert_eq!(sql, "inet_server_port()", "got: {sql}");
+            assert_eq!(binds, 0);
+        }
     }
 }

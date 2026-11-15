@@ -456,3 +456,97 @@ jobs:
             cargo test -p djogi --test "$test_name" --all-features -- --test-threads=1
             echo "::endgroup::"
           done < tests/spatial-ci-tests.txt
+
+  # INET / network-feature coverage — runs the network-gated lib tests
+  # (emit arms + window pair-qualification) and the `network` integration
+  # binary with `--features network`. The default `test` job runs default
+  # features only, so the `network` integration binary (required-features =
+  # ["network"]) is skipped there and the network-gated lib tests compile out
+  # their scenarios; the spatial job runs only tests/spatial-ci-tests.txt
+  # (spatial-only). This job is the sole CI execution path for the INET
+  # surface. Kept separate from `test` (rather than a feature toggle) so the
+  # network feature set gets its own isolated target cache and its runtime
+  # coverage is explicit and easy to attribute.
+  network:
+    name: Network (INET)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Same image as the test/spatial jobs so Postgres availability does
+        # not drift between lanes. INET needs only base Postgres 18; PostGIS
+        # being present is harmless and avoids a second image.
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: djogi
+          # djogi-allow-secret: GHA service-container fixture; identical to
+          # the test/spatial jobs above. See that rationale.
+          POSTGRES_PASSWORD: djogi
+          POSTGRES_DB: djogi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U djogi"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Free disk space on GHA runner
+        if: ${{ !env.ACT }}
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy, rustfmt, rust-src
+
+      - name: Cache cargo registry/git (shared with check/test jobs)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache cargo target (network feature set)
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-network-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-target-network-
+
+      # Network-gated lib tests: the emit-arm tests and the window
+      # pair-qualification tests. These need no live DB but DO need
+      # `--features network` to compile in their scenarios; the default
+      # `test` job's `--lib` coverage runs default features and skips them.
+      - name: Network lib tests
+        run: cargo test -p djogi --features network --lib -- --test-threads=1
+
+      # Network integration tests: one positional function-name filter per
+      # invocation against the single `network` binary, driven by the
+      # manifest. Mirrors the spatial lane's manifest loop, adapted for the
+      # one-binary-many-functions structure (the manifest lists test-function
+      # filters, not [[test]] binary names — see tests/network-ci-tests.txt).
+      - name: Network integration tests
+        run: |
+          while IFS= read -r test_name; do
+            case "$test_name" in
+              ""|\#*) continue ;;
+            esac
+            echo "::group::cargo test -p djogi --features network --test network ${test_name}"
+            cargo test -p djogi --features network --test network "$test_name" -- --test-threads=1
+            echo "::endgroup::"
+          done < tests/network-ci-tests.txt

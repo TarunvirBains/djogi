@@ -1,0 +1,17 @@
+# Cargo test function-name filters that must run in the `network` CI lane with
+# `--features network --test network`. Unlike tests/spatial-ci-tests.txt (whose
+# entries are Cargo [[test]] BINARY names, one `--test <binary>` per line), all
+# INET integration tests live in the single `network` binary
+# (djogi/Cargo.toml: name = "network", required-features = ["network"]). These
+# entries are therefore test-FUNCTION filters within that one binary; the lane
+# fixes `--test network` and passes one filter per `cargo test` invocation.
+#
+# The network-gated LIB tests (expr::sql::tests::inet_fn_emit, the
+# expr::window::tests INET pair-qualification tests) are NOT listed here — they
+# are not in this binary; they live in the library crate and are run by the
+# lane's separate `--lib` step. Listing a lib-test function name in a
+# `--test network` filter would match zero tests.
+inet_scalar_functions_execute
+inet_set_masklen_and_arithmetic_execute
+inet_network_and_remaining_functions_execute
+inet_nullable_transform_composes_in_filter_expr

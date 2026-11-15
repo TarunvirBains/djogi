@@ -654,6 +654,82 @@ pub(crate) enum ExprNode {
         #[allow(dead_code)]
         columns: Vec<&'static str>,
     },
+
+    // ── INET scalar functions + arithmetic (gated on `network`) ──────────
+    // Column-bound scalar functions over an INET column. `column` is a
+    // `&'static str` validated at `FieldRef::new` via `assert_plain_ident`
+    // (same seal as `ExprNode::Field` / `ExprNode::ArrayLength`), so the
+    // emitter pushes it through `ctx.push_column` without re-validation.
+    /// `abbrev(<col>)` — abbreviated text form of an INET value.
+    #[cfg(feature = "network")]
+    InetAbbrev { column: &'static str },
+    /// `broadcast(<col>)` — broadcast address of an INET value's network.
+    #[cfg(feature = "network")]
+    InetBroadcast { column: &'static str },
+    /// `family(<col>)` — address family (4 or 6) as an integer.
+    #[cfg(feature = "network")]
+    InetFamily { column: &'static str },
+    /// `host(<col>)` — host address text, prefix stripped.
+    #[cfg(feature = "network")]
+    InetHost { column: &'static str },
+    /// `hostmask(<col>)` — host mask as an INET value.
+    #[cfg(feature = "network")]
+    InetHostmask { column: &'static str },
+    /// `masklen(<col>)` — prefix length (mask bits) as an integer.
+    #[cfg(feature = "network")]
+    InetMasklen { column: &'static str },
+    /// `netmask(<col>)` — network mask as an INET value.
+    #[cfg(feature = "network")]
+    InetNetmask { column: &'static str },
+    /// `network(<col>)` — network portion (host bits zeroed) as a CIDR value.
+    #[cfg(feature = "network")]
+    InetNetwork { column: &'static str },
+    /// `set_masklen(<col>, $n)` — INET value with its prefix length replaced.
+    /// `prefix` is the new mask length, bound as a parameter at emit time.
+    #[cfg(feature = "network")]
+    InetSetMasklen { column: &'static str, prefix: i32 },
+    /// `inet_server_addr()` — current session's server address. No column,
+    /// no bind — read from the server connection state.
+    #[cfg(feature = "network")]
+    InetServerAddr,
+    /// `inet_server_port()` — current session's server port. No column,
+    /// no bind.
+    #[cfg(feature = "network")]
+    InetServerPort,
+    /// `(<addr> + $n)` — INET plus a bigint offset, yielding an INET.
+    /// `addr` is the address sub-expression; `offset` is bound at emit.
+    #[cfg(feature = "network")]
+    InetAddOffset { addr: Box<ExprNode>, offset: i64 },
+    /// `(<addr> - $n)` — INET minus a bigint offset, yielding an INET.
+    #[cfg(feature = "network")]
+    InetSubOffset { addr: Box<ExprNode>, offset: i64 },
+    /// `(<lhs> - <rhs>)` — difference of two INET addresses, yielding a
+    /// bigint (the number of addresses between them).
+    #[cfg(feature = "network")]
+    InetAddrDiff {
+        lhs: Box<ExprNode>,
+        rhs: Box<ExprNode>,
+    },
+    /// `(~<col>)` — bitwise NOT of an INET address, yielding an INET.
+    /// Unary, column-bound (Postgres `~ inet`). Leaf-shaped: carries a bare
+    /// `column`, no inner `ExprNode`, so the structural walkers treat it as a
+    /// leaf.
+    #[cfg(feature = "network")]
+    InetBitNot { column: &'static str },
+    /// `(<lhs> & <rhs>)` — bitwise AND of two INET addresses, yielding an
+    /// INET (Postgres `inet & inet`).
+    #[cfg(feature = "network")]
+    InetBitAnd {
+        lhs: Box<ExprNode>,
+        rhs: Box<ExprNode>,
+    },
+    /// `(<lhs> | <rhs>)` — bitwise OR of two INET addresses, yielding an
+    /// INET (Postgres `inet | inet`).
+    #[cfg(feature = "network")]
+    InetBitOr {
+        lhs: Box<ExprNode>,
+        rhs: Box<ExprNode>,
+    },
 }
 
 /// Internal subquery payload — the untyped counterpart to the typed

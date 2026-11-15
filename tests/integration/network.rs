@@ -574,3 +574,503 @@ async fn inet_addr_containment_operators_execute(mut ctx: djogi::DjogiContext) {
     assert!(labels.contains(&"inet-narrow"));
     assert!(labels.contains(&"inet-host"));
 }
+
+// ── InetAddr scalar functions execute (#496) ────────────────────────────────
+
+#[djogi::djogi_test(sync_models = [InetAddrRow])]
+async fn inet_scalar_functions_execute(mut ctx: djogi::DjogiContext) {
+    use djogi::expr::Expr;
+
+    // 192.168.1.5/24 — IPv4 host with a /24 prefix.
+    let v4 = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).expect("valid");
+    // 2001:db8::1/128 — IPv6 host.
+    let v6 = InetAddr::new(
+        IpAddr::V6("2001:db8::1".parse::<Ipv6Addr>().expect("valid v6")),
+        128,
+    )
+    .expect("valid");
+
+    for (addr, label) in [(v4, "v4"), (v6, "v6")] {
+        InetAddrRow::create(
+            &mut ctx,
+            InetAddrRow {
+                id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+                created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+                updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+                addr,
+                maybe_addr: None,
+                label: label.into(),
+            },
+        )
+        .await
+        .expect("create row");
+    }
+
+    // family(addr) = 4 → only the v4 row.
+    let v4_rows = InetAddrRow::objects()
+        .filter_expr(|f| f.addr().family().eq(Expr::literal(4i32)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("family() predicate executes");
+    assert_eq!(v4_rows.len(), 1, "exactly one IPv4 row");
+    assert_eq!(v4_rows[0].label, "v4");
+
+    // family(addr) = 6 → only the v6 row.
+    let v6_rows = InetAddrRow::objects()
+        .filter_expr(|f| f.addr().family().eq(Expr::literal(6i32)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("family() predicate executes");
+    assert_eq!(v6_rows.len(), 1, "exactly one IPv6 row");
+    assert_eq!(v6_rows[0].label, "v6");
+
+    // masklen(addr) = 24 → only the v4 row (prefix 24).
+    let masklen_rows = InetAddrRow::objects()
+        .filter_expr(|f| f.addr().masklen().eq(Expr::literal(24i32)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("masklen() predicate executes");
+    assert_eq!(masklen_rows.len(), 1, "one row with /24");
+    assert_eq!(masklen_rows[0].label, "v4");
+}
+
+// ── set_masklen + arithmetic via set_expr (#496) ─────────────────────────────
+
+#[djogi::djogi_test(sync_models = [InetAddrRow])]
+async fn inet_set_masklen_and_arithmetic_execute(mut ctx: djogi::DjogiContext) {
+    // 10.0.0.0/8.
+    let base = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("valid");
+    let row = InetAddrRow::create(
+        &mut ctx,
+        InetAddrRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            addr: base,
+            maybe_addr: None,
+            label: "base".into(),
+        },
+    )
+    .await
+    .expect("create base row");
+
+    // UPDATE addr = set_masklen(addr, 16) — rewrite the prefix to /16.
+    InetAddrRow::objects()
+        .filter(|f| f.label().eq("base"))
+        .update(|f| f.addr().set_expr(f.addr().set_masklen(16)))
+        .execute(&mut ctx)
+        .await
+        .expect("set_masklen UPDATE executes");
+
+    let fetched = InetAddrRow::get(&mut ctx, row.id).await.expect("re-fetch");
+    assert_eq!(fetched.addr.prefix(), 16, "prefix rewritten to /16");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)),
+        "address bits preserved by set_masklen"
+    );
+
+    // UPDATE addr = addr + 5 — add an offset to the address.
+    InetAddrRow::objects()
+        .filter(|f| f.label().eq("base"))
+        .update(|f| f.addr().set_expr(f.addr().add_offset(5)))
+        .execute(&mut ctx)
+        .await
+        .expect("add_offset UPDATE executes");
+
+    let fetched = InetAddrRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after add_offset");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+        "10.0.0.0 + 5 = 10.0.0.5"
+    );
+}
+
+// ── network() (cidr-returning) + remaining INET surfaces execute (#496) ──────
+//
+// A dedicated model with BOTH an inet column and a cidr column. The cidr
+// column is the ONLY consumption path for `network()`'s `Expr<CidrAddr>`
+// result: it cannot be `set_expr`'d onto an `InetAddr` column (type
+// mismatch) and cannot be compared via `.eq()` (no `CidrAddr` literal
+// bridge exists in `expr/literal.rs`). Writing `network(addr)` into a real
+// `cidr` column and decoding it back through `CidrAddr::FromSql` is the
+// faithful end-to-end test of the cross-type return.
+#[model(table = "inet_cidr_rows_test", pk = HeerId, no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct InetCidrRow {
+    pub addr: InetAddr,
+    pub net: CidrAddr,
+    pub label: String,
+}
+
+#[djogi::djogi_test(sync_models = [InetCidrRow])]
+async fn inet_network_and_remaining_functions_execute(mut ctx: djogi::DjogiContext) {
+    use djogi::expr::Expr;
+
+    // 192.168.1.5/24 — host with host-bits set; network() zeroes them to
+    // 192.168.1.0/24. `net` is seeded as 0.0.0.0/0 (overwritten below).
+    let addr = InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5)), 24).expect("valid");
+    let seed_net = CidrAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).expect("valid");
+    let row = InetCidrRow::create(
+        &mut ctx,
+        InetCidrRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            addr,
+            net: seed_net,
+            label: "net".into(),
+        },
+    )
+    .await
+    .expect("create row");
+
+    // 1. network(addr) -> cidr -> stored in the cidr column -> decoded back.
+    //    UPDATE net = network(addr); network(192.168.1.5/24) = 192.168.1.0/24.
+    //    `f.net()` is DjogiField<M, CidrAddr>, so set_expr wants Expr<CidrAddr>,
+    //    which `f.addr().network()` returns — types match.
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("net"))
+        .update(|f| f.net().set_expr(f.addr().network()))
+        .execute(&mut ctx)
+        .await
+        .expect("network() UPDATE into cidr column executes");
+
+    let fetched = InetCidrRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after network()");
+    assert_eq!(
+        fetched.net.addr(),
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)),
+        "network(192.168.1.5/24) zeroes host bits to 192.168.1.0"
+    );
+    assert_eq!(
+        fetched.net.prefix(),
+        24,
+        "network() preserves the /24 prefix as a cidr"
+    );
+
+    // 2. broadcast(addr) -> inet -> stored in the inet column -> decoded.
+    //    broadcast(192.168.1.5/24) = 192.168.1.255 (still /24).
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("net"))
+        .update(|f| f.addr().set_expr(f.addr().broadcast()))
+        .execute(&mut ctx)
+        .await
+        .expect("broadcast() UPDATE executes");
+
+    let fetched = InetCidrRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after broadcast()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)),
+        "broadcast(192.168.1.5/24) = 192.168.1.255"
+    );
+
+    // 3. netmask(addr) -> inet. netmask(192.168.1.255/24) = 255.255.255.0.
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("net"))
+        .update(|f| f.addr().set_expr(f.addr().netmask()))
+        .execute(&mut ctx)
+        .await
+        .expect("netmask() UPDATE executes");
+
+    let fetched = InetCidrRow::get(&mut ctx, row.id)
+        .await
+        .expect("re-fetch after netmask()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0)),
+        "netmask(/24) = 255.255.255.0"
+    );
+
+    // 4. hostmask(addr) -> inet. The address is now 255.255.255.0/32
+    //    (netmask() returns a /32 host); hostmask(x/32) = 0.0.0.0.
+    //    Assert execution + a decodable result, not an exact host value
+    //    (the prefix carried by the prior result drives the mask).
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("net"))
+        .update(|f| f.addr().set_expr(f.addr().hostmask()))
+        .execute(&mut ctx)
+        .await
+        .expect("hostmask() UPDATE executes");
+    let _ = InetCidrRow::get(&mut ctx, row.id)
+        .await
+        .expect("hostmask() result decodes as InetAddr");
+
+    // Seed a second row dedicated to arithmetic so the known value is stable.
+    let arith = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10)), 32).expect("valid");
+    let arith_row = InetCidrRow::create(
+        &mut ctx,
+        InetCidrRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            addr: arith,
+            net: seed_net,
+            label: "arith".into(),
+        },
+    )
+    .await
+    .expect("create arith row");
+
+    // 5. sub_offset(4): 10.0.0.10 - 4 = 10.0.0.6.
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set_expr(f.addr().sub_offset(4)))
+        .execute(&mut ctx)
+        .await
+        .expect("sub_offset() UPDATE executes");
+    let fetched = InetCidrRow::get(&mut ctx, arith_row.id)
+        .await
+        .expect("re-fetch after sub_offset()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 6)),
+        "10.0.0.10 - 4 = 10.0.0.6"
+    );
+
+    // 6a. bitnot() -> inet. Unary `~ inet`; column-bound, value-asserted.
+    //     Reset addr to a known host first so the NOT is deterministic.
+    //     ~'10.0.0.10/32' NOTs each octet: ~10=245, ~0=255, ~0=255, ~10=245
+    //     → 245.255.255.245 (prefix /32 unchanged).
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set(arith)) // back to 10.0.0.10/32
+        .execute(&mut ctx)
+        .await
+        .expect("reset addr for bitnot executes");
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set_expr(f.addr().bitnot()))
+        .execute(&mut ctx)
+        .await
+        .expect("bitnot() UPDATE executes");
+    let fetched = InetCidrRow::get(&mut ctx, arith_row.id)
+        .await
+        .expect("re-fetch after bitnot()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(245, 255, 255, 245)),
+        "~10.0.0.10 = 245.255.255.245 (bitwise NOT per octet)"
+    );
+
+    // 6b. bitand_addr(~addr): x & ~x = 0 for every bit, independent of prefix /
+    //     version / family. Distinct operands (Field vs InetBitNot node) -> SQL
+    //     `(addr & (~addr))`; an identity-returning miswiring would yield
+    //     10.0.0.10, not 0.0.0.0. Reset addr to the known arith value first.
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set(arith)) // back to 10.0.0.10/32
+        .execute(&mut ctx)
+        .await
+        .expect("reset addr for bitand executes");
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set_expr(f.addr().bitand_addr(f.addr().bitnot())))
+        .execute(&mut ctx)
+        .await
+        .expect("bitand_addr() UPDATE executes");
+    let fetched = InetCidrRow::get(&mut ctx, arith_row.id)
+        .await
+        .expect("re-fetch after bitand_addr()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        "addr & ~addr = 0.0.0.0 (self-complement AND; distinguishes correct & from identity)"
+    );
+
+    // 6c. bitor_addr(~addr): x | ~x = all-ones, independent of prefix/version.
+    //     6b leaves addr = 0.0.0.0, so reset to the known arith value first.
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set(arith)) // back to 10.0.0.10/32
+        .execute(&mut ctx)
+        .await
+        .expect("reset addr for bitor executes");
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set_expr(f.addr().bitor_addr(f.addr().bitnot())))
+        .execute(&mut ctx)
+        .await
+        .expect("bitor_addr() UPDATE executes");
+    let fetched = InetCidrRow::get(&mut ctx, arith_row.id)
+        .await
+        .expect("re-fetch after bitor_addr()");
+    assert_eq!(
+        fetched.addr.addr(),
+        IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
+        "addr | ~addr = 255.255.255.255 (self-complement OR; distinguishes correct | from identity)"
+    );
+
+    // 7. sub_addr(other) -> bigint. addr - (addr - 5) = 5. Distinct operands
+    //    (Field vs InetSubOffset); larger-minus-smaller is unambiguously +5
+    //    regardless of PG's signed difference convention. A self-difference bug
+    //    (returning 0) fails this. Reset addr to arith first (6c left it
+    //    255.255.255.255).
+    InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .update(|f| f.addr().set(arith)) // back to 10.0.0.10/32
+        .execute(&mut ctx)
+        .await
+        .expect("reset addr for sub_addr executes");
+    let five_diff = InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .filter_expr(|f| {
+            f.addr()
+                .sub_addr(f.addr().sub_offset(5))
+                .eq(Expr::literal(5i64))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("sub_addr() predicate executes");
+    assert_eq!(
+        five_diff.len(),
+        1,
+        "addr - (addr - 5) = 5 matches the arith row (distinct operands; not self-difference)"
+    );
+
+    // 8. abbrev(addr) / host(addr) -> text. These return Expr<String>; the
+    //    bare `"..."` RHS goes through the From<&'static str> for Expr<String>
+    //    bridge. addr is still 10.0.0.10/32 from the reset in step 7.
+    //    host(addr) -> text, prefix ALWAYS stripped: host('10.0.0.10/32') =
+    //    '10.0.0.10'. This format is unambiguous and documented, so it is
+    //    value-asserted.
+    let host_rows = InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .filter_expr(|f| f.addr().host().eq("10.0.0.10"))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("host() predicate executes");
+    assert_eq!(host_rows.len(), 1, "host(addr) = 10.0.0.10 matches");
+    // abbrev(addr) -> text. The exact abbreviated form for a /32 inet is
+    // Postgres-version-dependent (it may or may not retain the `/32`), so
+    // this surface is exercised EXECUTION-ONLY: compose abbrev() into a
+    // predicate that must run without a Postgres error, without asserting an
+    // exact string. (host() above already value-asserts an INET text fn, and
+    // the CIDR abbrev assertion below value-asserts the cidr overload.)
+    let _abbrev_runs = InetCidrRow::objects()
+        .filter(|f| f.label().eq("arith"))
+        .filter_expr(|f| f.addr().abbrev().eq(f.addr().host()))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("abbrev() predicate executes without error");
+
+    // 8b. abbrev(net) on a CidrAddr column — Postgres CIDR abbreviated form
+    //     omits trailing zero octets: abbrev('192.168.1.0/24'::cidr) =
+    //     '192.168.1/24'. The `net` column holds 192.168.1.0/24 from the
+    //     network() round-trip in step 1. This is the definitive value
+    //     assertion distinguishing CIDR abbrev output from INET abbrev output,
+    //     and is deterministic / version-stable.
+    let cidr_abbrev_rows = InetCidrRow::objects()
+        .filter(|f| f.label().eq("net"))
+        .filter_expr(|f| f.net().abbrev().eq("192.168.1/24"))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("CIDR abbrev() predicate executes");
+    assert_eq!(
+        cidr_abbrev_rows.len(),
+        1,
+        "abbrev(net::cidr) = '192.168.1/24' (CIDR trailing-zero-octet omission)"
+    );
+
+    // 9. inet_server_addr() / inet_server_port() — session functions. These
+    //    may return NULL on a Unix-socket connection, so assert EXECUTION
+    //    (the predicate runs without a Postgres error), not a specific row
+    //    count. `inet_server_addr()` is Expr<InetAddr> with no literal bridge,
+    //    so it cannot be a literal RHS — instead compare the COLUMN's expr to
+    //    it: `f.addr().as_expr().eq(Expr::inet_server_addr())` (reflexive
+    //    Into<Expr<InetAddr>>). `inet_server_port()` is Expr<i32> and pairs
+    //    with an i32 literal.
+    let _server_addr = InetCidrRow::objects()
+        .filter_expr(|f| f.addr().as_expr().eq(Expr::inet_server_addr()))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("inet_server_addr() predicate executes without error");
+    let _server_port = InetCidrRow::objects()
+        .filter_expr(|_f| Expr::inet_server_port().eq(Expr::literal(5432i32)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("inet_server_port() predicate executes without error");
+}
+
+// ── Nullable INET transform composes in filter_expr (#496) ───────────────────
+//
+// The nullable transform methods return `Expr<Option<T>>`, which composes into
+// `filter_expr` only by comparison against another `Expr<Option<T>>` (no
+// literal bridge exists for `Option<T>`). `set_expr` is NOT available on a
+// nullable INET column — its path is `IntoFilterValue`-bounded and
+// `Option<InetAddr>` is not `IntoFilterValue`; nullable-column expression
+// UPDATE assignment is a separate, framework-wide follow-up. This test
+// exercises the real (`filter_expr`) consumption path and asserts SQL
+// three-valued logic end-to-end against live Postgres.
+#[djogi::djogi_test(sync_models = [InetAddrRow])]
+async fn inet_nullable_transform_composes_in_filter_expr(mut ctx: djogi::DjogiContext) {
+    // 10.0.0.0/16 in the nullable column for the Some row.
+    let addr = InetAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 16).expect("valid");
+
+    let some_row = InetAddrRow::create(
+        &mut ctx,
+        InetAddrRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            addr,
+            maybe_addr: Some(addr),
+            label: "some".into(),
+        },
+    )
+    .await
+    .expect("create some row");
+
+    let _none_row = InetAddrRow::create(
+        &mut ctx,
+        InetAddrRow {
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            addr,
+            maybe_addr: None,
+            label: "none".into(),
+        },
+    )
+    .await
+    .expect("create none row");
+
+    // The nullable transform returns Expr<Option<i32>>; it composes into
+    // filter_expr only by comparison against another Expr<Option<i32>>
+    // (no literal bridge exists for Option<T>). Self-comparison exercises
+    // the nullable path AND asserts SQL three-valued logic: for the None
+    // row, masklen(NULL) = NULL and (NULL = NULL) is NULL -> excluded;
+    // for the Some row, masklen(x) = masklen(x) is TRUE -> included.
+    //
+    // The explicit `mask_len: Expr<Option<i32>>` binding is what actually
+    // proves masklen() on a nullable field returns Expr<Option<i32>> (the
+    // corrected nullable return type). A closure `-> Expr<bool>` annotation
+    // alone would NOT prove it, because `eq()` returns Expr<bool> for ANY
+    // T — the bound type is forced only by annotating the masklen() result
+    // directly. `eq` takes `impl Into<Expr<Option<i32>>>`, which the second
+    // `Expr<Option<i32>>` operand satisfies via the reflexive `Into`.
+    let matched = InetAddrRow::objects()
+        .filter_expr(|f| {
+            let mask_len: djogi::expr::Expr<Option<i32>> = f.maybe_addr().masklen();
+            mask_len.eq(f.maybe_addr().masklen())
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("nullable masklen() predicate executes");
+
+    assert_eq!(
+        matched.len(),
+        1,
+        "only the Some row matches masklen(maybe_addr) = masklen(maybe_addr); \
+         the None row is excluded by three-valued logic"
+    );
+    assert_eq!(
+        matched[0].id, some_row.id,
+        "the matched row is the Some(addr) row"
+    );
+}

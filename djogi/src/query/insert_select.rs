@@ -1820,6 +1820,34 @@ fn expr_node_contains_excluded(node: &ExprNode) -> bool {
         // Trigram variants are leaf-shaped and have no inner ExprNode.
         #[cfg(feature = "trgm")]
         ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
+
+        // ── INET (gated): leaf-shaped functions (incl. the column-bound
+        // unary `InetBitNot`) carry no inner ExprNode, so they cannot
+        // reference EXCLUDED. Binary arithmetic/bitwise variants carry
+        // address sub-expressions and recurse. ──
+        #[cfg(feature = "network")]
+        ExprNode::InetAbbrev { .. }
+        | ExprNode::InetBroadcast { .. }
+        | ExprNode::InetFamily { .. }
+        | ExprNode::InetHost { .. }
+        | ExprNode::InetHostmask { .. }
+        | ExprNode::InetMasklen { .. }
+        | ExprNode::InetNetmask { .. }
+        | ExprNode::InetNetwork { .. }
+        | ExprNode::InetSetMasklen { .. }
+        | ExprNode::InetBitNot { .. }
+        | ExprNode::InetServerAddr
+        | ExprNode::InetServerPort => false,
+        #[cfg(feature = "network")]
+        ExprNode::InetAddOffset { addr, .. } | ExprNode::InetSubOffset { addr, .. } => {
+            expr_node_contains_excluded(addr)
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetAddrDiff { lhs, rhs }
+        | ExprNode::InetBitAnd { lhs, rhs }
+        | ExprNode::InetBitOr { lhs, rhs } => {
+            expr_node_contains_excluded(lhs) || expr_node_contains_excluded(rhs)
+        }
     }
 }
 

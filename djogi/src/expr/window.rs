@@ -541,6 +541,53 @@ pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) ->
         ExprNode::Spatial(_) => false,
         #[cfg(feature = "spatial")]
         ExprNode::RowAggregate { .. } => false,
+
+        // ── INET (gated): leaf/session/unary variants — unconditionally
+        // ALLOWED. Every leaf INET emit arm routes its column reference through
+        // `ctx.push_column` (the unary fns, `set_masklen`, and the column-bound
+        // unary `InetBitNot` directly). Under a self-join pair context
+        // `push_column` prepends the `l`/`r` alias, so these emit `fn(l.<col>)`
+        // / `(~l.<col>)` — pair-qualified and unambiguous. This is the
+        // `TrgmSimilarTo` / `Field` precedent (ALLOWED), NOT the bare-push
+        // `ArrayLength` / `TsRank` precedent (DENIED). The session fns emit no
+        // column at all (context-free constants, the `CurrentYear` precedent).
+        // None of these carries an inner `ExprNode`, so there is nothing to
+        // recurse into — they are true leaves. ──
+        #[cfg(feature = "network")]
+        ExprNode::InetAbbrev { .. }
+        | ExprNode::InetBroadcast { .. }
+        | ExprNode::InetFamily { .. }
+        | ExprNode::InetHost { .. }
+        | ExprNode::InetHostmask { .. }
+        | ExprNode::InetMasklen { .. }
+        | ExprNode::InetNetmask { .. }
+        | ExprNode::InetNetwork { .. }
+        | ExprNode::InetSetMasklen { .. }
+        | ExprNode::InetBitNot { .. }
+        | ExprNode::InetServerAddr
+        | ExprNode::InetServerPort => true,
+        // ── INET (gated): binary arithmetic/bitwise variants — structural, so
+        // they RECURSE into every operand. The address operand(s) are arbitrary
+        // `ExprNode` trees (`add_offset`/`sub_offset` build a `Field` node from
+        // the column; `sub_addr`/`bitand_addr`/`bitor_addr` box a
+        // caller-supplied `other.node`, which an adopter can make a DENIED
+        // `RawSql` via `Expr::__raw_sql_fragment`). A node is pair-safe iff
+        // every child is pair-safe — the `Add`/`Sub` recursion precedent above
+        // and the SAFETY-CRITICAL "recurse into EVERY child so a denied node
+        // smuggled inside an allowed wrapper still returns false" invariant. A
+        // flat `=> true` here would let `InetBitAnd { lhs: Field, rhs:
+        // RawSql(...) }` pass while emission splices the unqualified verbatim
+        // child into the window clause. ──
+        #[cfg(feature = "network")]
+        ExprNode::InetAddOffset { addr, .. } | ExprNode::InetSubOffset { addr, .. } => {
+            is_allowed_window_expr_node(addr)
+        }
+        #[cfg(feature = "network")]
+        ExprNode::InetAddrDiff { lhs, rhs }
+        | ExprNode::InetBitAnd { lhs, rhs }
+        | ExprNode::InetBitOr { lhs, rhs } => {
+            is_allowed_window_expr_node(lhs) && is_allowed_window_expr_node(rhs)
+        }
     }
 }
 
@@ -1039,6 +1086,72 @@ mod tests {
         assert!(
             !spec.is_pair_qualified(),
             "RawSql emits verbatim fragment, must not be pair-qualified"
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn partition_by_pair_expr_emits_qualified_inet_function() {
+        use crate::expr::node::ExprNode;
+        // An INET scalar function used as a pair-qualified window key must
+        // emit its column through the `l`/`r` alias, NOT bare — proving the
+        // variant is correctly window-ALLOWED and `push_column`-routed.
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::InetAbbrev { column: "addr" }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert_eq!(emit(&spec), " OVER (PARTITION BY abbrev(l.addr))");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn is_pair_qualified_true_for_inet_function_expr() {
+        use crate::expr::node::ExprNode;
+        // The allow-list gate must accept the INET function node as
+        // pair-qualified (the per-instance witness `is_pair_qualified`
+        // forwards to `is_allowed_window_expr_node`).
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::InetMasklen { column: "addr" }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "INET function Expr term must be pair-qualified (window-ALLOWED)"
+        );
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn is_pair_qualified_false_for_inet_binary_with_denied_operand() {
+        use crate::expr::node::ExprNode;
+        // SAFETY-CRITICAL regression guard: a binary INET variant must RECURSE
+        // into its operands, so a DENIED child (here `RawSql`, which is
+        // adopter-constructible via `Expr::__raw_sql_fragment`) smuggled inside
+        // an allowed `InetBitAnd` wrapper makes the whole spec NOT
+        // pair-qualified. A flat `=> true` over the binary variants would
+        // wrongly return `true` here and splice an unqualified verbatim
+        // fragment into the window clause — the `Add(Field, Subquery)`
+        // smuggling the walker's SAFETY-CRITICAL invariant forbids.
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::InetBitAnd {
+                    lhs: Box::new(ExprNode::Field { column: "addr" }),
+                    rhs: Box::new(ExprNode::RawSql("verbatim_fragment")),
+                }),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "InetBitAnd with a DENIED RawSql operand must NOT be pair-qualified \
+             — the binary variants must recurse into operands, not blanket-allow"
         );
     }
 }

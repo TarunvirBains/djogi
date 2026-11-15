@@ -309,6 +309,45 @@ impl Expr<crate::geo::Polygon> {
     }
 }
 
+#[cfg(feature = "network")]
+impl Expr<crate::InetAddr> {
+    /// `inet_server_addr()` — the IP address Postgres is listening on for
+    /// the current session connection, as an `Expr<`[`crate::InetAddr`]`>`.
+    /// Returns SQL `NULL` (decoded as a NULL row value) when the connection
+    /// is a Unix-domain socket. Takes no arguments and binds no parameters —
+    /// the value is read from the server connection state, never supplied by
+    /// the caller. Composes into predicates and `set_expr` assignments the
+    /// same way [`Expr::current_year`] does.
+    /// # Where
+    /// - [`crate::expr::node::ExprNode::InetServerAddr`] — IR variant.
+    /// # Example
+    /// ```ignore
+    /// use djogi::prelude::*;
+    /// // Rows whose stored address equals the server's own address.
+    /// let rows = Conn::objects()
+    ///     .filter_expr(|f| f.addr().as_expr().eq(Expr::inet_server_addr()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn inet_server_addr() -> Expr<crate::InetAddr> {
+        Expr::from_node(ExprNode::InetServerAddr)
+    }
+}
+
+#[cfg(feature = "network")]
+impl Expr<i32> {
+    /// `inet_server_port()` — the TCP port Postgres is listening on for the
+    /// current session connection, as an `Expr<i32>`. Returns SQL `NULL`
+    /// (decoded as NULL) for Unix-domain-socket connections. No arguments,
+    /// no binds.
+    /// # Where
+    /// - [`crate::expr::node::ExprNode::InetServerPort`] — IR variant.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn inet_server_port() -> Expr<i32> {
+        Expr::from_node(ExprNode::InetServerPort)
+    }
+}
+
 impl<T> Expr<T> {
     /// Package an already-constructed `ExprNode` into `Expr<T>`. Crate-
     /// private so downstream code cannot fabricate an arbitrarily-typed

@@ -1933,6 +1933,17 @@ impl<M: Model> DjogiField<M, crate::CidrAddr> {
     {
         self.sql.not_in_list(values)
     }
+
+    /// `abbrev(col)` — abbreviated text form of the CIDR value, omitting
+    /// trailing zero octets from the network address (e.g. `10/8` for
+    /// `10.0.0.0/8`). Postgres `abbrev(cidr)` output differs from
+    /// `abbrev(inet)`: CIDR drops trailing zero octets; INET retains them.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn abbrev(self) -> crate::expr::Expr<String> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAbbrev {
+            column: self.sql.column,
+        })
+    }
 }
 
 #[cfg(feature = "network")]
@@ -1965,6 +1976,17 @@ impl<M: Model> DjogiField<M, Option<crate::CidrAddr>> {
         I: IntoIterator<Item = crate::CidrAddr>,
     {
         self.sql.not_in_list(values)
+    }
+
+    /// `abbrev(col)` — abbreviated text form of the CIDR value, omitting
+    /// trailing zero octets from the network address (nullable). Returns
+    /// `Expr<Option<String>>` so it composes into `filter_expr` predicates
+    /// against other nullable expressions.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn abbrev(self) -> crate::expr::Expr<Option<String>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAbbrev {
+            column: self.sql.column,
+        })
     }
 }
 
@@ -2051,6 +2073,171 @@ impl<M: Model> DjogiField<M, crate::InetAddr> {
             value: rhs.into_inet_filter_value(),
         })
     }
+
+    // ── INET scalar functions (#496) — return typed Expr<T> ──────────────
+    /// `abbrev(col)` — abbreviated text form of the INET value. For an INET
+    /// value Postgres retains all octets (e.g. `10.0.0.0/8` abbreviates to
+    /// `10.0.0.0/8`); the CIDR overload drops trailing zero octets.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn abbrev(self) -> crate::expr::Expr<String> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAbbrev {
+            column: self.sql.column,
+        })
+    }
+
+    /// `broadcast(col)` — broadcast address of the value's network.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn broadcast(self) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBroadcast {
+            column: self.sql.column,
+        })
+    }
+
+    /// `family(col)` — address family: `4` for IPv4, `6` for IPv6.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn family(self) -> crate::expr::Expr<i32> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetFamily {
+            column: self.sql.column,
+        })
+    }
+
+    /// `host(col)` — host address as text, prefix stripped.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn host(self) -> crate::expr::Expr<String> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetHost {
+            column: self.sql.column,
+        })
+    }
+
+    /// `hostmask(col)` — host mask as an INET value (e.g. `0.255.255.255`).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn hostmask(self) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetHostmask {
+            column: self.sql.column,
+        })
+    }
+
+    /// `masklen(col)` — prefix length (mask bits) as an integer.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn masklen(self) -> crate::expr::Expr<i32> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetMasklen {
+            column: self.sql.column,
+        })
+    }
+
+    /// `netmask(col)` — network mask as an INET value (e.g. `255.0.0.0`).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn netmask(self) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetNetmask {
+            column: self.sql.column,
+        })
+    }
+
+    /// `network(col)` — network portion (host bits zeroed) as a CIDR value.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn network(self) -> crate::expr::Expr<crate::CidrAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetNetwork {
+            column: self.sql.column,
+        })
+    }
+
+    /// `set_masklen(col, new_prefix)` — the INET value with its prefix
+    /// length replaced by `new_prefix` (address bits preserved).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn set_masklen(self, new_prefix: i32) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetSetMasklen {
+            column: self.sql.column,
+            prefix: new_prefix,
+        })
+    }
+
+    // ── INET arithmetic + bitwise (#496) — named methods, NOT operator
+    // overloads. The choice is for API clarity, not a type-system limit:
+    // Postgres `inet - bigint -> inet` and `inet - inet -> bigint` are two
+    // distinct `-` overloads (offset vs address-difference) with different
+    // return types, and a bare `-` operator gives no cue at the call site
+    // about which one is meant — named `sub_offset` / `sub_addr` make the
+    // two semantically different subtractions legible. (Rust could support
+    // two `Sub` impls with different `Rhs` types; the correctness reason
+    // such impls are not defined is that INET is not in the sealed `Numeric`
+    // trait — addresses are not scalars.) The bitwise `~`/`&`/`|` operators
+    // are named too, so `~col` / `col & other` read as address-bit
+    // operations, not boolean logic. ──
+    /// `col + offset` — add a bigint offset to the address, yielding an
+    /// INET. (Postgres `inet + bigint`.)
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn add_offset(self, offset: i64) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAddOffset {
+            addr: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            offset,
+        })
+    }
+
+    /// `col - offset` — subtract a bigint offset from the address, yielding
+    /// an INET. (Postgres `inet - bigint`.)
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn sub_offset(self, offset: i64) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetSubOffset {
+            addr: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            offset,
+        })
+    }
+
+    /// `col - other` — the number of addresses between two INET values, as a
+    /// bigint. (Postgres `inet - inet`.) Both operands must be the same
+    /// address family.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn sub_addr(self, other: crate::expr::Expr<crate::InetAddr>) -> crate::expr::Expr<i64> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAddrDiff {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
+        })
+    }
+
+    /// `~col` — bitwise NOT of the address, yielding an INET.
+    /// (Postgres `~ inet`.) Unary, column-bound.
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitnot(self) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitNot {
+            column: self.sql.column,
+        })
+    }
+
+    /// `col & other` — bitwise AND of the address with another address,
+    /// yielding an INET. (Postgres `inet & inet`.)
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitand_addr(
+        self,
+        other: crate::expr::Expr<crate::InetAddr>,
+    ) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitAnd {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
+        })
+    }
+
+    /// `col | other` — bitwise OR of the address with another address,
+    /// yielding an INET. (Postgres `inet | inet`.)
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitor_addr(
+        self,
+        other: crate::expr::Expr<crate::InetAddr>,
+    ) -> crate::expr::Expr<crate::InetAddr> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitOr {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
+        })
+    }
 }
 
 #[cfg(feature = "network")]
@@ -2127,6 +2314,167 @@ impl<M: Model> DjogiField<M, Option<crate::InetAddr>> {
         Condition::InetOverlap(crate::inet::InetOverlapLeaf {
             column: self.sql.column,
             value: rhs.into_inet_filter_value(),
+        })
+    }
+
+    // ── INET scalar functions (#496) on a nullable column — return
+    // `Expr<Option<T>>` so the column's nullability rides in the type and the
+    // result composes into `filter_expr` predicates against other nullable
+    // expressions (the §1-documented consumption surface). The `ExprNode`
+    // constructed and the SQL it emits are byte-identical to the non-nullable
+    // block — Postgres propagates NULL through these functions at the server
+    // level (e.g. `set_masklen(NULL, 16)` is NULL); only the Rust return-type
+    // annotation changes (`Expr<Option<T>>` vs `Expr<T>`), which drives
+    // inference on the `from_node` call. `set_expr` is NOT available on a
+    // nullable INET column (its path is `IntoFilterValue`-bounded and
+    // `Option<InetAddr>` is not `IntoFilterValue`); nullable-column expression
+    // UPDATE assignment is a separate, framework-wide follow-up. ──
+    /// `abbrev(col)` — abbreviated text form of the INET value (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn abbrev(self) -> crate::expr::Expr<Option<String>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAbbrev {
+            column: self.sql.column,
+        })
+    }
+
+    /// `broadcast(col)` — broadcast address of the value's network (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn broadcast(self) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBroadcast {
+            column: self.sql.column,
+        })
+    }
+
+    /// `family(col)` — address family: `4` for IPv4, `6` for IPv6 (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn family(self) -> crate::expr::Expr<Option<i32>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetFamily {
+            column: self.sql.column,
+        })
+    }
+
+    /// `host(col)` — host address as text, prefix stripped (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn host(self) -> crate::expr::Expr<Option<String>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetHost {
+            column: self.sql.column,
+        })
+    }
+
+    /// `hostmask(col)` — host mask as an INET value (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn hostmask(self) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetHostmask {
+            column: self.sql.column,
+        })
+    }
+
+    /// `masklen(col)` — prefix length (mask bits) as an integer (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn masklen(self) -> crate::expr::Expr<Option<i32>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetMasklen {
+            column: self.sql.column,
+        })
+    }
+
+    /// `netmask(col)` — network mask as an INET value (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn netmask(self) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetNetmask {
+            column: self.sql.column,
+        })
+    }
+
+    /// `network(col)` — network portion (host bits zeroed) as CIDR (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn network(self) -> crate::expr::Expr<Option<crate::CidrAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetNetwork {
+            column: self.sql.column,
+        })
+    }
+
+    /// `set_masklen(col, new_prefix)` — the INET value with its prefix
+    /// length replaced by `new_prefix`, address bits preserved (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn set_masklen(self, new_prefix: i32) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetSetMasklen {
+            column: self.sql.column,
+            prefix: new_prefix,
+        })
+    }
+
+    // ── INET arithmetic + bitwise (#496) on a nullable column — same named
+    // methods as the non-nullable block, returning `Expr<Option<T>>`. ──
+    /// `col + offset` — add a bigint offset to the address (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn add_offset(self, offset: i64) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAddOffset {
+            addr: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            offset,
+        })
+    }
+
+    /// `col - offset` — subtract a bigint offset from the address (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn sub_offset(self, offset: i64) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetSubOffset {
+            addr: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            offset,
+        })
+    }
+
+    /// `col - other` — the number of addresses between two INET values, as a
+    /// bigint (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn sub_addr(
+        self,
+        other: crate::expr::Expr<crate::InetAddr>,
+    ) -> crate::expr::Expr<Option<i64>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetAddrDiff {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
+        })
+    }
+
+    /// `~col` — bitwise NOT of the address, yielding an INET (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitnot(self) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitNot {
+            column: self.sql.column,
+        })
+    }
+
+    /// `col & other` — bitwise AND of the address with another (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitand_addr(
+        self,
+        other: crate::expr::Expr<crate::InetAddr>,
+    ) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitAnd {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
+        })
+    }
+
+    /// `col | other` — bitwise OR of the address with another (nullable).
+    #[must_use = "expressions are lazy — dropping one silently omits the projection"]
+    pub fn bitor_addr(
+        self,
+        other: crate::expr::Expr<crate::InetAddr>,
+    ) -> crate::expr::Expr<Option<crate::InetAddr>> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::InetBitOr {
+            lhs: Box::new(crate::expr::node::ExprNode::Field {
+                column: self.sql.column,
+            }),
+            rhs: Box::new(other.node),
         })
     }
 }
