@@ -359,7 +359,7 @@ async fn network_bulk_update_sets_host(mut ctx: djogi::DjogiContext) {
     );
 }
 
-// ── InetAddr round-trip — IPv4 host-with-prefix + nullable (#308 T14) ────────
+// ── InetAddr round-trip — IPv4 host-with-prefix + nullable (#308) ────────────
 
 #[model(table = "inet_addr_rows_test", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
@@ -407,7 +407,7 @@ async fn inet_addr_ipv4_host_with_prefix_round_trip(mut ctx: djogi::DjogiContext
     assert_eq!(fetched.maybe_addr, None);
 }
 
-// ── InetAddr IPv6 + filter execution (#308 T15) ──────────────────────────────
+// ── InetAddr IPv6 + filter execution (#308) ──────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [InetAddrRow])]
 async fn inet_addr_ipv6_round_trip_and_filters(mut ctx: djogi::DjogiContext) {
@@ -487,7 +487,7 @@ async fn inet_addr_ipv6_round_trip_and_filters(mut ctx: djogi::DjogiContext) {
     assert!(labels.contains(&"inet-ipv4-3"));
 }
 
-// ── InetAddr containment operators (#308 T16) ────────────────────────────────
+// ── InetAddr containment operators (#308) ────────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [InetAddrRow])]
 async fn inet_addr_containment_operators_execute(mut ctx: djogi::DjogiContext) {

@@ -528,6 +528,9 @@ jobs:
           key: ${{ runner.os }}-cargo-target-network-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-target-network-
 
+      - name: Clippy (network feature)
+        run: cargo clippy -p djogi --features network -- -D warnings
+
       # Network-gated lib tests: the emit-arm tests and the window
       # pair-qualification tests. These need no live DB but DO need
       # `--features network` to compile in their scenarios; the default
