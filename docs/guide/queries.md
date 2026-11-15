@@ -404,6 +404,12 @@ the generic setter pins its value type to the column's declared type, so
 `<field>_is_null()` setter is emitted only for nullable columns; a
 non-`Option` column has no such method.
 
+> **Name-collision suppression:** if a generated helper name would collide
+> with another field's setter (for example, a model has both `flag: Option<bool>`
+> and `flag_is_null: bool`), the conflicting helper is silently suppressed to
+> preserve a valid struct API. In that case use the closure-based filter API
+> instead: `.filter(|f| f.flag().is_null())`.
+
 `filter_struct` preserves the same database result semantics as the same set
 of lookups expressed as `.filter(|f| ...)`. For cache and refresh admission,
 generated filters keep their stored `FilterClause` vector as the single source
