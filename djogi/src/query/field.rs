@@ -5822,7 +5822,7 @@ mod array_sealed {
 // ── INET containment RHS conversion ─────────────────────────────────────────────
 // Sealed module prevents downstream crates from implementing the trait for
 // unsupported types. Only InetAddr, CidrAddr, and bare IpAddr are valid RHS
-// values for Postgres INET containment operators (`>>`, `<<`, `>>=`, `<=`, `&&`).
+// values for Postgres INET containment operators (`>>`, `<<`, `>>=`, `<<=`, `&&`).
 
 #[cfg(feature = "network")]
 mod inet_sealed {

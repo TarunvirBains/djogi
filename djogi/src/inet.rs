@@ -1,7 +1,7 @@
 //! INET/CIDR column operator helpers — containment and overlap operators.
 //! # What
 //! This module defines the leaf payload structs for Postgres INET/CIDR
-//! containment operators (`>>`, `<<`, `>>=`, `<=`, `&&`). The actual
+//! containment operators (`>>`, `<<`, `>>=`, `<<=`, `&&`). The actual
 //! `DjogiField<M, InetAddr>` methods are in [`crate::query::field`];
 //! this module provides the condition payload types that those methods construct.
 //! # SQL operators
@@ -10,7 +10,7 @@
 //! | contains | `>>` | LHS network contains RHS address/network |
 //! | contained_by | `<<` | LHS is contained in RHS network |
 //! | contains_or_equals | `>>=` | LHS contains RHS or they are equal |
-//! | contained_by_or_equals | `<=` | LHS is contained in RHS or they are equal |
+//! | contained_by_or_equals | `<<=` | LHS is contained in RHS or they are equal |
 //! | overlaps | `&&` | LHS and RHS share at least one address |
 //! Postgres allows `inet`, `cidr`, or bare `ipaddr` as the right-hand
 //! side for any of these operators; the typed `DjogiField<M, InetAddr>`

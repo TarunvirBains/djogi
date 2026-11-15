@@ -1352,10 +1352,19 @@ pub(crate) fn emit_expr(
         }
         #[cfg(feature = "network")]
         ExprNode::InetSubOffset { addr, offset } => {
+            // The `-` operator is overloaded: `inet - inet -> bigint` AND
+            // `inet - bigint -> inet`. An uncast bigint bind leaves the RHS
+            // type unknown, so Postgres resolves to the `inet - inet`
+            // overload and the query fails ("operator does not exist: inet -
+            // bigint" or a type error). The explicit `::bigint` cast pins the
+            // `inet - bigint -> inet` overload. `InetAddOffset` needs no such
+            // cast: `+` has only `inet + bigint -> inet`, so the bind type is
+            // unambiguous there.
             acc.push_sql("(");
             emit_expr(acc, addr, ctx)?;
             acc.push_sql(" - ");
             acc.push_bind(*offset);
+            acc.push_sql("::bigint");
             acc.push_sql(")");
         }
         #[cfg(feature = "network")]
@@ -2366,7 +2375,11 @@ mod tests {
                 offset: 1,
             };
             let (sql, binds) = emit(&node);
-            assert_eq!(sql, "(addr - $1)", "got: {sql}");
+            // The `::bigint` cast is required: `inet - $1` is otherwise
+            // resolved to the `inet - inet -> bigint` overload rather than
+            // `inet - bigint -> inet`. See the emission arm for the full
+            // rationale.
+            assert_eq!(sql, "(addr - $1::bigint)", "got: {sql}");
             assert_eq!(binds, 1);
         }
 

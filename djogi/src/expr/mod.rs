@@ -312,24 +312,34 @@ impl Expr<crate::geo::Polygon> {
 #[cfg(feature = "network")]
 impl Expr<crate::InetAddr> {
     /// `inet_server_addr()` — the IP address Postgres is listening on for
-    /// the current session connection, as an `Expr<`[`crate::InetAddr`]`>`.
-    /// Returns SQL `NULL` (decoded as a NULL row value) when the connection
-    /// is a Unix-domain socket. Takes no arguments and binds no parameters —
-    /// the value is read from the server connection state, never supplied by
-    /// the caller. Composes into predicates and `set_expr` assignments the
-    /// same way [`Expr::current_year`] does.
+    /// the current session connection, as an
+    /// `Expr<Option<`[`crate::InetAddr`]`>>`.
+    ///
+    /// The result type is `Option`-wrapped because Postgres documents
+    /// `inet_server_addr()` as returning `NULL` when the current session
+    /// connects over a Unix-domain socket (there is no listening IP in that
+    /// case). Modelling the nullability in the Rust type forces callers to
+    /// compose it in a nullable context — it cannot be compared against a
+    /// non-nullable `Expr<InetAddr>` by accident, which would otherwise
+    /// decode a SQL `NULL` into a non-`Option` slot and fail at runtime.
+    ///
+    /// Takes no arguments and binds no parameters — the value is read from
+    /// the server connection state, never supplied by the caller. Composes
+    /// into predicates and `set_expr` assignments the same way
+    /// [`Expr::current_year`] does.
     /// # Where
     /// - [`crate::expr::node::ExprNode::InetServerAddr`] — IR variant.
     /// # Example
     /// ```ignore
     /// use djogi::prelude::*;
-    /// // Rows whose stored address equals the server's own address.
+    /// // Compare against a nullable INET column's expression (both sides
+    /// // are `Expr<Option<InetAddr>>`); SQL three-valued logic applies.
     /// let rows = Conn::objects()
-    ///     .filter_expr(|f| f.addr().as_expr().eq(Expr::inet_server_addr()))
+    ///     .filter_expr(|f| f.maybe_addr().as_expr().eq(Expr::inet_server_addr()))
     ///     .fetch_all(&mut ctx).await?;
     /// ```
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
-    pub fn inet_server_addr() -> Expr<crate::InetAddr> {
+    pub fn inet_server_addr() -> Expr<Option<crate::InetAddr>> {
         Expr::from_node(ExprNode::InetServerAddr)
     }
 }
@@ -337,13 +347,19 @@ impl Expr<crate::InetAddr> {
 #[cfg(feature = "network")]
 impl Expr<i32> {
     /// `inet_server_port()` — the TCP port Postgres is listening on for the
-    /// current session connection, as an `Expr<i32>`. Returns SQL `NULL`
-    /// (decoded as NULL) for Unix-domain-socket connections. No arguments,
-    /// no binds.
+    /// current session connection, as an `Expr<Option<i32>>`.
+    ///
+    /// The result type is `Option`-wrapped because Postgres documents
+    /// `inet_server_port()` as returning `NULL` for Unix-domain-socket
+    /// connections (there is no listening port in that case). Modelling the
+    /// nullability in the Rust type forces callers to compose it in a
+    /// nullable context rather than decoding a SQL `NULL` into a bare `i32`.
+    ///
+    /// No arguments, no binds.
     /// # Where
     /// - [`crate::expr::node::ExprNode::InetServerPort`] — IR variant.
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
-    pub fn inet_server_port() -> Expr<i32> {
+    pub fn inet_server_port() -> Expr<Option<i32>> {
         Expr::from_node(ExprNode::InetServerPort)
     }
 }

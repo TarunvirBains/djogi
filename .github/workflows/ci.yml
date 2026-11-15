@@ -538,18 +538,12 @@ jobs:
       - name: Network lib tests
         run: cargo test -p djogi --features network --lib -- --test-threads=1
 
-      # Network integration tests: one positional function-name filter per
-      # invocation against the single `network` binary, driven by the
-      # manifest. Mirrors the spatial lane's manifest loop, adapted for the
-      # one-binary-many-functions structure (the manifest lists test-function
-      # filters, not [[test]] binary names — see tests/network-ci-tests.txt).
+      # Network integration tests: the entire `network` binary in one
+      # invocation. All INET integration tests live in this single binary
+      # (djogi/Cargo.toml: name = "network", required-features = ["network"]),
+      # so one `cargo test --test network` runs every scenario — including the
+      # two DB-free constructor tests (`cidraddr_construction_*`) that a
+      # per-function filter loop omitted. `--test-threads=1` serialises against
+      # the shared Postgres service, matching the lib-test step above.
       - name: Network integration tests
-        run: |
-          while IFS= read -r test_name; do
-            case "$test_name" in
-              ""|\#*) continue ;;
-            esac
-            echo "::group::cargo test -p djogi --features network --test network ${test_name}"
-            cargo test -p djogi --features network --test network "$test_name" -- --test-threads=1
-            echo "::endgroup::"
-          done < tests/network-ci-tests.txt
+        run: cargo test -p djogi --features network --test network -- --test-threads=1

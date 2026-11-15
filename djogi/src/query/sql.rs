@@ -366,6 +366,46 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
     }
 }
 
+/// SQL cast suffix (`::inet` / `::cidr`) that pins the Postgres type of an
+/// INET-containment RHS bind to the type its [`tokio_postgres::types::ToSql`]
+/// impl actually accepts.
+///
+/// # Why this is required
+/// The containment operators (`>>`, `<<`, `>>=`, `<<=`, `&&`) are each
+/// overloaded for `inet` **and** `cidr`. Postgres resolves the bound RHS to
+/// the operand type of the *column* (e.g. `inet` for an `inet` column), not
+/// the Rust type the caller passed. But each network scalar's `ToSql::accepts`
+/// is exact — [`crate::CidrAddr`] accepts only `CIDR`, [`crate::InetAddr`] and
+/// `std::net::IpAddr` accept only `INET`. So a `CidrAddr` bound against an
+/// `inet` column (inferred `INET`) is rejected at bind time ("cannot convert
+/// … to type inet"), and symmetrically an `InetAddr` bound against a `cidr`
+/// column would be rejected as `cidr`. An explicit cast matching the *value's*
+/// own accepted type removes the dependency on column-driven inference: the
+/// value binds as its own type, and Postgres applies the standard
+/// `inet`/`cidr` assignment cast to the operator.
+///
+/// # Panics
+/// Panics (`unreachable!`) if handed any non-network `FilterValue`. The three
+/// network variants are the only values an INET-containment leaf can carry —
+/// they are built exclusively by
+/// [`crate::query::field::IntoInetFilterValue::into_inet_filter_value`], which
+/// is sealed to `InetAddr` / `CidrAddr` / `std::net::IpAddr`. Reaching this
+/// with anything else is a framework-internal invariant break, not user error.
+#[cfg(feature = "network")]
+fn inet_containment_rhs_cast(v: &FilterValue) -> &'static str {
+    match v {
+        // `CidrAddr` → `::cidr` (its `ToSql` accepts only `Type::CIDR`).
+        FilterValue::Cidr(_) => "::cidr",
+        // `InetAddr` and bare `IpAddr` → `::inet` (both `ToSql` impls accept
+        // only `Type::INET`).
+        FilterValue::InetTyped(_) | FilterValue::Inet(_) => "::inet",
+        other => unreachable!(
+            "INET-containment RHS carried a non-network FilterValue ({other:?}); \
+             IntoInetFilterValue only produces Inet/InetTyped/Cidr"
+        ),
+    }
+}
+
 /// Emit a list element for `IN (...)` / `NOT IN (...)`.
 /// Same binding behaviour as [`push_filter_value`] for scalar and array
 /// variants; rejects `Null`, `List`, and `Pair` (the typed `FieldRef::in_list`
@@ -777,15 +817,23 @@ pub(crate) fn emit_condition(
             Ok(())
         }
         // ── INET containment operators ────────────────────────
-        // All five operators emit `col OP $n` where `$n` is a bound
-        // inet/cidr/ipaddr parameter. Postgres allows any of the three
-        // network types as the RHS; the typed `DjogiField<M, InetAddr>`
-        // API accepts all three via the sealed trait in `field.rs`.
+        // All five operators emit `col OP $n::<type>` where `$n` is a bound
+        // inet/cidr/ipaddr parameter and `<type>` is the cast that matches the
+        // bound value's own `ToSql::accepts` type (see
+        // `inet_containment_rhs_cast`). Postgres allows any of the three
+        // network types as the RHS; the typed `DjogiField<M, InetAddr>` API
+        // accepts all three via the sealed trait in `field.rs`. The cast is
+        // mandatory: without it Postgres infers the RHS type from the column
+        // (e.g. `inet`), which rejects a `CidrAddr` bind (CIDR-only `accepts`)
+        // — and a blanket `::cidr` would symmetrically reject the `InetAddr` /
+        // `IpAddr` binds. Casting to each value's own type is the only variant
+        // that binds every RHS correctly.
         #[cfg(feature = "network")]
         Condition::InetContains(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >> ");
             push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -793,6 +841,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" << ");
             push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -800,6 +849,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >>= ");
             push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -807,6 +857,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" <<= ");
             push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -814,6 +865,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
             push_filter_value_ref(acc, &leaf.value);
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
             Ok(())
         }
         // ── Range operators ──────────────────────────────────
@@ -3202,6 +3254,90 @@ mod tests {
         let acc = build_select(&qs);
         let sql = acc.sql();
         assert!(sql.contains("WHERE span @> $1::int4"), "got: {sql}");
+    }
+
+    // ── INET containment operator RHS casts ────────────────────────────────
+    // Each of the five containment operators must cast its RHS bind to the
+    // type that bound value's `ToSql::accepts` allows: `::cidr` for a
+    // `CidrAddr` RHS, `::inet` for an `InetAddr` or bare `IpAddr` RHS.
+    // Without the cast Postgres infers the RHS type from the column and the
+    // bind is rejected; a wrong (blanket) cast is rejected symmetrically.
+    // These tests pin the emitted SQL at the unit level so the cast can never
+    // be silently dropped or mistyped without a live DB round-trip.
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_containment_casts_rhs_to_cidr_for_cidr_value() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let net = crate::CidrAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0)), 8).expect("valid");
+
+        // `>>` contains with a CIDR RHS.
+        let qs: QuerySet<Fake> = QuerySet::new().filter(move |_| {
+            Condition::InetContains(crate::inet::InetContainsLeaf {
+                column: "addr",
+                value: FilterValue::Cidr(net),
+            })
+        });
+        let sql = build_select(&qs).sql().to_string();
+        assert!(sql.contains("addr >> $1::cidr"), "got: {sql}");
+
+        // `&&` overlap with a CIDR RHS — the exact case from the integration
+        // test (`f.addr().overlaps(supernet)`), which fails without the cast.
+        let qs: QuerySet<Fake> = QuerySet::new().filter(move |_| {
+            Condition::InetOverlap(crate::inet::InetOverlapLeaf {
+                column: "addr",
+                value: FilterValue::Cidr(net),
+            })
+        });
+        let sql = build_select(&qs).sql().to_string();
+        assert!(sql.contains("addr && $1::cidr"), "got: {sql}");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_containment_casts_rhs_to_inet_for_inet_value() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let inet =
+            crate::InetAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 0)), 24).expect("valid");
+
+        // `<<` contained_by with an InetAddr RHS — the exact case from the
+        // integration test (`f.addr().contains(inet_host)` / `contained_by`),
+        // which a blanket `::cidr` cast would break.
+        let qs: QuerySet<Fake> = QuerySet::new().filter(move |_| {
+            Condition::InetContainedBy(crate::inet::InetContainedByLeaf {
+                column: "addr",
+                value: FilterValue::InetTyped(inet),
+            })
+        });
+        let sql = build_select(&qs).sql().to_string();
+        assert!(sql.contains("addr << $1::inet"), "got: {sql}");
+    }
+
+    #[cfg(feature = "network")]
+    #[test]
+    fn inet_containment_casts_rhs_to_inet_for_bare_ipaddr_value() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // `>>=` contains_or_equals with a bare `IpAddr` RHS. tokio-postgres's
+        // `IpAddr` ToSql accepts only INET, so the cast must be `::inet`.
+        let qs: QuerySet<Fake> = QuerySet::new().filter(move |_| {
+            Condition::InetContainsEq(crate::inet::InetContainsEqLeaf {
+                column: "addr",
+                value: FilterValue::Inet(ip),
+            })
+        });
+        let sql = build_select(&qs).sql().to_string();
+        assert!(sql.contains("addr >>= $1::inet"), "got: {sql}");
+
+        // `<<=` contained_by_or_equals with a bare `IpAddr` RHS.
+        let qs: QuerySet<Fake> = QuerySet::new().filter(move |_| {
+            Condition::InetContainedByEq(crate::inet::InetContainedByEqLeaf {
+                column: "addr",
+                value: FilterValue::Inet(ip),
+            })
+        });
+        let sql = build_select(&qs).sql().to_string();
+        assert!(sql.contains("addr <<= $1::inet"), "got: {sql}");
     }
 
     #[test]

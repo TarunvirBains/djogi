@@ -977,21 +977,30 @@ async fn inet_network_and_remaining_functions_execute(mut ctx: djogi::DjogiConte
         "abbrev(net::cidr) = '192.168.1/24' (CIDR trailing-zero-octet omission)"
     );
 
-    // 9. inet_server_addr() / inet_server_port() — session functions. These
-    //    may return NULL on a Unix-socket connection, so assert EXECUTION
+    // 9. inet_server_addr() / inet_server_port() — session functions. Postgres
+    //    documents BOTH as returning NULL on a Unix-socket connection, so each
+    //    is typed `Expr<Option<...>>`. The test therefore asserts EXECUTION
     //    (the predicate runs without a Postgres error), not a specific row
-    //    count. `inet_server_addr()` is Expr<InetAddr> with no literal bridge,
-    //    so it cannot be a literal RHS — instead compare the COLUMN's expr to
-    //    it: `f.addr().as_expr().eq(Expr::inet_server_addr())` (reflexive
-    //    Into<Expr<InetAddr>>). `inet_server_port()` is Expr<i32> and pairs
-    //    with an i32 literal.
+    //    count — a CI runner may reach Postgres over TCP or a Unix socket, and
+    //    the nullable result is correct under both.
+    //
+    //    The explicit `Expr<Option<InetAddr>>` / `Expr<Option<i32>>`
+    //    annotations below are load-bearing: they are the compile-time proof
+    //    of the nullable return type. Narrowing either constructor back to a
+    //    non-`Option` `Expr` fails to compile here. Neither has an `Option<T>`
+    //    literal bridge, so the RHS is the same nullable expression compared
+    //    against itself; under three-valued logic this is `addr = addr`
+    //    (TCP: matches every row) or `NULL = NULL` (Unix socket: NULL, matches
+    //    none) — either way it executes cleanly, which is all this step pins.
+    let server_addr: djogi::expr::Expr<Option<InetAddr>> = Expr::inet_server_addr();
     let _server_addr = InetCidrRow::objects()
-        .filter_expr(|f| f.addr().as_expr().eq(Expr::inet_server_addr()))
+        .filter_expr(move |_f| server_addr.eq(Expr::inet_server_addr()))
         .fetch_all(&mut ctx)
         .await
         .expect("inet_server_addr() predicate executes without error");
+    let server_port: djogi::expr::Expr<Option<i32>> = Expr::inet_server_port();
     let _server_port = InetCidrRow::objects()
-        .filter_expr(|_f| Expr::inet_server_port().eq(Expr::literal(5432i32)))
+        .filter_expr(move |_f| server_port.eq(Expr::inet_server_port()))
         .fetch_all(&mut ctx)
         .await
         .expect("inet_server_port() predicate executes without error");
