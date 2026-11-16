@@ -13,7 +13,7 @@ resolver = "2"
 # (136-180+ bytes). The fix (boxing) spans repair.rs, runner.rs, and
 # verify.rs and belongs in a dedicated PR, not bundled into unrelated changes.
 # Suppressed at the workspace level until that cleanup lands.
-result-large-err = "allow"
+result_large_err = "allow"
 
 [workspace.package]
 version = "0.1.0-alpha.18"

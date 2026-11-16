@@ -364,7 +364,7 @@ jobs:
 
       - name: Install lihaaf (compile-fixture CI gate)
         if: steps.cache-lihaaf.outputs.cache-hit != 'true'
-        run: cargo install --git https://github.com/TarunvirBains/lihaaf.git --rev e9799e269e82b80d8e87ee64c61e2c0d37ef8ea5 lihaaf
+        run: cargo install --git https://github.com/TarunvirBains/lihaaf.git --rev e9799e23c9e2ef8ad2d0e969586ebfb627a2c824 lihaaf
 
       # Diagnostic: show what cargo rustc --crate-type=dylib produces in the
       # lihaaf target dir. Used to debug the missing release/deps/ issue on
