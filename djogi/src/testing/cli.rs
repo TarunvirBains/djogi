@@ -52,10 +52,26 @@ pub fn djogi_binary_path() -> PathBuf {
     }
 
     let exe = std::env::current_exe().expect("current_exe");
-    // exe = target/<profile>/deps/<test>-<hash>
-    let deps = exe.parent().expect("current_exe has parent (deps/)");
-    let profile_dir = deps.parent().expect("deps has parent (profile/)");
-    profile_dir.join("djogi")
+    // Walk up from the exe to find target/<profile>/djogi. The standard path
+    // places the test binary at target/<profile>/deps/<test>-<hash> (2 levels
+    // up), but build-script output dirs — target/<profile>/build/<crate>/<hash>/out/<test>
+    // — require 5 levels. Try each ancestor until we find a sibling djogi binary.
+    let mut candidate = exe.as_path();
+    for _ in 0..6 {
+        candidate = match candidate.parent() {
+            Some(p) => p,
+            None => break,
+        };
+        let djogi = candidate.join("djogi");
+        if djogi.is_file() {
+            return djogi;
+        }
+    }
+    // Fallback: original two-level assumption (compile-time path may not exist
+    // at test time if the user hasn't built djogi-cli; the error from the
+    // caller's assert!() is clearer than a panic here).
+    let deps = exe.parent().expect("current_exe has parent");
+    deps.parent().expect("deps has parent (profile/)").join("djogi")
 }
 
 /// Resolve the connected test context's `current_database()` so callers

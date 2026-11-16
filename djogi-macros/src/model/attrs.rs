@@ -1689,6 +1689,8 @@ impl FtsSpec {
 // use by later / codegen). Suppress dead_code at struct
 // granularity so new fields don't spuriously re-trip the lint.
 #[allow(dead_code)]
+// darling's FromField derive emits `field: field` initializations on Rust 1.100.0+
+#[allow(clippy::redundant_field_names)]
 #[derive(Debug, FromField)]
 #[darling(attributes(field), allow_unknown_fields)]
 pub struct FieldAttrs {
