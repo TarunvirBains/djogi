@@ -31,6 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard fires for all three wrapper permutations; one compile-pass fixture
   verifies canonical narrowing still compiles.
 
+## [0.1.0-alpha.18] - 2026-11-15
+
+### Added
+
+- feat(#496): INET/CIDR address containment and overlap filter operators for
+  `InetAddr` fields — `contains` (`>>`), `contained_by` (`<<`),
+  `contains_or_equals` (`>>=`), `contained_by_or_equals` (`<<=`), and
+  `overlaps` (`&&`). Accepts `InetAddr`, `InetTyped`, and `Cidr` right-hand
+  side values via `IntoInetFilterValue`. Each operator carries typed leaf
+  structs (`InetContainsLeaf`, `InetContainedByLeaf`, `InetContainsEqLeaf`,
+  `InetContainedByEqLeaf`, `InetOverlapLeaf`) with explicit `column` and
+  `value` fields.
+
+### Fixed
+
+- fix(#496): `inet_containment_rhs_cast` now returns
+  `Result<&'static str, PortablePredicateError>` instead of calling
+  `unreachable!()` for non-network `FilterValue` variants. The cast is
+  validated and stored before `push_filter_value_ref` is called, so
+  `FilterValue::List`/`Pair` inputs are rejected at the validation boundary
+  rather than panicking inside the binder.
+
 ## [0.1.0-alpha.17] - 2026-06-15
 
 ### Added
