@@ -2723,11 +2723,10 @@ mod tests {
     }
 
     // ──
-    // The xhigh review surfaced five merge blockers in the substrate
-    // commit. Each fix below adds a focused unit test that pins the
-    // intended behaviour after the fix so the next regression surfaces
-    // in `cargo test -p djogi --lib query::joined::tests` instead of
-    // taking the production code with it.
+    // Focused unit tests pinning the intended behaviour of the joined
+    // annotation substrate, so a regression surfaces in
+    // `cargo test -p djogi --lib query::joined::tests` instead of taking the
+    // production code with it.
 
     #[test]
     fn build_joined_annotated_inner_emits_group_by_when_kinship_aggregate_requires_pair_join() {
@@ -3004,9 +3003,9 @@ mod tests {
         }
     }
 
-    // ── Blocker 1 — Heterogeneous closure-pair join compile-fail ───────
-    // The fix moves `left_join_closure_pair` from the `impl<L, R>` block
-    // to `impl<L> JoinedQuerySet<L, L>` so a heterogeneous pair
+    // ── Closure-pair join is reachable only on self-pairs (L = L) ──────
+    // `left_join_closure_pair` lives on `impl<L> JoinedQuerySet<L, L>`, not
+    // the general `impl<L, R>` block, so a heterogeneous pair
     // (`cross_join_with(other_model)`) cannot reach the method. The
     // companion compile-fail fixture in
     // `djogi-macros/tests/compile_fail/heterogeneous_closure_pair_rejected.rs`
@@ -3025,7 +3024,7 @@ mod tests {
             .left_join_closure_pair::<MiniClosure>();
     }
 
-    // ── Blocker 4 — expression filter alias qualification ──────────────
+    // ── Expression filter on a joined query qualifies columns by alias ──
 
     #[test]
     fn filter_expr_on_joined_query_emits_alias_qualified_column() {
@@ -3085,7 +3084,7 @@ mod tests {
         );
     }
 
-    // ── Blocker 5 — pair aggregate on single-Model annotate ────────────
+    // ── Pair aggregate signal propagates on single-Model annotate ──────
     // The single-Model `AnnotatedQuerySet::fetch_all` is async-only
     // (needs a `DjogiContext`), so this case is exercised in
     // integration tests when a live DB is available. The unit
@@ -3116,7 +3115,7 @@ mod tests {
     // 3. Joined annotations reject ordinary `AggregateExpr<V>`, whose
     // bare-column SQL is ambiguous on self-joins.
 
-    // ── Blocker 1.A — PairClosureKinshipSum<C> validates C's metadata ────
+    // ── PairClosureKinshipSum<C> validates C's metadata ──────────────────
 
     #[test]
     fn pair_closure_kinship_sum_validates_clean_closure_metadata() {
@@ -3237,7 +3236,7 @@ mod tests {
         }
     }
 
-    // ── Blocker 1.B — Mismatched aggregate-C vs join-C is rejected ───────
+    // ── Mismatched aggregate-C vs join-C is rejected ─────────────────────
 
     #[test]
     fn pair_closure_kinship_sum_rejects_mismatched_closure_join() {
@@ -3285,7 +3284,7 @@ mod tests {
         }
     }
 
-    // ── Blocker 2 — PK shape gate ────────────────────────────────────────
+    // ── PK shape gate: identity-required paths reject None / Composite ───
 
     /// Inert no-PK model — `PkType::None`. Identity-required paths must
     /// reject this at the terminal gate.
@@ -3486,7 +3485,7 @@ mod tests {
         }
     }
 
-    // ── Blocker 3 — Joined annotations reject ordinary AggregateExpr ─────
+    // ── Joined annotations reject ordinary AggregateExpr ─────────────────
 
     #[test]
     fn aggregate_expr_is_not_joined_safe_by_default() {
@@ -3529,9 +3528,8 @@ mod tests {
 
     #[test]
     fn rank_window_with_bare_partition_by_is_not_joined_safe() {
-        // The exact case from the xhigh blocker:
-        // `RowNumber::new().partition_by(l.id()).alias("rank")`
-        // The non-pair-aware `partition_by` stores a bare `"id"`, which
+        // `RowNumber::new().partition_by(l.id()).alias("rank")`:
+        // the non-pair-aware `partition_by` stores a bare `"id"`, which
         // would emit `PARTITION BY id` against
         // `FROM animals AS l CROSS JOIN animals AS r` — `id` is
         // ambiguous on both sides. The safety gate must reject this
@@ -3650,7 +3648,6 @@ mod tests {
 
     #[test]
     fn first_value_window_is_never_joined_safe() {
-        // The exact case from the xhigh blocker:
         // `FirstValueWindow::new(l.name()).alias("first_name")`
         // emits `FIRST_VALUE(name) OVER (...)` — `name` is bare and
         // ambiguous in self-joins. Column-arg windows have no

@@ -580,7 +580,7 @@ pub(crate) fn alias_collides_with_column(alias: &str, col: &str) -> bool {
 
 /// Shared fetch-time legality check for every window-function annotation slot.
 /// # What
-/// Validates two preconditions that a window annotation must satisfy before
+/// Validates three preconditions that a window annotation must satisfy before
 /// its SQL can be built:
 /// 1. An output alias was set via `.alias("…")` — the alias is the column
 ///    name annotation decode and outer `.qualify(...)` predicates reference.
@@ -589,17 +589,24 @@ pub(crate) fn alias_collides_with_column(alias: &str, col: &str) -> bool {
 ///    zero-argument forms, and [`crate::expr::window::WindowSpec::emit`]
 ///    returns [`crate::query::PortablePredicateError::EmptyVariadicFunction`]
 ///    for that shape.
+/// 3. No partition / order term carries a lateral outer reference
+///    ([`crate::expr::node::ExprNode::OuterRefAlias`], produced by
+///    `OuterRef::as_lateral_outer_expr()`) — such a ref is only legal inside a
+///    lateral-inner lowering scope, which a window annotation terminal does not
+///    establish, so [`crate::expr::window::WindowSpec::emit`] returns
+///    [`crate::query::PortablePredicateError::LateralOuterRefOutOfScope`] for
+///    that shape.
 /// # Why centralized
 /// Both window-slot `impl AnnotationSlot` macros (`impl_window_annotation_slot!`
-/// and `impl_window_annotation_slot_generic_v!`) call this so the two checks
+/// and `impl_window_annotation_slot_generic_v!`) call this so the checks
 /// stay in lockstep. `check_legality` runs on every annotate terminal
 /// (single-Model, grouped, joined) before SQL build, so this is the
-/// path-independent boundary where an empty-variadic window term surfaces as a
-/// typed error instead of reaching the window emitter's `.expect()` (which
-/// unwraps the emit `Result` and would panic). The joined-only
-/// [`crate::expr::window::WindowSpec::is_pair_qualified`] gate also rejects the
-/// empty variadic, but it never runs on the single-Model path — this check is
-/// what closes that path.
+/// path-independent boundary where an empty-variadic or out-of-scope lateral
+/// window term surfaces as a typed error instead of reaching the window
+/// emitter's `.expect()` (which unwraps the emit `Result` and would panic). The
+/// joined-only [`crate::expr::window::WindowSpec::is_pair_qualified`] gate also
+/// rejects the empty variadic, but it never runs on the single-Model path —
+/// this check is what closes that path.
 pub(crate) fn check_window_annotation_legality(
     alias: Option<&'static str>,
     window: &crate::expr::window::WindowSpec,
@@ -613,6 +620,23 @@ pub(crate) fn check_window_annotation_legality(
     if window.has_empty_variadic_term() {
         return Err(crate::DjogiError::from(
             crate::query::PortablePredicateError::EmptyVariadicFunction,
+        ));
+    }
+    // A lateral outer ref in a window partition / order term would reach the
+    // window emitter's `.expect()` with `LateralOuterRefOutOfScope` (a panic) on
+    // the non-lateral annotation terminals. The boolean walk is the guard
+    // (mirrors the empty-variadic check above); on rejection the find-first walk
+    // names the exact offending column/model, matching the emit-time error this
+    // pre-empts.
+    if window.has_lateral_outer_ref_term() {
+        let (column, source_model) = window
+            .find_lateral_outer_ref_term()
+            .expect("has-check returned true, so find must locate the lateral outer ref");
+        return Err(crate::DjogiError::from(
+            crate::query::PortablePredicateError::LateralOuterRefOutOfScope {
+                column,
+                source_model,
+            },
         ));
     }
     Ok(())
@@ -2584,5 +2608,88 @@ mod tests {
             .alias("rn");
         let tuple = (good.sum(), bad);
         assert_empty_variadic_error(IntoAggregateTuple::check_legality(&tuple));
+    }
+
+    // ── Lateral-outer-ref rejection on the single-Model annotate path ─────
+    //
+    // `OuterRef::as_lateral_outer_expr()` builds `ExprNode::OuterRefAlias`,
+    // which is only legal inside a lateral-inner lowering scope. On a
+    // single-Model aggregate / window annotate terminal there is no such
+    // scope, so the emit `Result` carries `LateralOuterRefOutOfScope`, which
+    // the slot `push_column*` methods unwrap with `.expect()` (a panic).
+    // `check_legality` rejects it first on every terminal path.
+
+    /// Asserts the error is the typed out-of-scope lateral-ref error (wrapped
+    /// as `DjogiError::Predicate`), so the diagnostic points at the real cause.
+    fn assert_lateral_outer_ref_error(result: Result<(), crate::DjogiError>) {
+        match result {
+            Err(crate::DjogiError::Predicate(
+                crate::query::PortablePredicateError::LateralOuterRefOutOfScope { .. },
+            )) => {}
+            other => panic!(
+                "expected Err(DjogiError::Predicate(LateralOuterRefOutOfScope)), got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn single_model_window_lateral_outer_ref_partition_rejected_by_check_legality() {
+        use crate::expr::RowNumber;
+        use crate::expr::subquery::OuterRef;
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        // A lateral outer ref fed into a window PARTITION BY on the single-Model
+        // annotate path. Without the gate this reaches `WindowSpec::emit` and
+        // panics at the window emitter's `.expect()` with
+        // `LateralOuterRefOutOfScope`; `check_legality` must reject it first.
+        let outer = OuterRef::<Acc, i32>::new("owner_id").as_lateral_outer_expr();
+        let rn = RowNumber::new()
+            .partition_by_pair_expr(PairSide::Left, outer)
+            .alias("rn");
+        assert_lateral_outer_ref_error(IntoAggregateTuple::check_legality(&rn));
+    }
+
+    #[test]
+    fn single_model_window_lateral_outer_ref_order_by_rejected_by_check_legality() {
+        use crate::expr::Rank;
+        use crate::expr::subquery::OuterRef;
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let outer = OuterRef::<Acc, i32>::new("sort_key").as_lateral_outer_expr();
+        let rank = Rank::new()
+            .order_by_pair_expr_asc(PairSide::Right, outer)
+            .alias("rnk");
+        assert_lateral_outer_ref_error(IntoAggregateTuple::check_legality(&rank));
+    }
+
+    #[test]
+    fn aggregate_lateral_outer_ref_filter_rejected_by_check_legality() {
+        use crate::expr::Expr;
+        use crate::expr::subquery::OuterRef;
+
+        // A lateral outer ref inside an aggregate FILTER predicate. The
+        // aggregate-slot `check_legality` forwards to `check_aggregate_legality`,
+        // which rejects any lateral ref anywhere in the tree.
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let outer = OuterRef::<Acc, bool>::new("active").as_lateral_outer_expr();
+        let agg = amount.sum().filter(outer.eq(Expr::literal(true)));
+        assert_lateral_outer_ref_error(IntoAggregateTuple::check_legality(&agg));
+    }
+
+    #[test]
+    fn aggregate_without_lateral_ref_still_passes_check_legality() {
+        use crate::expr::Expr;
+
+        // Regression guard: the lateral-ref gate must not over-reject a clean
+        // aggregate that uses only ordinary fields.
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let threshold: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let agg = amount
+            .sum()
+            .filter(threshold.as_expr().gt(Expr::literal(0i64)));
+        assert!(
+            IntoAggregateTuple::check_legality(&agg).is_ok(),
+            "clean aggregate must pass the lateral-ref gate"
+        );
     }
 }

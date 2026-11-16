@@ -78,6 +78,30 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             PortablePredicateError::EmptyVariadicFunction,
         ));
     }
+    // Reject a lateral outer reference (`OuterRef::as_lateral_outer_expr()`,
+    // i.e. `ExprNode::OuterRefAlias`) anywhere in the tree — including inside
+    // an aggregate's argument, its `FILTER (WHERE ...)` clause, or its
+    // `.over(...)` window terms. A lateral outer ref is only legal inside a
+    // lateral-inner lowering scope; an aggregate scalar terminal has no such
+    // scope, so `emit_expr` would surface
+    // `PortablePredicateError::LateralOuterRefOutOfScope` — which the
+    // `()`-returning annotation-slot `push_column*` methods unwrap with
+    // `.expect()` (a panic). Catching it here turns that would-be panic into a
+    // typed `DjogiError::Predicate` at the terminal boundary, on every
+    // aggregate path. The boolean walk is the guard (mirrors the empty-variadic
+    // check above); on rejection `find_lateral_outer_ref` names the offending
+    // `(column, source_model)` so the typed error matches the emit-time error
+    // the gate pre-empts.
+    if expr_node_has_lateral_outer_ref(node) {
+        let (column, source_model) = find_lateral_outer_ref(node)
+            .expect("has-check returned true, so find must locate the lateral outer ref");
+        return Err(crate::DjogiError::from(
+            PortablePredicateError::LateralOuterRefOutOfScope {
+                column,
+                source_model,
+            },
+        ));
+    }
     match node {
         ExprNode::Aggregate {
             op,
@@ -366,21 +390,230 @@ pub(crate) fn expr_node_has_empty_variadic(node: &ExprNode) -> bool {
         }
 
         // Subquery bodies are separate emit scopes with their own emit-time
-        // guards; only the lhs expression belongs to this scope.
+        // guards; only the lhs expression belongs to this scope. `Exists` /
+        // `Subquery` carry a `SubqueryNode` whose `where_clause` is a
+        // type-erased `ErasedSubqueryPredicate` (an `Arc<dyn
+        // SubqueryPredicateEmitter>` wrapping a `Q<T>`), not an `ExprNode`, so
+        // there is no inner expression to walk from here. The wrapped `Q<T>`
+        // is emitted through `crate::query::sql::emit_q`, which runs its own
+        // empty-variadic guard in the subquery's own accumulator scope — that
+        // is where a `COALESCE()` nested inside the subquery predicate is
+        // rejected, not here.
         ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
         ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
             expr_node_has_empty_variadic(lhs)
         }
 
-        // Spatial variants carry no inner `ExprNode` reachable via this path
-        // (their emission is self-contained in `SpatialExpr::emit` /
-        // `emit_row_aggregate`, which never emit a COALESCE/LEAST/GREATEST).
+        // Spatial: `DWithinExprToExpr` carries two boxed `ExprNode` geography
+        // operands (`lhs` / `rhs`) that can nest an empty variadic (e.g. a
+        // `CASE … END` used as a geography operand with a `COALESCE()` arm);
+        // walk both. Its `radius_m` is a bare `f64`, never an expression, so
+        // there is nothing to recurse there. Every other spatial variant holds
+        // only column names, `GeoPoint`, `f64`, or EWKB bytes — no inner
+        // `ExprNode` — and `RowAggregate` is self-contained in
+        // `emit_row_aggregate`; both are leaves here. The nested match is
+        // exhaustive (no wildcard) so a future `SpatialExpr` variant with
+        // `ExprNode` children forces a deliberate recurse/leaf decision,
+        // mirroring `spatial_expr_contains_fts` in `crate::query::cte`.
         #[cfg(feature = "spatial")]
-        ExprNode::Spatial(_) | ExprNode::RowAggregate { .. } => false,
+        ExprNode::Spatial(s) => {
+            use crate::expr::spatial::SpatialExpr;
+            match s {
+                SpatialExpr::DWithinExprToExpr { lhs, rhs, .. } => {
+                    expr_node_has_empty_variadic(lhs) || expr_node_has_empty_variadic(rhs)
+                }
+                SpatialExpr::Within { .. }
+                | SpatialExpr::Distance { .. }
+                | SpatialExpr::Contains { .. }
+                | SpatialExpr::Intersects { .. }
+                | SpatialExpr::Touches { .. }
+                | SpatialExpr::WithinShape { .. }
+                | SpatialExpr::BoundedBy { .. }
+                | SpatialExpr::Area { .. }
+                | SpatialExpr::Intersection { .. }
+                | SpatialExpr::AreaOfIntersection { .. } => false,
+            }
+        }
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { .. } => false,
 
         // Trigram variants are leaf-shaped (column + bound pattern).
         #[cfg(feature = "trgm")]
         ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
+    }
+}
+
+/// Report whether an [`ExprNode`] tree contains a lateral outer reference
+/// ([`ExprNode::OuterRefAlias`]) anywhere in its subtree.
+/// # What
+/// A thin `.is_some()` wrapper over [`find_lateral_outer_ref`]: returns `true`
+/// the moment that find-first walk locates an `OuterRefAlias` — the node
+/// produced by
+/// [`crate::expr::subquery::OuterRef::as_lateral_outer_expr`]. That node is
+/// only legal inside a lateral-inner lowering scope: [`emit_expr`]'s
+/// `OuterRefAlias` arm requires [`SqlEmitContext::lateral_outer_scope`] to be
+/// present and returns
+/// [`PortablePredicateError::LateralOuterRefOutOfScope`] otherwise.
+/// # Why
+/// Single-Model aggregate and window-annotation terminals emit their
+/// expression with no lateral outer scope (there is no enclosing
+/// `join_lateral` / `left_join_lateral`). If a lateral outer ref is smuggled
+/// into an aggregate argument / `FILTER` clause or a window partition / order
+/// term there, the emit `Result` carries `LateralOuterRefOutOfScope`, which
+/// the annotation-slot `()`-returning `push_column*` methods unwrap with
+/// `.expect()` — a panic. The window legality gate
+/// ([`crate::query::annotate::check_window_annotation_legality`], via
+/// [`crate::expr::window::WindowSpec::has_lateral_outer_ref_term`]) consults
+/// this so that misuse surfaces as a typed error at the terminal boundary
+/// instead of a panic; [`check_aggregate_legality`] uses the field-carrying
+/// [`find_lateral_outer_ref`] directly so its typed error names the offending
+/// column/model. (The lateral-inner query's own emit path still validates
+/// scope + model identity at `OuterRefAlias` emission; this gate only closes
+/// the non-lateral annotation terminals.)
+pub(crate) fn expr_node_has_lateral_outer_ref(node: &ExprNode) -> bool {
+    find_lateral_outer_ref(node).is_some()
+}
+
+/// Find the first lateral outer reference ([`ExprNode::OuterRefAlias`]) in an
+/// [`ExprNode`] tree, returning its `(column, source_model)` diagnostic pair.
+/// # What
+/// Depth-first, left-to-right find-first walk. Returns `Some((column,
+/// source_model))` for the first `OuterRefAlias` encountered (the two
+/// `&'static str` fields the emit-time
+/// [`PortablePredicateError::LateralOuterRefOutOfScope`] carries), or `None`
+/// when the tree has no lateral outer ref. [`expr_node_has_lateral_outer_ref`]
+/// is the boolean `.is_some()` view; [`check_aggregate_legality`] uses the
+/// returned fields to build a typed error that names the exact offending ref,
+/// matching the emit-time error it pre-empts.
+/// # Exhaustiveness
+/// The match MUST remain exhaustive — do NOT add a `_ => None` wildcard.
+/// `ExprNode` is `#[non_exhaustive]`, so an exhaustive same-crate match turns
+/// a future node-bearing variant into a COMPILE ERROR that forces a deliberate
+/// recurse/leaf decision, instead of silently treating a new wrapper as a leaf
+/// and letting a lateral ref nested inside it slip past the gate. This mirrors
+/// the discipline of [`expr_node_has_empty_variadic`].
+pub(crate) fn find_lateral_outer_ref(node: &ExprNode) -> Option<(&'static str, &'static str)> {
+    match node {
+        // ── The one true positive case ──
+        // A lateral outer ref is the exact node `emit_expr` refuses outside a
+        // lateral scope. Reporting its column + source model here lets the
+        // annotation terminals reject it before SQL build with a precise error.
+        ExprNode::OuterRefAlias {
+            column, model_name, ..
+        } => Some((column, model_name)),
+
+        // ── Leaf variants: no inner `ExprNode`, and not a lateral ref ──
+        // `OuterRef` / `OuterRefColumn` are correlated-*subquery* outer refs
+        // (unqualified / table-qualified), not lateral alias refs — they emit
+        // without a lateral scope and never raise `LateralOuterRefOutOfScope`,
+        // so they are leaves here.
+        ExprNode::Field { .. }
+        | ExprNode::RawSql(_)
+        | ExprNode::Literal(_)
+        | ExprNode::ArrayLength { .. }
+        | ExprNode::CurrentYear
+        | ExprNode::Now
+        | ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::CteAliasField { .. }
+        | ExprNode::Excluded { .. }
+        | ExprNode::TsMatch { .. }
+        | ExprNode::TsRank { .. }
+        | ExprNode::TsRankCd { .. }
+        | ExprNode::IntervalLiteral { .. } => None,
+
+        // ── Variadic scalar functions: walk every operand ──
+        ExprNode::Coalesce(operands) | ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            operands.iter().find_map(find_lateral_outer_ref)
+        }
+
+        // ── Binary arithmetic / comparison / boolean: recurse into both sides ──
+        ExprNode::Cmp { lhs, rhs, .. }
+        | ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => {
+            find_lateral_outer_ref(lhs).or_else(|| find_lateral_outer_ref(rhs))
+        }
+
+        // ── Unary wrappers: recurse into the single inner node ──
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            find_lateral_outer_ref(inner)
+        }
+
+        // `GROUPING(c1, …, cN)` — walk each column-arg node.
+        ExprNode::GroupingVariadic { args } => args.iter().find_map(find_lateral_outer_ref),
+
+        // `CASE` — every arm condition + value, plus the mandatory default.
+        ExprNode::Case { arms, otherwise } => arms
+            .iter()
+            .find_map(|(cond, val)| {
+                find_lateral_outer_ref(cond).or_else(|| find_lateral_outer_ref(val))
+            })
+            .or_else(|| find_lateral_outer_ref(otherwise)),
+
+        // `Aggregate` — recurse into the argument, optional second argument,
+        // optional FILTER subtree, and the aggregate's own `.over(...)` window
+        // partition / order terms. The window branch returns the offending
+        // `(column, source_model)` via the find-first spec walker, so a lateral
+        // ref carried only by a window term is still named precisely.
+        ExprNode::Aggregate {
+            arg,
+            arg2,
+            filter,
+            window,
+            ..
+        } => find_lateral_outer_ref(arg)
+            .or_else(|| arg2.as_deref().and_then(find_lateral_outer_ref))
+            .or_else(|| filter.as_deref().and_then(find_lateral_outer_ref))
+            .or_else(|| {
+                window
+                    .as_ref()
+                    .and_then(crate::expr::window::WindowSpec::find_lateral_outer_ref_term)
+            }),
+
+        // Subquery bodies are separate emit scopes; the lateral alias is the
+        // outer query's own scope relative to this expression, so an
+        // `OuterRefAlias` reachable through this scope's `lhs` is what matters.
+        // The `Exists` / `Subquery` bodies carry a type-erased `Q<T>` predicate
+        // (not an `ExprNode`); that predicate is validated in its own emit
+        // scope by `emit_q`, so there is nothing to walk from here.
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => None,
+        ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
+            find_lateral_outer_ref(lhs)
+        }
+
+        // Spatial: only `DWithinExprToExpr` carries `ExprNode` operands; walk
+        // both. Every other spatial variant and `RowAggregate` is a leaf. The
+        // nested match is exhaustive (no wildcard) so a future node-bearing
+        // `SpatialExpr` variant forces a recurse/leaf decision here.
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(s) => {
+            use crate::expr::spatial::SpatialExpr;
+            match s {
+                SpatialExpr::DWithinExprToExpr { lhs, rhs, .. } => {
+                    find_lateral_outer_ref(lhs).or_else(|| find_lateral_outer_ref(rhs))
+                }
+                SpatialExpr::Within { .. }
+                | SpatialExpr::Distance { .. }
+                | SpatialExpr::Contains { .. }
+                | SpatialExpr::Intersects { .. }
+                | SpatialExpr::Touches { .. }
+                | SpatialExpr::WithinShape { .. }
+                | SpatialExpr::BoundedBy { .. }
+                | SpatialExpr::Area { .. }
+                | SpatialExpr::Intersection { .. }
+                | SpatialExpr::AreaOfIntersection { .. } => None,
+            }
+        }
+        #[cfg(feature = "spatial")]
+        ExprNode::RowAggregate { .. } => None,
+
+        // Trigram variants are leaf-shaped (column + bound pattern).
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => None,
     }
 }
 
@@ -2576,6 +2809,254 @@ mod tests {
         assert!(
             check_aggregate_legality(&agg).is_ok(),
             "non-empty COALESCE filter must pass check_aggregate_legality"
+        );
+    }
+
+    // ── empty-variadic walker recurses into spatial DWithinExprToExpr ──────
+    //
+    // `DWithinExprToExpr` carries two boxed `ExprNode` geography operands; a
+    // zero-arg variadic smuggled into either must be caught. Every other
+    // spatial variant is a leaf for this walker.
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn empty_variadic_walker_recurses_into_dwithin_expr_operands() {
+        use crate::expr::spatial::SpatialExpr;
+        // Empty COALESCE as the LEFT geography operand.
+        let left_empty = ExprNode::Spatial(SpatialExpr::DWithinExprToExpr {
+            lhs: Box::new(ExprNode::Coalesce(Vec::new())),
+            rhs: Box::new(ExprNode::Field { column: "center" }),
+            radius_m: 100.0,
+        });
+        assert!(
+            expr_node_has_empty_variadic(&left_empty),
+            "empty COALESCE in DWithin left operand must be caught"
+        );
+
+        // Empty LEAST buried inside the RIGHT operand's arithmetic.
+        let right_nested = ExprNode::Spatial(SpatialExpr::DWithinExprToExpr {
+            lhs: Box::new(ExprNode::Field { column: "loc" }),
+            rhs: Box::new(ExprNode::Add(
+                Box::new(ExprNode::Field { column: "x" }),
+                Box::new(ExprNode::Least(Vec::new())),
+            )),
+            radius_m: 50.0,
+        });
+        assert!(
+            expr_node_has_empty_variadic(&right_nested),
+            "empty LEAST nested in DWithin right operand must be caught"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn empty_variadic_walker_false_for_clean_dwithin_and_leaf_spatial() {
+        use crate::expr::spatial::SpatialExpr;
+        use crate::geo::GeoPoint;
+        // Clean DWithin operands — must not over-reject.
+        let clean = ExprNode::Spatial(SpatialExpr::DWithinExprToExpr {
+            lhs: Box::new(ExprNode::Field { column: "loc" }),
+            rhs: Box::new(ExprNode::Field { column: "center" }),
+            radius_m: 100.0,
+        });
+        assert!(!expr_node_has_empty_variadic(&clean));
+
+        // Leaf spatial variant carries no ExprNode child — always false.
+        let leaf = ExprNode::Spatial(SpatialExpr::Within {
+            field_column: "loc",
+            center: GeoPoint::new(0.0, 0.0).expect("(0, 0) is a valid GeoPoint"),
+            radius_meters: 10.0,
+        });
+        assert!(!expr_node_has_empty_variadic(&leaf));
+    }
+
+    // ── lateral-outer-ref walker + aggregate legality gate ────────────────
+    //
+    // `OuterRef::as_lateral_outer_expr()` builds `ExprNode::OuterRefAlias`,
+    // which only emits legally inside a lateral-inner scope. On a non-lateral
+    // aggregate / window terminal it reaches the slot `.expect()` with
+    // `LateralOuterRefOutOfScope` (a panic). `find_lateral_outer_ref` /
+    // `check_aggregate_legality` reject it first, naming the offending ref.
+
+    /// Build the `OuterRefAlias` node `as_lateral_outer_expr()` produces, using
+    /// the inert `Post` model for its identity fields.
+    fn lateral_outer_ref(column: &'static str) -> ExprNode {
+        ExprNode::OuterRefAlias {
+            alias: "l",
+            column,
+            model_type: std::any::TypeId::of::<Post>(),
+            model_name: std::any::type_name::<Post>(),
+        }
+    }
+
+    #[test]
+    fn find_lateral_outer_ref_reports_column_and_model() {
+        let node = lateral_outer_ref("owner_id");
+        let found = find_lateral_outer_ref(&node).expect("bare OuterRefAlias must be found");
+        assert_eq!(found.0, "owner_id", "column must be reported verbatim");
+        assert_eq!(
+            found.1,
+            std::any::type_name::<Post>(),
+            "source model name must be reported"
+        );
+        assert!(expr_node_has_lateral_outer_ref(&node));
+    }
+
+    #[test]
+    fn find_lateral_outer_ref_recurses_into_nested_wrappers() {
+        // Buried inside arithmetic — top node is `Add`, not the ref itself.
+        let nested = ExprNode::Add(
+            Box::new(ExprNode::Field { column: "x" }),
+            Box::new(lateral_outer_ref("peer_id")),
+        );
+        assert_eq!(
+            find_lateral_outer_ref(&nested).map(|(c, _)| c),
+            Some("peer_id"),
+            "lateral ref nested in arithmetic must be found"
+        );
+
+        // Buried inside a CASE arm value.
+        let case = ExprNode::Case {
+            arms: vec![(
+                ExprNode::Field { column: "c" },
+                lateral_outer_ref("case_id"),
+            )],
+            otherwise: Box::new(ExprNode::Field { column: "d" }),
+        };
+        assert_eq!(
+            find_lateral_outer_ref(&case).map(|(c, _)| c),
+            Some("case_id")
+        );
+    }
+
+    #[test]
+    fn find_lateral_outer_ref_none_for_non_lateral_outer_refs() {
+        // `OuterRef` / `OuterRefColumn` are correlated-subquery refs, NOT
+        // lateral alias refs — they must not be reported.
+        assert!(find_lateral_outer_ref(&ExprNode::OuterRef { column: "id" }).is_none());
+        assert!(
+            find_lateral_outer_ref(&ExprNode::OuterRefColumn {
+                table: "groups",
+                column: "id",
+            })
+            .is_none()
+        );
+        assert!(!expr_node_has_lateral_outer_ref(&ExprNode::Field {
+            column: "x"
+        }));
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_lateral_ref_in_aggregate_arg() {
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(lateral_outer_ref("amount")),
+            arg2: None,
+            filter: None,
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::DjogiError::Predicate(PortablePredicateError::LateralOuterRefOutOfScope {
+                    column: "amount",
+                    ..
+                })
+            ),
+            "lateral ref in aggregate arg must surface LateralOuterRefOutOfScope naming the column; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_lateral_ref_in_filter() {
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: Some(Box::new(ExprNode::Cmp {
+                lhs: Box::new(lateral_outer_ref("flag")),
+                op: CmpOp::Eq,
+                rhs: Box::new(ExprNode::Literal(
+                    crate::query::condition::FilterValue::Bool(true),
+                )),
+            })),
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::Predicate(PortablePredicateError::LateralOuterRefOutOfScope {
+                column: "flag",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_lateral_ref_in_window_term() {
+        // A lateral ref carried only by the aggregate's `.over(...)` PARTITION
+        // BY term must still be rejected, and the offending column named.
+        use crate::expr::window::{WindowSpec, WindowTerm};
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(lateral_outer_ref("part_id")),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: None,
+            cast_to: None,
+            distinct: false,
+            window: Some(spec),
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::DjogiError::Predicate(PortablePredicateError::LateralOuterRefOutOfScope {
+                    column: "part_id",
+                    ..
+                })
+            ),
+            "lateral ref in window term must surface LateralOuterRefOutOfScope naming the column; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_aggregate_legality_accepts_tree_without_lateral_ref() {
+        // Regression guard: the lateral-ref rejection must not over-reject a
+        // clean aggregate that merely uses ordinary fields.
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: Some(Box::new(ExprNode::IsNotNull(Box::new(ExprNode::Field {
+                column: "amount",
+            })))),
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        assert!(
+            check_aggregate_legality(&agg).is_ok(),
+            "clean aggregate must pass the lateral-ref gate"
         );
     }
 }

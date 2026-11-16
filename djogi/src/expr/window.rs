@@ -467,6 +467,63 @@ impl WindowSpec {
                 .iter()
                 .any(|(term, _)| term_has_empty_variadic(term))
     }
+
+    /// Whether any [`WindowTerm::Expr`] stored in this spec carries a lateral
+    /// outer reference ([`crate::expr::node::ExprNode::OuterRefAlias`])
+    /// anywhere in its node tree.
+    /// # What
+    /// A thin `.is_some()` wrapper over [`Self::find_lateral_outer_ref_term`].
+    /// Plain [`WindowTerm::Column`] terms carry a `&'static str` column name —
+    /// never an `OuterRefAlias` node — and are always `false`.
+    /// # Why
+    /// A lateral outer ref is only legal inside a lateral-inner lowering scope.
+    /// On a single-Model window annotation there is no such scope, so
+    /// [`Self::emit`] (via the `OuterRefAlias` arm of
+    /// [`crate::expr::sql::emit_expr`]) returns
+    /// [`crate::query::PortablePredicateError::LateralOuterRefOutOfScope`],
+    /// which the window-function emitter unwraps with `.expect()` — a panic.
+    /// The annotation legality gate
+    /// ([`crate::query::annotate::check_window_annotation_legality`], called by
+    /// every annotate terminal before SQL build) consults this so the misuse
+    /// surfaces as a typed error on the single-Model, grouped, and joined paths
+    /// alike, instead of reaching that `.expect()`. Mirrors
+    /// [`Self::has_empty_variadic_term`].
+    pub(crate) fn has_lateral_outer_ref_term(&self) -> bool {
+        self.find_lateral_outer_ref_term().is_some()
+    }
+
+    /// Find the first lateral outer reference
+    /// ([`crate::expr::node::ExprNode::OuterRefAlias`]) carried by any
+    /// [`WindowTerm::Expr`] in this spec, returning its `(column,
+    /// source_model)` diagnostic pair.
+    /// # What
+    /// Walks partition terms then order terms, left to right; for each
+    /// [`WindowTerm::Expr`] node it defers to
+    /// [`crate::expr::sql::find_lateral_outer_ref`] and returns the first
+    /// match. Plain [`WindowTerm::Column`] terms carry a column name string,
+    /// never an `OuterRefAlias`, so they never match. Returns `None` when no
+    /// window term carries a lateral outer ref.
+    /// # Why
+    /// [`crate::expr::sql::check_aggregate_legality`] builds a typed
+    /// [`crate::query::PortablePredicateError::LateralOuterRefOutOfScope`] that
+    /// names the offending column/model; when the lateral ref is carried only
+    /// by an aggregate's `.over(...)` window term, this supplies that pair.
+    /// [`Self::has_lateral_outer_ref_term`] is the boolean `.is_some()` view
+    /// used by [`crate::query::annotate::check_window_annotation_legality`].
+    pub(crate) fn find_lateral_outer_ref_term(&self) -> Option<(&'static str, &'static str)> {
+        let term_find_lateral_outer_ref = |term: &WindowTerm| match term {
+            WindowTerm::Column(_) => None,
+            WindowTerm::Expr { node, .. } => crate::expr::sql::find_lateral_outer_ref(node),
+        };
+        self.partition_by
+            .iter()
+            .find_map(&term_find_lateral_outer_ref)
+            .or_else(|| {
+                self.order_by
+                    .iter()
+                    .find_map(|(term, _)| term_find_lateral_outer_ref(term))
+            })
+    }
 }
 
 fn emit_bound(acc: &mut SqlAccumulator, bound: FrameBound) {
@@ -1365,5 +1422,81 @@ mod tests {
     fn has_empty_variadic_term_false_for_empty_spec() {
         // A vacuous `OVER ()` window has no terms and so no empty variadic.
         assert!(!WindowSpec::default().has_empty_variadic_term());
+    }
+
+    // ── has_lateral_outer_ref_term / find_lateral_outer_ref_term ──────────
+    //
+    // The fetch-time witness consulted by `check_window_annotation_legality`
+    // so a lateral outer ref (`OuterRef::as_lateral_outer_expr()`,
+    // `ExprNode::OuterRefAlias`) in a window term is rejected before it
+    // reaches `emit` and the window-function slot `.expect()`.
+
+    /// Build the `OuterRefAlias` node `as_lateral_outer_expr()` produces. The
+    /// `model_type` / `model_name` fields take any concrete type's identity —
+    /// these walkers never compare the `TypeId` (that happens at emit time).
+    fn lateral_outer_ref(column: &'static str) -> crate::expr::node::ExprNode {
+        struct Marker;
+        crate::expr::node::ExprNode::OuterRefAlias {
+            alias: "l",
+            column,
+            model_type: std::any::TypeId::of::<Marker>(),
+            model_name: std::any::type_name::<Marker>(),
+        }
+    }
+
+    #[test]
+    fn has_lateral_outer_ref_term_true_for_partition_ref() {
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(lateral_outer_ref("owner_id")),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(spec.has_lateral_outer_ref_term());
+        assert_eq!(
+            spec.find_lateral_outer_ref_term().map(|(c, _)| c),
+            Some("owner_id"),
+            "partition-term lateral ref must be found and name its column"
+        );
+    }
+
+    #[test]
+    fn has_lateral_outer_ref_term_true_for_order_by_ref() {
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(lateral_outer_ref("sort_key")),
+                    alias: "r",
+                },
+                Direction::Desc,
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            spec.find_lateral_outer_ref_term().map(|(c, _)| c),
+            Some("sort_key")
+        );
+    }
+
+    #[test]
+    fn has_lateral_outer_ref_term_false_for_plain_and_empty() {
+        // Plain column terms and clean expression terms carry no lateral ref.
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![
+                WindowTerm::Column("l.id"),
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Field { column: "score" }),
+                    alias: "l",
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(!spec.has_lateral_outer_ref_term());
+        assert!(spec.find_lateral_outer_ref_term().is_none());
+
+        // A vacuous `OVER ()` window has no terms.
+        assert!(!WindowSpec::default().has_lateral_outer_ref_term());
     }
 }
