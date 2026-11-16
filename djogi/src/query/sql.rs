@@ -404,9 +404,11 @@ fn inet_containment_rhs_cast(
         // `InetAddr` and bare `IpAddr` → `::inet` (both `ToSql` impls accept
         // only `Type::INET`).
         FilterValue::InetTyped(_) | FilterValue::Inet(_) => Ok("::inet"),
-        other => Err(crate::query::portable::PortablePredicateError::InvalidFilterValue {
-            description: format!("{other:?}"),
-        }),
+        other => Err(
+            crate::query::portable::PortablePredicateError::InvalidFilterValue {
+                description: format!("{other:?}"),
+            },
+        ),
     }
 }
 
@@ -836,40 +838,45 @@ pub(crate) fn emit_condition(
         Condition::InetContains(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >> ");
+            let cast = inet_containment_rhs_cast(&leaf.value)?;
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
+            acc.push_sql(cast);
             Ok(())
         }
         #[cfg(feature = "network")]
         Condition::InetContainedBy(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" << ");
+            let cast = inet_containment_rhs_cast(&leaf.value)?;
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
+            acc.push_sql(cast);
             Ok(())
         }
         #[cfg(feature = "network")]
         Condition::InetContainsEq(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >>= ");
+            let cast = inet_containment_rhs_cast(&leaf.value)?;
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
+            acc.push_sql(cast);
             Ok(())
         }
         #[cfg(feature = "network")]
         Condition::InetContainedByEq(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" <<= ");
+            let cast = inet_containment_rhs_cast(&leaf.value)?;
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
+            acc.push_sql(cast);
             Ok(())
         }
         #[cfg(feature = "network")]
         Condition::InetOverlap(leaf) => {
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
+            let cast = inet_containment_rhs_cast(&leaf.value)?;
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
+            acc.push_sql(cast);
             Ok(())
         }
         // ── Range operators ──────────────────────────────────
@@ -5246,15 +5253,21 @@ mod tests {
         );
     }
 
-    /// Verify that `inet_containment_rhs_cast` returns `Err` for a
-    /// non-network `FilterValue` rather than panicking. This guards against
-    /// leaves constructed directly with an unexpected value type bypassing the
-    /// sealed `IntoInetFilterValue` path.
+    /// Verify that `inet_containment_rhs_cast` returns `Err` for non-network
+    /// `FilterValue` variants rather than panicking. This guards against leaves
+    /// constructed directly with an unexpected value type bypassing the sealed
+    /// `IntoInetFilterValue` path.
+    ///
+    /// Crucially this covers `List` and `Pair`, which would cause
+    /// `push_filter_value_ref` to hit its own `unreachable!()` if the cast
+    /// validation did not run first — the fix that ordered `inet_containment_rhs_cast`
+    /// before `push_filter_value_ref` relies on these cases returning `Err`.
     #[test]
     #[cfg(feature = "network")]
     fn inet_containment_rhs_cast_rejects_non_network_value() {
         use crate::query::portable::PortablePredicateError;
 
+        // --- Bool: basic non-network scalar ---
         let result = inet_containment_rhs_cast(&FilterValue::Bool(true));
         assert!(
             result.is_err(),
@@ -5270,6 +5283,40 @@ mod tests {
         assert!(
             err_msg.contains("INET containment operator requires"),
             "error message should describe the requirement; got: {err_msg}"
+        );
+
+        // --- List: would reach push_filter_value_ref's unreachable!() without
+        //     the cast-first guard ---
+        let result_list = inet_containment_rhs_cast(&FilterValue::List(vec![]));
+        assert!(
+            result_list.is_err(),
+            "expected Err for a List FilterValue, got Ok({:?})",
+            result_list.ok()
+        );
+        assert!(
+            matches!(
+                result_list.unwrap_err(),
+                PortablePredicateError::InvalidFilterValue { .. }
+            ),
+            "expected InvalidFilterValue variant for List"
+        );
+
+        // --- Pair: same unreachable!() path as List ---
+        let result_pair = inet_containment_rhs_cast(&FilterValue::Pair(
+            Box::new(FilterValue::Bool(true)),
+            Box::new(FilterValue::Bool(false)),
+        ));
+        assert!(
+            result_pair.is_err(),
+            "expected Err for a Pair FilterValue, got Ok({:?})",
+            result_pair.ok()
+        );
+        assert!(
+            matches!(
+                result_pair.unwrap_err(),
+                PortablePredicateError::InvalidFilterValue { .. }
+            ),
+            "expected InvalidFilterValue variant for Pair"
         );
     }
 }
