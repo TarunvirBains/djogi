@@ -166,6 +166,23 @@ pub enum PortablePredicateError {
         /// The Sassi `field_name` reported on the predicate leaf.
         field: &'static str,
     },
+
+    /// An INET-containment leaf (`>>`, `<<`, `>>=`, `<<=`, `&&`) carried a
+    /// `FilterValue` that is not one of the three network variants (`Inet`,
+    /// `InetTyped`, `Cidr`). Under normal use this cannot happen — INET-
+    /// containment leaves are built exclusively through the sealed
+    /// `IntoInetFilterValue` trait, which only produces network values.
+    /// An `Err` here indicates that a leaf was constructed directly with a
+    /// non-network value (API misuse), surfaced as a typed emission error
+    /// rather than a panic.
+    #[error(
+        "INET containment operator requires an Inet, InetTyped, or Cidr value; \
+         got {description}"
+    )]
+    InvalidFilterValue {
+        /// A `Debug`-formatted description of the unexpected value.
+        description: String,
+    },
 }
 
 /// SQL-emission context threaded through the direct-`Q<T>` walker.

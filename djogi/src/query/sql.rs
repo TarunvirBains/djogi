@@ -367,8 +367,9 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
 }
 
 /// SQL cast suffix (`::inet` / `::cidr`) that pins the Postgres type of an
-/// INET-containment RHS bind to the type its [`tokio_postgres::types::ToSql`]
-/// impl actually accepts.
+/// Return the Postgres type-cast suffix that aligns the INET-containment RHS
+/// bind with the type its [`tokio_postgres::types::ToSql`] impl actually
+/// accepts.
 ///
 /// # Why this is required
 /// The containment operators (`>>`, `<<`, `>>=`, `<<=`, `&&`) are each
@@ -378,31 +379,34 @@ pub(crate) fn push_filter_value_ref(acc: &mut SqlAccumulator, v: &FilterValue) {
 /// is exact — [`crate::CidrAddr`] accepts only `CIDR`, [`crate::InetAddr`] and
 /// `std::net::IpAddr` accept only `INET`. So a `CidrAddr` bound against an
 /// `inet` column (inferred `INET`) is rejected at bind time ("cannot convert
-/// … to type inet"), and symmetrically an `InetAddr` bound against a `cidr`
+/// … to type inet"), and symmetringly an `InetAddr` bound against a `cidr`
 /// column would be rejected as `cidr`. An explicit cast matching the *value's*
 /// own accepted type removes the dependency on column-driven inference: the
 /// value binds as its own type, and Postgres applies the standard
 /// `inet`/`cidr` assignment cast to the operator.
 ///
-/// # Panics
-/// Panics (`unreachable!`) if handed any non-network `FilterValue`. The three
-/// network variants are the only values an INET-containment leaf can carry —
-/// they are built exclusively by
+/// # Errors
+/// Returns [`PortablePredicateError::InvalidFilterValue`] if `v` is not one of
+/// the three network variants (`Inet`, `InetTyped`, `Cidr`). Under normal use
+/// this cannot happen — INET-containment leaves are built exclusively by
 /// [`crate::query::field::IntoInetFilterValue::into_inet_filter_value`], which
-/// is sealed to `InetAddr` / `CidrAddr` / `std::net::IpAddr`. Reaching this
-/// with anything else is a framework-internal invariant break, not user error.
+/// is sealed to `InetAddr` / `CidrAddr` / `std::net::IpAddr`. An `Err` here
+/// indicates that a leaf was constructed directly with a non-network value,
+/// which is an API misuse that surfaces as a typed emission error rather than
+/// a panic.
 #[cfg(feature = "network")]
-fn inet_containment_rhs_cast(v: &FilterValue) -> &'static str {
+fn inet_containment_rhs_cast(
+    v: &FilterValue,
+) -> Result<&'static str, crate::query::portable::PortablePredicateError> {
     match v {
         // `CidrAddr` → `::cidr` (its `ToSql` accepts only `Type::CIDR`).
-        FilterValue::Cidr(_) => "::cidr",
+        FilterValue::Cidr(_) => Ok("::cidr"),
         // `InetAddr` and bare `IpAddr` → `::inet` (both `ToSql` impls accept
         // only `Type::INET`).
-        FilterValue::InetTyped(_) | FilterValue::Inet(_) => "::inet",
-        other => unreachable!(
-            "INET-containment RHS carried a non-network FilterValue ({other:?}); \
-             IntoInetFilterValue only produces Inet/InetTyped/Cidr"
-        ),
+        FilterValue::InetTyped(_) | FilterValue::Inet(_) => Ok("::inet"),
+        other => Err(crate::query::portable::PortablePredicateError::InvalidFilterValue {
+            description: format!("{other:?}"),
+        }),
     }
 }
 
@@ -833,7 +837,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >> ");
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -841,7 +845,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" << ");
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -849,7 +853,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" >>= ");
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -857,7 +861,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" <<= ");
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
             Ok(())
         }
         #[cfg(feature = "network")]
@@ -865,7 +869,7 @@ pub(crate) fn emit_condition(
             push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
             push_filter_value_ref(acc, &leaf.value);
-            acc.push_sql(inet_containment_rhs_cast(&leaf.value));
+            acc.push_sql(inet_containment_rhs_cast(&leaf.value)?);
             Ok(())
         }
         // ── Range operators ──────────────────────────────────
@@ -5239,6 +5243,33 @@ mod tests {
         assert!(
             set_pos < where_pos && where_pos < returning_pos,
             "expected SET ... WHERE ... RETURNING order, got: {sql}"
+        );
+    }
+
+    /// Verify that `inet_containment_rhs_cast` returns `Err` for a
+    /// non-network `FilterValue` rather than panicking. This guards against
+    /// leaves constructed directly with an unexpected value type bypassing the
+    /// sealed `IntoInetFilterValue` path.
+    #[test]
+    #[cfg(feature = "network")]
+    fn inet_containment_rhs_cast_rejects_non_network_value() {
+        use crate::query::portable::PortablePredicateError;
+
+        let result = inet_containment_rhs_cast(&FilterValue::Bool(true));
+        assert!(
+            result.is_err(),
+            "expected Err for a Bool FilterValue, got Ok({:?})",
+            result.ok()
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, PortablePredicateError::InvalidFilterValue { .. }),
+            "expected InvalidFilterValue variant; got: {err:?}"
+        );
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("INET containment operator requires"),
+            "error message should describe the requirement; got: {err_msg}"
         );
     }
 }
