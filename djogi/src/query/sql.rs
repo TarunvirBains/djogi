@@ -1803,7 +1803,7 @@ pub(crate) fn build_select_with_annotations<T, F>(
 ) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
-    F: FnOnce(&mut SqlAccumulator),
+    F: FnOnce(&mut SqlAccumulator) -> Result<(), PortablePredicateError>,
 {
     let mut acc = SqlAccumulator::new("");
     // `SELECT t.<c1>, t.<c2>, ...` prefix — the `t` alias is what the
@@ -1824,8 +1824,11 @@ where
     }
     // Caller-provided per-aggregate comma-separated pushes. The
     // trait impl prepends `, ` before each `<agg> AS __djogi_agg_N`
-    // so the SELECT list stays well-formed for arities 1..=4.
-    push_columns(&mut acc);
+    // so the SELECT list stays well-formed for arities 1..=4. The closure
+    // is fallible: an aggregate slot whose filter nests an empty variadic or
+    // lateral outer ref inside a type-erased subquery predicate surfaces its
+    // emit error here rather than panicking in the slot emitter.
+    push_columns(&mut acc)?;
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
@@ -1850,7 +1853,7 @@ pub(crate) fn build_annotated_select_for_fetch<T, F>(
 ) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
-    F: FnOnce(&mut SqlAccumulator),
+    F: FnOnce(&mut SqlAccumulator) -> Result<(), PortablePredicateError>,
 {
     let inner = build_select_with_annotations(qs, push_columns)?;
     let Some(qualify) = qualify else {
@@ -1880,7 +1883,7 @@ pub(crate) fn build_spatial_row_select_with_annotations_for_fetch<T, F>(
 ) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
-    F: FnOnce(&mut SqlAccumulator),
+    F: FnOnce(&mut SqlAccumulator) -> Result<(), PortablePredicateError>,
 {
     let inner = build_spatial_row_select_with_annotations(qs, push_columns)?;
     let Some(qualify) = qualify else {
@@ -1901,7 +1904,7 @@ fn build_spatial_row_select_with_annotations<T, F>(
 ) -> Result<SqlAccumulator, PortablePredicateError>
 where
     T: Model + FromPgRow,
-    F: FnOnce(&mut SqlAccumulator),
+    F: FnOnce(&mut SqlAccumulator) -> Result<(), PortablePredicateError>,
 {
     let mut acc = SqlAccumulator::new("SELECT ");
     let desc = T::descriptor();
@@ -1924,7 +1927,7 @@ where
         }
     }
 
-    push_columns(&mut acc);
+    push_columns(&mut acc)?;
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
@@ -1981,7 +1984,7 @@ where
     gaq.keys.push_select_columns(&mut acc);
     let has_key_columns = acc.sql() != "SELECT ";
     gaq.aggregates
-        .push_columns_bare_after(&mut acc, has_key_columns);
+        .push_columns_bare_after(&mut acc, has_key_columns)?;
 
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
@@ -2073,7 +2076,7 @@ where
     gaq.keys.push_select_columns(&mut acc);
 
     // Aggregate columns follow, decoded by alias (__djogi_agg_N).
-    gaq.aggregates.push_columns_bare(&mut acc);
+    gaq.aggregates.push_columns_bare(&mut acc)?;
 
     // FROM <t-table> AS t
     acc.push_sql(" FROM ");
@@ -2194,7 +2197,7 @@ where
 {
     // Outer SELECT: cluster_id key + aggregates.
     let mut acc = SqlAccumulator::new("SELECT cluster_id");
-    gaq.aggregates.push_columns_bare(&mut acc);
+    gaq.aggregates.push_columns_bare(&mut acc)?;
 
     // Inner subquery materialises cluster_id so the outer GROUP BY sees a
     // plain column rather than a window-function reference.
@@ -2265,7 +2268,7 @@ where
     acc.push_sql(") AS geohash");
 
     // Aggregate columns follow.
-    gaq.aggregates.push_columns_bare(&mut acc);
+    gaq.aggregates.push_columns_bare(&mut acc)?;
 
     // FROM <table> AS t
     acc.push_sql(" FROM ");

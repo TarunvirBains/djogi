@@ -123,9 +123,7 @@ where
     // model column must be rejected at the terminal level.
     let inner = build_spatial_row_select_with_annotations_for_fetch(
         &aqs.qs,
-        |acc| {
-            aqs.aggregates.push_plain_columns(acc);
-        },
+        |acc| aqs.aggregates.push_plain_columns(acc),
         aqs.qualify.as_ref(),
     )?;
 
@@ -508,16 +506,31 @@ impl crate::query::annotate::sealed::Sealed for EmptyAnnotation {}
 impl IntoAggregateTuple for EmptyAnnotation {
     type Decoded = ();
 
-    fn push_columns(&self, _acc: &mut SqlAccumulator) {
+    fn push_columns(
+        &self,
+        _acc: &mut SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         // No-op — the empty annotation contributes no columns. The
         // outer row aggregate folds the entire row regardless of
         // annotation slots; pushing nothing here keeps the inner
         // SELECT list to `t.col1, t.col2, …` only.
+        Ok(())
     }
 
-    fn push_columns_bare(&self, _acc: &mut SqlAccumulator) {}
+    fn push_columns_bare(
+        &self,
+        _acc: &mut SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        Ok(())
+    }
 
-    fn push_columns_bare_after(&self, _acc: &mut SqlAccumulator, _has_previous_columns: bool) {}
+    fn push_columns_bare_after(
+        &self,
+        _acc: &mut SqlAccumulator,
+        _has_previous_columns: bool,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        Ok(())
+    }
 
     fn decode_tuple(
         &self,
@@ -543,8 +556,12 @@ impl IntoAggregateTuple for EmptyAnnotation {
 }
 
 impl crate::query::annotate::PlainAnnotationTuple for EmptyAnnotation {
-    fn push_plain_columns(&self, _acc: &mut SqlAccumulator) {
+    fn push_plain_columns(
+        &self,
+        _acc: &mut SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         // No-op — see `push_columns` above.
+        Ok(())
     }
 }
 

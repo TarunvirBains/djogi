@@ -63,6 +63,7 @@ use crate::expr::{
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
+use crate::query::portable::PortablePredicateError;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_annotated_select_for_fetch, emit_aggregate_with_window_and_cast};
 use std::future::Future;
@@ -126,19 +127,38 @@ pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
     type Decoded;
 
     /// Push this annotation as `, <expr> AS <alias>` for ungrouped annotate.
-    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize);
+    /// # Errors
+    /// Returns [`PortablePredicateError`] when the annotation's SQL emission
+    /// fails — an empty variadic (`COALESCE()` / `LEAST()` / `GREATEST()`) or a
+    /// lateral outer ref out of scope, including one nested inside a type-erased
+    /// subquery predicate the fetch-time `check_legality` gate cannot inspect.
+    /// Propagating (rather than unwrapping) keeps every annotate terminal
+    /// panic-free on inputs the static legality walkers cannot reach.
+    fn push_column(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), PortablePredicateError>;
 
     /// Push this annotation in grouped annotate contexts.
-    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize);
+    /// # Errors
+    /// See [`AnnotationSlot::push_column`] — same emission failure modes.
+    fn push_column_bare(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), PortablePredicateError>;
 
     /// Push this annotation in grouped annotate contexts, choosing whether
     /// this slot needs a leading SELECT-list separator.
+    /// # Errors
+    /// See [`AnnotationSlot::push_column`] — same emission failure modes.
     fn push_column_bare_after(
         &self,
         acc: &mut SqlAccumulator,
         slot: usize,
         has_previous_columns: bool,
-    );
+    ) -> Result<(), PortablePredicateError>;
 
     /// Decode this annotation from `row`.
     fn decode_column(
@@ -318,7 +338,9 @@ pub trait PlainAnnotationSlot: AnnotationSlot {}
 pub trait PlainAnnotationTuple: IntoAggregateTuple {
     /// Push plain-annotate SELECT-list columns. Implemented only for tuple
     /// shapes whose slots are legal on the synthesized-window path.
-    fn push_plain_columns(&self, acc: &mut SqlAccumulator);
+    /// # Errors
+    /// See [`IntoAggregateTuple::push_columns`] — same emission failure modes.
+    fn push_plain_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError>;
 }
 
 /// Type-level bridge from the closure return type of
@@ -339,7 +361,13 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// `, ` and aliased for row decode.
     /// Indexing starts at 0; callers already pushed `SELECT t.*` so
     /// every push here begins with a comma.
-    fn push_columns(&self, acc: &mut SqlAccumulator);
+    /// # Errors
+    /// Returns [`PortablePredicateError`] when any slot's SQL emission fails —
+    /// an empty variadic or a lateral outer ref out of scope, including one
+    /// nested inside a type-erased subquery predicate that the fetch-time
+    /// `check_legality` gate cannot inspect. Propagating keeps every annotate
+    /// terminal panic-free on inputs the static legality walkers cannot reach.
+    fn push_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError>;
 
     /// Push the aggregate SELECT-list columns onto `acc` without the
     /// `OVER ()` window-function wrap, each aliased as `__djogi_agg_{N}`.
@@ -347,13 +375,21 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// not use window functions in the SELECT list for its aggregate columns.
     /// Every push here begins with a comma; callers already pushed the key
     /// columns as the leading SELECT columns.
-    fn push_columns_bare(&self, acc: &mut SqlAccumulator);
+    /// # Errors
+    /// See [`IntoAggregateTuple::push_columns`] — same emission failure modes.
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError>;
 
     /// Push grouped aggregate SELECT-list columns after an optional key list.
     /// `group_by_sets` uses the unit key `()`, so it has no typed key columns
     /// to emit before the aggregate list. In that shape the first aggregate
     /// must not prepend `, `.
-    fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool);
+    /// # Errors
+    /// See [`IntoAggregateTuple::push_columns`] — same emission failure modes.
+    fn push_columns_bare_after(
+        &self,
+        acc: &mut SqlAccumulator,
+        has_previous_columns: bool,
+    ) -> Result<(), PortablePredicateError>;
 
     /// Decode the annotation columns from `row` into [`Self::Decoded`].
     /// The aliases are fixed (`__djogi_agg_0`, `__djogi_agg_1`, ...)
@@ -495,28 +531,37 @@ where
 {
     type Decoded = V;
 
-    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
+    fn push_column(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), PortablePredicateError> {
         acc.push_sql(", ");
         // `emit_aggregate_*` is fallible because aggregates may carry filter
         // expressions that contain portable subqueries, and because an empty
         // variadic (`COALESCE()` / `LEAST()` / `GREATEST()`) anywhere in the
-        // aggregate tree emits `EmptyVariadicFunction`. The annotation-slot
-        // trait surface is `()`-returning (changing it would cascade through
-        // every aggregate + window tuple impl), so we `.expect` here. Both
-        // failure modes are denied upstream before emission:
-        // `check_legality()` — run on every annotate terminal (single-Model,
-        // grouped, joined) — rejects any empty variadic via
-        // `expr_node_has_empty_variadic`, and the typed `Expr` surface rejects
-        // a malformed portable-predicate filter. Reaching an `Err` here would
-        // mean the fetch-time gate and the emitter drifted out of sync.
-        emit_aggregate_with_window_and_cast(acc, &self.node)
-            .expect("aggregate annotation emission cannot fail: empty variadics and malformed filters are rejected by check_legality before SQL build");
+        // aggregate tree emits `EmptyVariadicFunction`. The fetch-time
+        // `check_legality()` gate catches those two shapes when they appear
+        // directly in the aggregate tree — but it CANNOT see inside a
+        // type-erased subquery predicate (`Exists(qs.filter_expr(...))`), whose
+        // `where_clause` is an `Arc<dyn SubqueryPredicateEmitter>` the static
+        // `expr_node_has_empty_variadic` / `find_lateral_outer_ref` walkers skip
+        // (they return `false`/`None` for `Exists`/`Subquery`). The subquery's
+        // own emit scope still refuses those shapes, so propagating the emit
+        // `Result` here is what turns that refusal into a typed terminal error
+        // instead of a panic.
+        emit_aggregate_with_window_and_cast(acc, &self.node)?;
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
+        Ok(())
     }
 
-    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-        self.push_column_bare_after(acc, slot, true);
+    fn push_column_bare(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), PortablePredicateError> {
+        self.push_column_bare_after(acc, slot, true)
     }
 
     fn push_column_bare_after(
@@ -524,19 +569,17 @@ where
         acc: &mut SqlAccumulator,
         slot: usize,
         has_previous_columns: bool,
-    ) {
+    ) -> Result<(), PortablePredicateError> {
         if has_previous_columns {
             acc.push_sql(", ");
         }
-        // See `push_column` above: emission is fallible (empty variadic +
-        // malformed portable-predicate filter), but both are rejected by
-        // `check_legality` / the typed `Expr` surface before any annotate
-        // terminal reaches SQL build, so an `Err` here signals gate/emitter
-        // drift.
-        crate::query::sql::emit_aggregate_with_cast(acc, &self.node)
-            .expect("aggregate annotation emission cannot fail: empty variadics and malformed filters are rejected by check_legality before SQL build");
+        // See `push_column` above: emission is fallible, and a subquery-nested
+        // empty variadic / lateral outer ref escapes the static `check_legality`
+        // walkers, so propagating the emit `Result` keeps this path panic-free.
+        crate::query::sql::emit_aggregate_with_cast(acc, &self.node)?;
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
+        Ok(())
     }
 
     fn decode_column(
@@ -652,13 +695,21 @@ macro_rules! impl_window_annotation_slot {
         impl AnnotationSlot for $type_name {
             type Decoded = $decoded;
 
-            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+            fn push_column(
+                &self,
+                acc: &mut SqlAccumulator,
+                _slot: usize,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql(", ");
-                self.push_annotated_column(acc);
+                self.push_annotated_column(acc)
             }
 
-            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-                self.push_column_bare_after(acc, slot, true);
+            fn push_column_bare(
+                &self,
+                acc: &mut SqlAccumulator,
+                slot: usize,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
+                self.push_column_bare_after(acc, slot, true)
             }
 
             fn push_column_bare_after(
@@ -666,11 +717,11 @@ macro_rules! impl_window_annotation_slot {
                 acc: &mut SqlAccumulator,
                 _slot: usize,
                 has_previous_columns: bool,
-            ) {
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 if has_previous_columns {
                     acc.push_sql(", ");
                 }
-                self.push_annotated_column(acc);
+                self.push_annotated_column(acc)
             }
 
             fn decode_column(
@@ -762,13 +813,21 @@ macro_rules! impl_window_annotation_slot_generic_v {
         {
             type Decoded = V;
 
-            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+            fn push_column(
+                &self,
+                acc: &mut SqlAccumulator,
+                _slot: usize,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql(", ");
-                self.push_annotated_column(acc);
+                self.push_annotated_column(acc)
             }
 
-            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-                self.push_column_bare_after(acc, slot, true);
+            fn push_column_bare(
+                &self,
+                acc: &mut SqlAccumulator,
+                slot: usize,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
+                self.push_column_bare_after(acc, slot, true)
             }
 
             fn push_column_bare_after(
@@ -776,11 +835,11 @@ macro_rules! impl_window_annotation_slot_generic_v {
                 acc: &mut SqlAccumulator,
                 _slot: usize,
                 has_previous_columns: bool,
-            ) {
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 if has_previous_columns {
                     acc.push_sql(", ");
                 }
-                self.push_annotated_column(acc);
+                self.push_annotated_column(acc)
             }
 
             fn decode_column(
@@ -889,16 +948,20 @@ where
 {
     type Decoded = <S as AnnotationSlot>::Decoded;
 
-    fn push_columns(&self, acc: &mut SqlAccumulator) {
-        self.push_column(acc, 0);
+    fn push_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        self.push_column(acc, 0)
     }
 
-    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
-        self.push_columns_bare_after(acc, true);
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        self.push_columns_bare_after(acc, true)
     }
 
-    fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool) {
-        self.push_column_bare_after(acc, 0, has_previous_columns);
+    fn push_columns_bare_after(
+        &self,
+        acc: &mut SqlAccumulator,
+        has_previous_columns: bool,
+    ) -> Result<(), PortablePredicateError> {
+        self.push_column_bare_after(acc, 0, has_previous_columns)
     }
 
     fn decode_tuple(
@@ -947,8 +1010,8 @@ impl<S> PlainAnnotationTuple for S
 where
     S: PlainAnnotationSlot,
 {
-    fn push_plain_columns(&self, acc: &mut SqlAccumulator) {
-        self.push_column(acc, 0);
+    fn push_plain_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        self.push_column(acc, 0)
     }
 }
 
@@ -957,11 +1020,21 @@ impl sealed::Sealed for () {}
 impl IntoAggregateTuple for () {
     type Decoded = ();
 
-    fn push_columns(&self, _acc: &mut SqlAccumulator) {}
+    fn push_columns(&self, _acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        Ok(())
+    }
 
-    fn push_columns_bare(&self, _acc: &mut SqlAccumulator) {}
+    fn push_columns_bare(&self, _acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        Ok(())
+    }
 
-    fn push_columns_bare_after(&self, _acc: &mut SqlAccumulator, _has_previous_columns: bool) {}
+    fn push_columns_bare_after(
+        &self,
+        _acc: &mut SqlAccumulator,
+        _has_previous_columns: bool,
+    ) -> Result<(), PortablePredicateError> {
+        Ok(())
+    }
 
     fn decode_tuple(
         &self,
@@ -976,7 +1049,9 @@ impl IntoAggregateTuple for () {
 }
 
 impl PlainAnnotationTuple for () {
-    fn push_plain_columns(&self, _acc: &mut SqlAccumulator) {}
+    fn push_plain_columns(&self, _acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+        Ok(())
+    }
 }
 
 // ── Arity 2..=4: tuples of annotation slots ──────────────────────────
@@ -1003,20 +1078,26 @@ macro_rules! impl_into_aggregate_tuple {
         {
             type Decoded = ( $(<$ty as AnnotationSlot>::Decoded,)+ );
 
-            fn push_columns(&self, acc: &mut SqlAccumulator) {
+            fn push_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
                 $(
-                    self.$slot.push_column(acc, $slot);
+                    self.$slot.push_column(acc, $slot)?;
                 )+
+                Ok(())
             }
 
-            fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
-                self.push_columns_bare_after(acc, true);
+            fn push_columns_bare(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
+                self.push_columns_bare_after(acc, true)
             }
 
-            fn push_columns_bare_after(&self, acc: &mut SqlAccumulator, has_previous_columns: bool) {
+            fn push_columns_bare_after(
+                &self,
+                acc: &mut SqlAccumulator,
+                has_previous_columns: bool,
+            ) -> Result<(), PortablePredicateError> {
                 $(
-                    self.$slot.push_column_bare_after(acc, $slot, has_previous_columns || $slot > 0);
+                    self.$slot.push_column_bare_after(acc, $slot, has_previous_columns || $slot > 0)?;
                 )+
+                Ok(())
             }
 
             fn decode_tuple(&self, row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
@@ -1084,10 +1165,11 @@ macro_rules! impl_into_aggregate_tuple {
         where
             $($ty: PlainAnnotationSlot,)+
         {
-            fn push_plain_columns(&self, acc: &mut SqlAccumulator) {
+            fn push_plain_columns(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
                 $(
-                    self.$slot.push_column(acc, $slot);
+                    self.$slot.push_column(acc, $slot)?;
                 )+
+                Ok(())
             }
         }
     };
@@ -1237,9 +1319,7 @@ where
 
             let acc = build_annotated_select_for_fetch(
                 &qs,
-                |acc| {
-                    aggregates.push_plain_columns(acc);
-                },
+                |acc| aggregates.push_plain_columns(acc),
                 qualify.as_ref(),
             )
             .map_err(DjogiError::from)?;
@@ -1388,10 +1468,8 @@ mod tests {
         let qs: QuerySet<Acc> = QuerySet::new();
         let f: FieldRef<Acc, i64> = FieldRef::new("balance");
         let agg = f.sum();
-        let acc = build_select_with_annotations(&qs, |acc| {
-            agg.push_columns(acc);
-        })
-        .expect("annotate select");
+        let acc = build_select_with_annotations(&qs, |acc| agg.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains(
@@ -1407,10 +1485,8 @@ mod tests {
         let f1: FieldRef<Acc, i64> = FieldRef::new("balance");
         let f2: FieldRef<Acc, i64> = FieldRef::new("balance");
         let tuple = (f1.sum(), f2.count());
-        let acc = build_select_with_annotations(&qs, |acc| {
-            tuple.push_columns(acc);
-        })
-        .expect("annotate select");
+        let acc = build_select_with_annotations(&qs, |acc| tuple.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
         assert!(
             sql.contains("(SUM(balance) OVER ())::BIGINT AS __djogi_agg_0"),
@@ -1467,10 +1543,8 @@ mod tests {
             .order_by(score.desc())
             .alias("rank");
 
-        let acc = build_select_with_annotations(&qs, |acc| {
-            row_number.push_columns(acc);
-        })
-        .expect("annotate select");
+        let acc = build_select_with_annotations(&qs, |acc| row_number.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -1489,10 +1563,8 @@ mod tests {
             .order_by(score.desc())
             .alias("rank");
 
-        let acc = build_select_with_annotations(&qs, |acc| {
-            rank.push_columns(acc);
-        })
-        .expect("annotate select");
+        let acc = build_select_with_annotations(&qs, |acc| rank.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -1511,10 +1583,8 @@ mod tests {
             .order_by(score.desc())
             .alias("dense_rank");
 
-        let acc = build_select_with_annotations(&qs, |acc| {
-            dense_rank.push_columns(acc);
-        })
-        .expect("annotate select");
+        let acc = build_select_with_annotations(&qs, |acc| dense_rank.push_columns(acc))
+            .expect("annotate select");
         let sql = acc.sql();
 
         assert!(
@@ -2171,10 +2241,18 @@ mod tests {
         impl annotation_slot_sealed::Sealed for PairOnlySlot {}
         impl AnnotationSlot for PairOnlySlot {
             type Decoded = i64;
-            fn push_column(&self, _acc: &mut SqlAccumulator, _slot: usize) {
+            fn push_column(
+                &self,
+                _acc: &mut SqlAccumulator,
+                _slot: usize,
+            ) -> Result<(), PortablePredicateError> {
                 unreachable!("test slot — emitter never invoked")
             }
-            fn push_column_bare(&self, _acc: &mut SqlAccumulator, _slot: usize) {
+            fn push_column_bare(
+                &self,
+                _acc: &mut SqlAccumulator,
+                _slot: usize,
+            ) -> Result<(), PortablePredicateError> {
                 unreachable!("test slot — emitter never invoked")
             }
             fn push_column_bare_after(
@@ -2182,7 +2260,7 @@ mod tests {
                 _acc: &mut SqlAccumulator,
                 _slot: usize,
                 _has_previous_columns: bool,
-            ) {
+            ) -> Result<(), PortablePredicateError> {
                 unreachable!("test slot — emitter never invoked")
             }
             fn decode_column(
@@ -2690,6 +2768,168 @@ mod tests {
         assert!(
             IntoAggregateTuple::check_legality(&agg).is_ok(),
             "clean aggregate must pass the lateral-ref gate"
+        );
+    }
+
+    // ── Subquery-nested emission errors propagate instead of panicking ────
+    //
+    // The static `check_legality` walkers (`expr_node_has_empty_variadic`,
+    // `find_lateral_outer_ref`) cannot inspect a subquery predicate: a
+    // `SubqueryNode.where_clause` is an `Arc<dyn SubqueryPredicateEmitter>`
+    // (type-erased `Q<T>`), not an `ExprNode`, so the walkers return
+    // `false`/`None` for `Exists`/`Subquery`. An empty variadic or an
+    // out-of-scope lateral outer ref nested INSIDE such a predicate therefore
+    // passes `check_legality` but fails at SQL emission — the subquery's own
+    // emit scope refuses it. Before the emission interface returned `Result`,
+    // the annotation-slot `push_column*` methods unwrapped that `Err` with
+    // `.expect()` and PANICKED. These tests pin that the error now flows out
+    // of the annotate SQL-build path as a typed `Err`, on the same
+    // `build_select_with_annotations` / `build_grouped_annotated_select`
+    // callers the live terminals use (so no DB round trip is needed to
+    // exercise the fix).
+
+    /// Build an aggregate whose `FILTER (WHERE ...)` nests an empty-variadic
+    /// `COALESCE()` inside an `EXISTS (...)` subquery predicate. The outer
+    /// aggregate tree carries no empty variadic of its own, so `check_legality`
+    /// passes — the empty variadic lives behind the type-erased subquery.
+    fn aggregate_with_empty_variadic_in_subquery_filter() -> AggregateExpr<i64> {
+        use crate::expr::Expr;
+        use crate::expr::subquery::Exists;
+        use crate::query::queryset::QuerySet;
+
+        let inner: QuerySet<Acc> =
+            QuerySet::new().filter_expr(|_| Expr::<bool>::coalesce_many(Vec::new()));
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        amount.sum().filter(Exists::new(inner).as_expr())
+    }
+
+    /// Build an aggregate whose `FILTER (WHERE ...)` nests an out-of-scope
+    /// lateral outer ref (`OuterRef::as_lateral_outer_expr()`,
+    /// `ExprNode::OuterRefAlias`) inside an `EXISTS (...)` subquery predicate.
+    fn aggregate_with_lateral_ref_in_subquery_filter() -> AggregateExpr<i64> {
+        use crate::expr::Expr;
+        use crate::expr::subquery::{Exists, OuterRef};
+        use crate::query::queryset::QuerySet;
+
+        let inner: QuerySet<Acc> = QuerySet::new().filter_expr(|_| {
+            OuterRef::<Acc, i32>::new("owner_id")
+                .as_lateral_outer_expr()
+                .eq(Expr::literal(1i32))
+        });
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        amount.sum().filter(Exists::new(inner).as_expr())
+    }
+
+    #[test]
+    fn subquery_filter_empty_variadic_check_legality_cannot_see_it() {
+        // Guard the premise: the static gate genuinely cannot reach the
+        // subquery-nested empty variadic, so it reports OK. Without this,
+        // a future change that teaches `check_legality` to walk subqueries
+        // would silently turn the emission tests below into dead code.
+        let agg = aggregate_with_empty_variadic_in_subquery_filter();
+        assert!(
+            IntoAggregateTuple::check_legality(&agg).is_ok(),
+            "check_legality must not reach inside a type-erased subquery predicate"
+        );
+    }
+
+    #[test]
+    fn plain_annotate_build_surfaces_subquery_empty_variadic_as_err() {
+        // The plain ungrouped annotate SQL-build path (what
+        // `AnnotatedQuerySet::fetch_all` calls before any DB round trip).
+        // Pre-fix this panicked at the aggregate-slot `.expect()`.
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let agg = aggregate_with_empty_variadic_in_subquery_filter();
+        // Map the `Ok(SqlAccumulator)` to `()` — `SqlAccumulator` is not
+        // `Debug`, so the typed error (the only thing under test) can format.
+        let result = build_annotated_select_for_fetch(&qs, |acc| agg.push_plain_columns(acc), None)
+            .map(|_| ());
+        assert!(
+            matches!(result, Err(PortablePredicateError::EmptyVariadicFunction)),
+            "subquery-nested empty variadic must surface as EmptyVariadicFunction, \
+             not panic; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn plain_annotate_build_surfaces_subquery_lateral_ref_as_err() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let agg = aggregate_with_lateral_ref_in_subquery_filter();
+        let result = build_annotated_select_for_fetch(&qs, |acc| agg.push_plain_columns(acc), None)
+            .map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(PortablePredicateError::LateralOuterRefOutOfScope { .. })
+            ),
+            "subquery-nested lateral outer ref must surface as LateralOuterRefOutOfScope, \
+             not panic; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn grouped_annotate_build_surfaces_subquery_empty_variadic_as_err() {
+        // The grouped annotate SELECT-list path uses `push_columns_bare_after`
+        // (no synthesized `OVER ()`). It must propagate the same error.
+        use crate::pg::accumulator::SqlAccumulator;
+
+        let agg = aggregate_with_empty_variadic_in_subquery_filter();
+        let mut acc = SqlAccumulator::new("SELECT ");
+        let result = agg.push_columns_bare_after(&mut acc, false);
+        assert!(
+            matches!(result, Err(PortablePredicateError::EmptyVariadicFunction)),
+            "grouped bare emission must propagate the subquery-nested empty variadic; \
+             got {result:?}"
+        );
+    }
+
+    #[test]
+    fn annotate_tuple_slot_surfaces_subquery_lateral_ref_as_err() {
+        // A tuple where one slot is a clean aggregate and the other nests a
+        // lateral ref inside a subquery filter. The tuple `push_columns` walks
+        // every slot and propagates the first emission error.
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let good: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let bad = aggregate_with_lateral_ref_in_subquery_filter();
+        let tuple = (good.sum(), bad);
+        let result =
+            build_annotated_select_for_fetch(&qs, |acc| tuple.push_plain_columns(acc), None)
+                .map(|_| ());
+        assert!(
+            matches!(
+                result,
+                Err(PortablePredicateError::LateralOuterRefOutOfScope { .. })
+            ),
+            "a poisoned tuple slot must surface its subquery-nested lateral ref; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn clean_subquery_filter_still_builds_ok() {
+        // Regression guard: a well-formed `EXISTS (...)` subquery filter (no
+        // empty variadic, no lateral ref) must still build successfully — the
+        // propagation change must not reject valid correlated-subquery filters.
+        use crate::expr::Expr;
+        use crate::expr::subquery::Exists;
+
+        let inner: QuerySet<Acc> = QuerySet::new().filter_expr(|_| {
+            FieldRef::<Acc, i64>::new("amount")
+                .as_expr()
+                .gt(Expr::literal(0i64))
+        });
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let agg = amount.sum().filter(Exists::new(inner).as_expr());
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let acc = build_annotated_select_for_fetch(&qs, |acc| agg.push_plain_columns(acc), None)
+            .expect("a clean correlated-subquery aggregate filter must still build");
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("EXISTS ("),
+            "expected EXISTS subquery in SQL: {sql}"
+        );
+        assert!(
+            sql.contains("FILTER (WHERE"),
+            "expected aggregate FILTER in SQL: {sql}"
         );
     }
 }

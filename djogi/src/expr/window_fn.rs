@@ -347,25 +347,26 @@ macro_rules! define_window_rank_fn {
                 self.alias
             }
 
-            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+            pub(crate) fn push_annotated_column(
+                &self,
+                acc: &mut SqlAccumulator,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql($sql_name);
                 acc.push_sql("()");
-                // `emit` only fails on an empty variadic `WindowTerm::Expr`,
-                // which the fetch-time legality gate denies before any
-                // annotation reaches SQL build: `check_legality()` (run on
-                // every annotate terminal — single-Model, grouped, joined)
-                // rejects it via `WindowSpec::has_empty_variadic_term`, and the
-                // joined terminal's `is_joined_safe()` additionally rejects it
-                // via `is_allowed_window_expr_node`. Reaching an `Err` here
-                // would mean those gates and the emitter drifted out of sync.
-                self.window.emit(acc).expect(
-                    "window spec passed the fetch-time validation gate before SQL emission",
-                );
+                // `emit` fails on an empty variadic or a lateral outer ref in a
+                // `WindowTerm::Expr`. The fetch-time `check_legality` gate denies
+                // those when they appear directly in a window term, but it
+                // cannot inspect a type-erased subquery predicate nested inside
+                // a window expression; propagating the emit `Result` keeps this
+                // path panic-free regardless of what the static walkers can
+                // reach.
+                self.window.emit(acc)?;
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
                         .expect("window function annotations are checked before SQL emission"),
                 );
+                Ok(())
             }
 
             // Inherent comparison wrappers — keep `use djogi::RowNumber; w.lte(3)`
@@ -555,25 +556,24 @@ macro_rules! impl_zero_arg_f64_window {
                 self.alias
             }
 
-            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+            pub(crate) fn push_annotated_column(
+                &self,
+                acc: &mut SqlAccumulator,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql($sql_name);
                 acc.push_sql("()");
-                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
-                // the fetch-time legality gate denies before any annotation
-                // reaches SQL build: `check_legality()` (run on every annotate
-                // terminal — single-Model, grouped, joined) rejects it via
-                // `WindowSpec::has_empty_variadic_term`, and the joined
-                // terminal's `is_joined_safe()` additionally rejects it via
-                // `is_allowed_window_expr_node`. Reaching an `Err` here would
-                // mean those gates and the emitter drifted out of sync.
-                self.window.emit(acc).expect(
-                    "window spec passed the fetch-time validation gate before SQL emission",
-                );
+                // `emit` fails on an empty variadic or a lateral outer ref in a
+                // `WindowTerm::Expr`, including one nested inside a type-erased
+                // subquery predicate the static `check_legality` walkers cannot
+                // inspect. Propagating the emit `Result` keeps this path
+                // panic-free.
+                self.window.emit(acc)?;
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
                         .expect("window function annotations are checked before SQL emission"),
                 );
+                Ok(())
             }
 
             // ── f64 qualify helpers ─────────────────────────────────────────────
@@ -709,26 +709,24 @@ impl NtileWindow {
         self.alias
     }
 
-    pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+    pub(crate) fn push_annotated_column(
+        &self,
+        acc: &mut SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         acc.push_sql("NTILE(");
         acc.push_bind(self.buckets as i64);
         acc.push_sql(")");
-        // `emit` only fails on an empty variadic `WindowTerm::Expr`, which the
-        // fetch-time legality gate denies before any annotation reaches SQL
-        // build: `check_legality()` (run on every annotate terminal —
-        // single-Model, grouped, joined) rejects it via
-        // `WindowSpec::has_empty_variadic_term`, and the joined terminal's
-        // `is_joined_safe()` additionally rejects it via
-        // `is_allowed_window_expr_node`. Reaching an `Err` here would mean those
-        // gates and the emitter drifted out of sync.
-        self.window
-            .emit(acc)
-            .expect("window spec passed the fetch-time validation gate before SQL emission");
+        // `emit` fails on an empty variadic or a lateral outer ref in a
+        // `WindowTerm::Expr`, including one nested inside a type-erased subquery
+        // predicate the static `check_legality` walkers cannot inspect.
+        // Propagating the emit `Result` keeps this path panic-free.
+        self.window.emit(acc)?;
         acc.push_sql(" AS ");
         acc.push_sql(
             self.alias
                 .expect("window function annotations are checked before SQL emission"),
         );
+        Ok(())
     }
 }
 
@@ -816,27 +814,26 @@ macro_rules! define_column_arg_window_fn {
                 self.alias
             }
 
-            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+            pub(crate) fn push_annotated_column(
+                &self,
+                acc: &mut SqlAccumulator,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql($sql_name);
                 acc.push_sql("(");
                 acc.push_sql(self.target_column);
                 acc.push_sql(")");
-                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
-                // the fetch-time legality gate denies before any annotation
-                // reaches SQL build: `check_legality()` (run on every annotate
-                // terminal — single-Model, grouped, joined) rejects it via
-                // `WindowSpec::has_empty_variadic_term`, and the joined
-                // terminal's `is_joined_safe()` additionally rejects it via
-                // `is_allowed_window_expr_node`. Reaching an `Err` here would
-                // mean those gates and the emitter drifted out of sync.
-                self.window.emit(acc).expect(
-                    "window spec passed the fetch-time validation gate before SQL emission",
-                );
+                // `emit` fails on an empty variadic or a lateral outer ref in a
+                // `WindowTerm::Expr`, including one nested inside a type-erased
+                // subquery predicate the static `check_legality` walkers cannot
+                // inspect. Propagating the emit `Result` keeps this path
+                // panic-free.
+                self.window.emit(acc)?;
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
                         .expect("window function annotations are checked before SQL emission"),
                 );
+                Ok(())
             }
         }
     };
@@ -963,7 +960,10 @@ macro_rules! impl_lead_lag {
                 self.alias
             }
 
-            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+            pub(crate) fn push_annotated_column(
+                &self,
+                acc: &mut SqlAccumulator,
+            ) -> Result<(), crate::query::portable::PortablePredicateError> {
                 acc.push_sql($sql_name);
                 acc.push_sql("(");
                 acc.push_sql(self.target_column);
@@ -972,22 +972,18 @@ macro_rules! impl_lead_lag {
                     acc.push_bind(off);
                 }
                 acc.push_sql(")");
-                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
-                // the fetch-time legality gate denies before any annotation
-                // reaches SQL build: `check_legality()` (run on every annotate
-                // terminal — single-Model, grouped, joined) rejects it via
-                // `WindowSpec::has_empty_variadic_term`, and the joined
-                // terminal's `is_joined_safe()` additionally rejects it via
-                // `is_allowed_window_expr_node`. Reaching an `Err` here would
-                // mean those gates and the emitter drifted out of sync.
-                self.window.emit(acc).expect(
-                    "window spec passed the fetch-time validation gate before SQL emission",
-                );
+                // `emit` fails on an empty variadic or a lateral outer ref in a
+                // `WindowTerm::Expr`, including one nested inside a type-erased
+                // subquery predicate the static `check_legality` walkers cannot
+                // inspect. Propagating the emit `Result` keeps this path
+                // panic-free.
+                self.window.emit(acc)?;
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
                         .expect("window function annotations are checked before SQL emission"),
                 );
+                Ok(())
             }
         }
     };
@@ -1075,28 +1071,26 @@ impl<V> NthValueWindow<V> {
         self.alias
     }
 
-    pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+    pub(crate) fn push_annotated_column(
+        &self,
+        acc: &mut SqlAccumulator,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         acc.push_sql("NTH_VALUE(");
         acc.push_sql(self.target_column);
         acc.push_sql(", ");
         acc.push_bind(self.n);
         acc.push_sql(")");
-        // `emit` only fails on an empty variadic `WindowTerm::Expr`, which the
-        // fetch-time legality gate denies before any annotation reaches SQL
-        // build: `check_legality()` (run on every annotate terminal —
-        // single-Model, grouped, joined) rejects it via
-        // `WindowSpec::has_empty_variadic_term`, and the joined terminal's
-        // `is_joined_safe()` additionally rejects it via
-        // `is_allowed_window_expr_node`. Reaching an `Err` here would mean those
-        // gates and the emitter drifted out of sync.
-        self.window
-            .emit(acc)
-            .expect("window spec passed the fetch-time validation gate before SQL emission");
+        // `emit` fails on an empty variadic or a lateral outer ref in a
+        // `WindowTerm::Expr`, including one nested inside a type-erased subquery
+        // predicate the static `check_legality` walkers cannot inspect.
+        // Propagating the emit `Result` keeps this path panic-free.
+        self.window.emit(acc)?;
         acc.push_sql(" AS ");
         acc.push_sql(
             self.alias
                 .expect("window function annotations are checked before SQL emission"),
         );
+        Ok(())
     }
 }
 

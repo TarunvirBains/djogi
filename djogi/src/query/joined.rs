@@ -1179,7 +1179,7 @@ where
     let mut acc = SqlAccumulator::new("SELECT ");
     push_aliased_columns::<L>(&mut acc, PairSide::Left, true);
     push_aliased_columns::<R>(&mut acc, PairSide::Right, false);
-    aggregates.push_columns(&mut acc);
+    aggregates.push_columns(&mut acc)?;
 
     acc.push_sql(" FROM ");
     acc.push_sql(L::table_name());
@@ -1813,7 +1813,11 @@ impl<C: ClosureModel> PairClosureKinshipSum<C> {
 impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKinshipSum<C> {
     type Decoded = f64;
 
-    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
+    fn push_column(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         acc.push_sql(", ");
         Self::emit_inline(acc);
         // Bare aggregate emission — no `OVER (...)` window clause.
@@ -1837,10 +1841,18 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
         // outer GROUP BY.
         acc.push_sql(" AS ");
         acc.push_sql(annotation_alias(slot));
+        // `emit_inline` pushes only fixed SQL + validated closure-metadata
+        // column names — no user expression, so it cannot fail. The `Ok`
+        // satisfies the fallible trait surface uniformly.
+        Ok(())
     }
 
-    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-        self.push_column_bare_after(acc, slot, true);
+    fn push_column_bare(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        self.push_column_bare_after(acc, slot, true)
     }
 
     fn push_column_bare_after(
@@ -1848,13 +1860,14 @@ impl<C: ClosureModel> crate::query::annotate::AnnotationSlot for PairClosureKins
         acc: &mut SqlAccumulator,
         slot: usize,
         has_previous_columns: bool,
-    ) {
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         if has_previous_columns {
             acc.push_sql(", ");
         }
         Self::emit_inline(acc);
         acc.push_sql(" AS ");
         acc.push_sql(annotation_alias(slot));
+        Ok(())
     }
 
     fn decode_column(
@@ -2224,15 +2237,26 @@ impl<L: Model, R: Model> PairAreaOverlapRatio<L, R> {
 impl<L: Model, R: Model> crate::query::annotate::AnnotationSlot for PairAreaOverlapRatio<L, R> {
     type Decoded = f64;
 
-    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
+    fn push_column(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         acc.push_sql(", ");
         self.emit_inline(acc);
         acc.push_sql(" AS ");
         acc.push_sql(annotation_alias(slot));
+        // `emit_inline` pushes only fixed SQL + validated geography column
+        // names — no user expression, so it cannot fail.
+        Ok(())
     }
 
-    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
-        self.push_column_bare_after(acc, slot, true);
+    fn push_column_bare(
+        &self,
+        acc: &mut SqlAccumulator,
+        slot: usize,
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
+        self.push_column_bare_after(acc, slot, true)
     }
 
     fn push_column_bare_after(
@@ -2240,13 +2264,14 @@ impl<L: Model, R: Model> crate::query::annotate::AnnotationSlot for PairAreaOver
         acc: &mut SqlAccumulator,
         slot: usize,
         has_previous_columns: bool,
-    ) {
+    ) -> Result<(), crate::query::portable::PortablePredicateError> {
         if has_previous_columns {
             acc.push_sql(", ");
         }
         self.emit_inline(acc);
         acc.push_sql(" AS ");
         acc.push_sql(annotation_alias(slot));
+        Ok(())
     }
 
     fn decode_column(
@@ -2670,7 +2695,8 @@ mod tests {
     fn pair_closure_kinship_sum_emits_wright_style_summation() {
         let sum: PairClosureKinshipSum<MiniClosure> = PairClosureKinshipSum::new();
         let mut acc = SqlAccumulator::new("");
-        crate::query::annotate::AnnotationSlot::push_column(&sum, &mut acc, 0);
+        crate::query::annotate::AnnotationSlot::push_column(&sum, &mut acc, 0)
+            .expect("kinship-sum slot emission is infallible");
         let sql = acc.sql();
         // SUM(la.<path_count> × ra.<path_count> × 0.5^(la.<depth> + ra.<depth> + 1))
         assert!(
@@ -3874,7 +3900,8 @@ mod tests {
             crate::query::FieldRef::new("territory");
         let overlap: PairAreaOverlapRatio<Mini, Mini> = PairAreaOverlapRatio::new(l_col, r_col);
         let mut acc = SqlAccumulator::new("");
-        crate::query::annotate::AnnotationSlot::push_column(&overlap, &mut acc, 0);
+        crate::query::annotate::AnnotationSlot::push_column(&overlap, &mut acc, 0)
+            .expect("area-overlap slot emission is infallible");
         let sql = acc.sql();
         // Numerator — left-normalised intersection area in square meters.
         assert!(
@@ -3922,7 +3949,8 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         crate::query::annotate::AnnotationSlot::push_column_bare_after(
             &overlap, &mut acc, 0, false,
-        );
+        )
+        .expect("area-overlap slot emission is infallible");
         let sql = acc.sql();
         assert!(
             sql.starts_with("COALESCE(ST_Area("),

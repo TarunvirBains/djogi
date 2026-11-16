@@ -353,16 +353,26 @@ impl WindowSpec {
     ///
     /// # Errors
     /// Returns [`PortablePredicateError`] when a [`WindowTerm::Expr`] node
-    /// fails to emit — today the only such case is
-    /// [`PortablePredicateError::EmptyVariadicFunction`], raised by
-    /// [`crate::expr::sql::emit_expr`] for an empty `COALESCE()` / `LEAST()` /
-    /// `GREATEST()`. That shape is rejected upstream at the fetch-time
-    /// [`WindowSpec::is_pair_qualified`] gate (via
-    /// [`is_allowed_window_expr_node`], which denies empty variadics), so it
-    /// does not reach a well-formed query. Propagating the error here rather
-    /// than unwrapping keeps emission panic-free as defense in depth against
-    /// any future gate/emitter drift. Plain [`WindowTerm::Column`] terms and
-    /// the frame clause never fail.
+    /// fails to emit via [`crate::expr::sql::emit_expr`]. The two reachable
+    /// cases are:
+    /// - [`PortablePredicateError::EmptyVariadicFunction`] — an empty
+    ///   `COALESCE()` / `LEAST()` / `GREATEST()` in the window expression.
+    /// - [`PortablePredicateError::LateralOuterRefOutOfScope`] — a lateral outer
+    ///   ref ([`crate::expr::node::ExprNode::OuterRefAlias`]) in the window
+    ///   expression, emitted outside a lateral-inner scope.
+    ///
+    /// Both shapes are rejected upstream for a *well-formed* query: the
+    /// joined-only [`WindowSpec::is_pair_qualified`] gate (via
+    /// [`is_allowed_window_expr_node`]) denies them, and every annotate terminal
+    /// additionally runs
+    /// [`crate::query::annotate::check_window_annotation_legality`] (via
+    /// [`WindowSpec::has_empty_variadic_term`] /
+    /// [`WindowSpec::has_lateral_outer_ref_term`]). Those static walkers cannot
+    /// inspect a type-erased subquery predicate nested inside a window
+    /// expression, so propagating the error here — rather than unwrapping — is
+    /// what keeps emission panic-free on inputs the walkers cannot reach, and is
+    /// defense in depth against any future gate/emitter drift. Plain
+    /// [`WindowTerm::Column`] terms and the frame clause never fail.
     pub(crate) fn emit(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
         acc.push_sql(" OVER (");
         let mut spacer = false;
