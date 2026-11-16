@@ -12,6 +12,11 @@
 //! keys, type mismatches, and duplicate keys for free — matching the prior
 //! hand-rolled behaviour without each new key duplicating the same
 //! `Meta::NameValue` match arm.
+// Darling's #[derive(FromField)] emits struct-initialization syntax of the
+// form `field_name: field_name` using the user's source span. Rust 1.100.0
+// clippy now lints proc-macro–generated code at those spans; suppress here
+// since the redundancy is in darling's emitter, not in handwritten code.
+#![allow(clippy::redundant_field_names)]
 
 use std::collections::BTreeSet;
 
@@ -1816,9 +1821,6 @@ pub struct FieldAttrs {
     /// multi-attr merge path needs this opt-in to exist at all.
     /// Users never read this field; it is the darling landing site for
     /// the rename. Read [`Self::expose`] instead.
-    // Allow on the field: darling generates `expose_raw: expose_raw` using this
-    // field's span; the field-level allow suppresses the lint on that generated code.
-    #[allow(clippy::redundant_field_names)]
     #[darling(multiple, rename = "expose")]
     pub expose_raw: Vec<ExposeSpec>,
 
