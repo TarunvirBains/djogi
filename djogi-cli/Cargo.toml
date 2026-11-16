@@ -13,6 +13,9 @@ readme = "README.md"
 keywords = ["djogi", "cli", "migrate", "orm"]
 categories = ["command-line-utilities", "database"]
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "djogi"
 path = "src/main.rs"

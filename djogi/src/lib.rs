@@ -327,6 +327,36 @@ pub mod __private {
         pub use crate::query::portable::{PortablePredicateError, SqlEmitContext};
         pub use crate::query::q::{IntoQ, Q};
 
+        /// Hidden macro-support forwarding wrapper for `filter_clause_is_null`.
+        /// Routes the `pub(crate)` implementation through a `pub fn` so
+        /// adopter-crate macro-emitted code can call
+        /// `::djogi::__private::query::filter_clause_is_null`. A `pub use`
+        /// re-export cannot do this: `pub use` of a `pub(crate)` item is not
+        /// visible to external crates (Rust `E0364`), so the bridge must be an
+        /// explicit forwarding `pub fn`. See
+        /// `djogi::query::filter::filter_clause_is_null` for the full contract.
+        #[doc(hidden)]
+        #[inline]
+        #[must_use]
+        pub fn filter_clause_is_null(column: &'static str) -> crate::query::filter::FilterClause {
+            crate::query::filter::filter_clause_is_null(column)
+        }
+
+        /// Hidden macro-support forwarding wrapper for `filter_clause_is_not_null`.
+        /// Routes the `pub(crate)` implementation through a `pub fn` so
+        /// adopter-crate macro-emitted code can call
+        /// `::djogi::__private::query::filter_clause_is_not_null`. See
+        /// `djogi::query::filter::filter_clause_is_not_null` for the full
+        /// contract.
+        #[doc(hidden)]
+        #[inline]
+        #[must_use]
+        pub fn filter_clause_is_not_null(
+            column: &'static str,
+        ) -> crate::query::filter::FilterClause {
+            crate::query::filter::filter_clause_is_not_null(column)
+        }
+
         // Hidden re-export of the portable SQL helper
         // module. PR2d's macro-emitted
         // `Model::__djogi_emit_field_predicate` override consumes

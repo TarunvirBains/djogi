@@ -86,6 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard fires for all three wrapper permutations; one compile-pass fixture
   verifies canonical narrowing still compiles.
 
+## [0.1.0-alpha.18] — 2026-11-15
+
+### Added
+
+- **IS NULL / IS NOT NULL filter methods:** `#[derive(Model)]` now generates
+  `{field}_is_null()` and `{field}_is_not_null()` convenience methods on
+  `{Model}Filter` for every field typed `Option<T>`. These methods build the
+  correct `IS NULL` / `IS NOT NULL` SQL predicates without a `$N` parameter
+  bind, composing with all other filter conditions via the standard `AND`
+  chain. If a generated method name would collide with the name of another
+  field's setter, that method is suppressed and the closure-based API
+  (`|f| f.field_name().is_null()`) remains available as the fallback.
+  (Closes #318)
+
 ## [0.1.0-alpha.17] - 2026-06-15
 
 ### Added

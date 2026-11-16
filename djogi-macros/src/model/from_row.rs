@@ -41,7 +41,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
 
-use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
+use super::attrs::{FieldAttrs, ModelAttrs};
 use super::sql_bind::{bind_kind, decode_field_tokens, is_nullable, is_tracked_inner};
 
 /// Emit `impl FromPgRow for <Struct>` — the canonical row-decode
@@ -82,10 +82,7 @@ pub fn expand(
     // Build a codec vector aligned with ALL struct fields (None for framework,
     // Some/None for users). `field_attrs` is user-only but `struct_item.fields`
     // includes framework fields at the front, so we can't zip them directly.
-    let n_framework = match model_attrs.pk {
-        PkStrategy::None => 2, // created_at, updated_at only
-        _ => 3,                // id, created_at, updated_at
-    };
+    let n_framework = model_attrs.framework_field_count();
     let codec_vec: Vec<Option<(String, String, String)>> = struct_item
         .fields
         .iter()

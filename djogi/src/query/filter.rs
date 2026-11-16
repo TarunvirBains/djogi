@@ -125,19 +125,23 @@ pub enum Lookup<V> {
 impl<V: IntoFilterValue> Lookup<V> {
     /// Project this lookup into the `(operator, value)` pair its SQL
     /// leaf will carry.
-    /// This is the **single point** where operator-value structural
-    /// invariants are established:
+    /// This is the primary path where operator-value structural
+    /// invariants are established for value-carrying lookups:
     /// - `Between` always pairs with [`FilterValue::Pair`];
     /// - `In` / `NotIn` always pair with [`FilterValue::List`];
     /// - `IsNull` / `IsNotNull` always pair with [`FilterValue::Null`];
     /// - every other variant pairs with a scalar [`FilterValue`].
     ///   Downstream code ([`FilterClause::from_lookup`] in the clause path,
     ///   the closure API through [`crate::query::field`]) funnels every
-    ///   lookup through this method, so the `unreachable!()` branches in
-    ///   [`crate::query::sql::emit_leaf`] that guard mismatched op/value
-    ///   shapes are genuinely unreachable from safe code. If a new
-    ///   [`Lookup`] variant is added, this method is the only place the
-    ///   pairing needs to be declared.
+    ///   value-carrying lookup through this method. The hidden
+    ///   [`filter_clause_is_null`] / [`filter_clause_is_not_null`]
+    ///   macro-support helpers establish the same `IsNull`/`IsNotNull`↔`Null`
+    ///   pairing independently (they bypass `Lookup` entirely since they
+    ///   carry no value). Together, all three paths uphold the invariant, so
+    ///   the `unreachable!()` branches in [`crate::query::sql::emit_leaf`]
+    ///   that guard mismatched op/value shapes are genuinely unreachable from
+    ///   safe code. If a new [`Lookup`] variant is added, this method is the
+    ///   only place the value-carrying pairing needs to be declared.
     /// # Operator mapping
     /// The `Contains` / `StartsWith` / `EndsWith` variants map to the
     /// **case-insensitive** `ILIKE`-family operators (`IContains`
@@ -196,12 +200,17 @@ impl<V: IntoFilterValue> Lookup<V> {
 /// clause next to an `i32` clause next to a `String` clause) without
 /// per-clause boxing gymnastics.
 /// # Invariants
-/// Fields are `pub(crate)` so the only path to a `FilterClause` from
-/// outside the crate is [`FilterClause::from_lookup`]. That funnel routes
-/// every value through [`Lookup::into_op_value`], which pairs each
-/// [`LookupOp`] with the structurally correct [`FilterValue`] shape
-/// (`Between`↔`Pair`, `In`/`NotIn`↔`List`, `IsNull`/`IsNotNull`↔`Null`,
-/// …). Consequently, the `unreachable!()` branches in the SQL emitter
+/// Fields are `pub(crate)`, so the paths to a `FilterClause` from outside
+/// the crate are [`FilterClause::from_lookup`] (value-carrying lookups) and
+/// the hidden `filter_clause_is_null` / `filter_clause_is_not_null`
+/// crate-internal macro-support helpers (value-free null tests, reached from
+/// adopter code via `::djogi::__private::query::*`). All three uphold the same
+/// op/value pairing invariant: `from_lookup` routes every value through
+/// [`Lookup::into_op_value`], which pairs each [`LookupOp`] with the
+/// structurally correct [`FilterValue`] shape (`Between`↔`Pair`,
+/// `In`/`NotIn`↔`List`, `IsNull`/`IsNotNull`↔`Null`, …), and the null
+/// helpers construct the `IsNull`/`IsNotNull`↔`Null` pairing directly.
+/// Consequently, the `unreachable!()` branches in the SQL emitter
 /// (`sql::emit_leaf`) that guard against mismatched op/value pairings
 /// are genuinely unreachable from safe code — downstream crates cannot
 /// hand-craft an invalid clause by poking at fields directly.
@@ -222,7 +231,9 @@ pub struct FilterClause {
 /// This is hidden implementation surface: generated `{Model}Filter`
 /// `IntoQ` impls need to inspect the erased column/op/value tuple after
 /// consuming the clause, but external callers still cannot construct a
-/// `FilterClause` except through [`FilterClause::from_lookup`].
+/// `FilterClause` except through [`FilterClause::from_lookup`] or the
+/// hidden [`filter_clause_is_null`] / [`filter_clause_is_not_null`]
+/// macro-support helpers.
 #[doc(hidden)]
 pub struct FilterClauseParts {
     pub column: &'static str,
@@ -241,13 +252,15 @@ impl FilterClauseParts {
 
 impl FilterClause {
     /// Project a `Lookup<V>` into a type-erased `FilterClause`.
-    /// This is the **only** public constructor for `FilterClause` — every
-    /// macro-emitted setter funnels through it, and the `FilterClause`
-    /// fields are `pub(crate)` so downstream crates cannot sidestep it.
-    /// Pairing operator and value happens in a single place
-    /// ([`Lookup::into_op_value`]), so the `unreachable!()` branches in
-    /// [`crate::query::sql::emit_leaf`] that guard shape mismatches are
-    /// genuinely unreachable from safe code.
+    /// This is the primary constructor for `FilterClause` — every
+    /// value-carrying macro-emitted setter funnels through it, and the
+    /// `FilterClause` fields are `pub(crate)` so downstream crates cannot
+    /// sidestep it. (The value-free null tests go through the hidden
+    /// `filter_clause_is_null` / `filter_clause_is_not_null` crate-internal
+    /// helpers instead, which carry no `Lookup<V>`.) Pairing operator and value
+    /// happens in a single place ([`Lookup::into_op_value`]), so the
+    /// `unreachable!()` branches in [`crate::query::sql::emit_leaf`] that
+    /// guard shape mismatches are genuinely unreachable from safe code.
     /// The `V: IntoFilterValue` bound is the same one the typed
     /// [`FieldRef`] lookup methods use, so newtype columns and
     /// string-like types compose identically in both surfaces.
@@ -377,9 +390,82 @@ where
     }
 }
 
+/// Build an `IS NULL` clause without routing through `Lookup<V>`.
+///
+/// Hidden macro support for the generated `<field>_is_null()` setters on
+/// `{Model}Filter`. Unlike [`FilterClause::from_lookup`], this imposes **no**
+/// `IntoFilterValue` bound — `IS NULL` carries no bind value, so a nullable
+/// column whose inner type does not implement that trait (`Option<Jsonb<P>>`,
+/// `Option<GeoPoint>`, user newtypes) can still be null-checked through the
+/// struct-filter path. Parity with the closure API's
+/// [`FieldRef`]`::is_null`.
+///
+/// `column` is a macro-baked `&'static str` literal, never user input — the
+/// same contract every other `FilterClause` constructor upholds. The
+/// `(IsNull, Null)` pairing matches [`Lookup::into_op_value`], so the SQL
+/// emitter's `unreachable!()` op/value guards stay unreachable.
+///
+/// `pub(crate)` so this exact path (`djogi::query::filter::filter_clause_is_null`)
+/// is not an external surface; macro-emitted adopter code reaches the
+/// functionality through the `::djogi::__private::query::filter_clause_is_null`
+/// forwarding wrapper instead.
+///
+/// [`FieldRef`]: crate::query::FieldRef
+#[doc(hidden)]
+#[must_use]
+pub(crate) fn filter_clause_is_null(column: &'static str) -> FilterClause {
+    FilterClause {
+        column,
+        op: LookupOp::IsNull,
+        value: FilterValue::Null,
+    }
+}
+
+/// Build an `IS NOT NULL` clause without routing through `Lookup<V>`.
+///
+/// Hidden macro support for the generated `<field>_is_not_null()` setters.
+/// Same value-free contract as [`filter_clause_is_null`] — no
+/// `IntoFilterValue` bound on the column's inner type, and reached from
+/// adopter code via the `::djogi::__private::query::filter_clause_is_not_null`
+/// forwarding wrapper.
+#[doc(hidden)]
+#[must_use]
+pub(crate) fn filter_clause_is_not_null(column: &'static str) -> FilterClause {
+    FilterClause {
+        column,
+        op: LookupOp::IsNotNull,
+        value: FilterValue::Null,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_clause_is_null_builds_null_clause() {
+        // `filter_clause_is_null(col)` is the value-free constructor the
+        // macro's `<field>_is_null()` setter calls for `Option<T>` columns
+        // whose inner type need not implement `IntoFilterValue`. It must
+        // pair `LookupOp::IsNull` with `FilterValue::Null` — the identical
+        // shape `Lookup::IsNull.into_op_value()` produces — so the SQL
+        // emitter's `unreachable!()` op/value guards stay unreachable. The
+        // `op` assertion also guards against the two helpers being swapped:
+        // without it, a swapped body would leave both tests green while
+        // emitting the wrong SQL (`IS NULL` vs `IS NOT NULL`).
+        let clause = filter_clause_is_null("score");
+        assert_eq!(clause.column, "score");
+        assert_eq!(clause.op, LookupOp::IsNull);
+        assert!(matches!(clause.value, FilterValue::Null));
+    }
+
+    #[test]
+    fn filter_clause_is_not_null_builds_null_clause() {
+        let clause = filter_clause_is_not_null("score");
+        assert_eq!(clause.column, "score");
+        assert_eq!(clause.op, LookupOp::IsNotNull);
+        assert!(matches!(clause.value, FilterValue::Null));
+    }
 
     #[test]
     fn lookup_eq_projects_to_eq_op_and_bool_value() {
@@ -391,8 +477,11 @@ mod tests {
 
     #[test]
     fn filter_clause_from_lookup_composes() {
-        // `FilterClause::from_lookup` is the single public constructor
-        // for `FilterClause`. It funnels through `Lookup::into_op_value`,
+        // `FilterClause::from_lookup` is the primary constructor for
+        // `FilterClause` (value-carrying lookups). The hidden
+        // `filter_clause_is_null` / `filter_clause_is_not_null` helpers
+        // are the value-free constructor pair for null checks.
+        // `from_lookup` funnels through `Lookup::into_op_value`,
         // which is the one place operator-value structural pairings
         // (Between↔Pair, In/NotIn↔List, IsNull/IsNotNull↔Null, …) are
         // established. This test pins a representative sample from each

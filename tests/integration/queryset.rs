@@ -506,6 +506,83 @@ async fn filter_struct_single_clause_unwraps_to_leaf(mut ctx: djogi::DjogiContex
     assert_eq!(struct_rows.len(), 3);
 }
 
+#[djogi::djogi_test(sync_models = [Post])]
+async fn filter_struct_null_parity(mut ctx: DjogiContext) {
+    // Seed two rows with non-null scores and two with null scores.
+    // Titles are distinct so failures name which row was affected.
+    let p1 = create_post(&mut ctx, "post-score-42", "body", true, 0, Some(42))
+        .await
+        .unwrap();
+    let p2 = create_post(&mut ctx, "post-score-99", "body", true, 0, Some(99))
+        .await
+        .unwrap();
+    let p3 = create_post(&mut ctx, "post-null-a", "body", true, 0, None)
+        .await
+        .unwrap();
+    let p4 = create_post(&mut ctx, "post-null-b", "body", true, 0, None)
+        .await
+        .unwrap();
+
+    let null_expected: std::collections::HashSet<_> = [p3.id, p4.id].into_iter().collect();
+    let not_null_expected: std::collections::HashSet<_> = [p1.id, p2.id].into_iter().collect();
+
+    // --- score_is_null parity ---
+    let struct_null_ids: std::collections::HashSet<_> = Post::objects()
+        .filter_struct(PostFilter::new().score_is_null())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+
+    let closure_null_ids: std::collections::HashSet<_> = Post::objects()
+        .filter(|f| f.score().is_null())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+
+    assert_eq!(
+        struct_null_ids, null_expected,
+        "score_is_null struct path returned unexpected rows"
+    );
+    assert_eq!(
+        closure_null_ids, null_expected,
+        "score_is_null closure path returned unexpected rows"
+    );
+
+    // --- score_is_not_null parity ---
+    let struct_not_null_ids: std::collections::HashSet<_> = Post::objects()
+        .filter_struct(PostFilter::new().score_is_not_null())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+
+    let closure_not_null_ids: std::collections::HashSet<_> = Post::objects()
+        .filter(|f| f.score().is_not_null())
+        .fetch_all(&mut ctx)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+
+    assert_eq!(
+        struct_not_null_ids, not_null_expected,
+        "score_is_not_null struct path returned unexpected rows"
+    );
+    assert_eq!(
+        closure_not_null_ids, not_null_expected,
+        "score_is_not_null closure path returned unexpected rows"
+    );
+}
+
 // ── bulk update / delete ──────────────────────────────────────────
 
 #[djogi::djogi_test(sync_models = [Post])]

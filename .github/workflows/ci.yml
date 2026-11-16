@@ -360,11 +360,40 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cargo/bin/lihaaf
-          key: ${{ runner.os }}-lihaaf-0.2.0
+          key: ${{ runner.os }}-lihaaf-0.2.1-e9799e2
 
       - name: Install lihaaf (compile-fixture CI gate)
         if: steps.cache-lihaaf.outputs.cache-hit != 'true'
-        run: cargo install lihaaf --version 0.2.0 --locked
+        run: cargo install --git https://github.com/TarunvirBains/lihaaf.git --rev e9799e23c9e2ef8ad2d0e969586ebfb627a2c824 lihaaf
+
+      # Diagnostic: show what cargo rustc --crate-type=dylib produces in the
+      # lihaaf target dir. Used to debug the missing release/deps/ issue on
+      # Rust 1.100.0+ (lihaaf canonicalizes deps dir and fails if absent).
+      - name: Diagnose lihaaf dylib target layout
+        run: |
+          RUSTFLAGS="${RUSTFLAGS} -C prefer-dynamic" cargo rustc -p djogi --lib --release \
+            --crate-type=dylib --message-format=json-render-diagnostics \
+            --manifest-path djogi-macros/Cargo.toml \
+            --target-dir /tmp/lihaaf-diag 2>/dev/null \
+            | python3 -c "
+          import sys, json
+          for line in sys.stdin:
+              line = line.strip()
+              if not line.startswith('{'):
+                  continue
+              try:
+                  msg = json.loads(line)
+              except Exception:
+                  continue
+              if msg.get('reason') == 'compiler-artifact':
+                  t = msg.get('target', {})
+                  if 'dylib' in t.get('crate_types', []) or 'dylib' in t.get('kind', []):
+                      print('DYLIB ARTIFACT:', t.get('name'), msg.get('filenames'))
+          " || true
+          echo '=== /tmp/lihaaf-diag/release/ top-level ==='
+          ls /tmp/lihaaf-diag/release/ 2>/dev/null | head -20 || echo "release/ missing"
+          echo '=== release/deps/ exists? ==='
+          ls /tmp/lihaaf-diag/release/deps/ 2>/dev/null | head -5 || echo "release/deps/ missing"
 
       # Macro-fixture gate — currently 323 proc-macro fixtures using
       # lihaaf's build-once-dylib + per-fixture-rustc model:

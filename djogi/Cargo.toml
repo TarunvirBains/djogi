@@ -13,6 +13,9 @@ readme = "../README.md"
 keywords = ["orm", "postgres", "web-framework", "model", "migrations"]
 categories = ["database", "web-programming", "asynchronous"]
 
+[lints]
+workspace = true
+
 [features]
 # auth-argon2 — enables PasswordHash::hash (Argon2id hashing) and the
 # constant-time verify path. Without this flag, PasswordHash::verify always

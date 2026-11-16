@@ -12,6 +12,11 @@
 //! keys, type mismatches, and duplicate keys for free — matching the prior
 //! hand-rolled behaviour without each new key duplicating the same
 //! `Meta::NameValue` match arm.
+// Darling's #[derive(FromField)] emits struct-initialization syntax of the
+// form `field_name: field_name` using the user's source span. Rust 1.100.0
+// clippy now lints proc-macro–generated code at those spans; suppress here
+// since the redundancy is in darling's emitter, not in handwritten code.
+#![allow(clippy::redundant_field_names)]
 
 use std::collections::BTreeSet;
 
@@ -1689,6 +1694,8 @@ impl FtsSpec {
 // use by later / codegen). Suppress dead_code at struct
 // granularity so new fields don't spuriously re-trip the lint.
 #[allow(dead_code)]
+// darling's FromField derive emits `field: field` initializations on Rust 1.100.0+
+#[allow(clippy::redundant_field_names)]
 #[derive(Debug, FromField)]
 #[darling(attributes(field), allow_unknown_fields)]
 pub struct FieldAttrs {

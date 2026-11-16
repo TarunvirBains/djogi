@@ -6,6 +6,9 @@ license = "Apache-2.0"
 publish = false
 description = "Runnable Djogi example: tracking African elephant herds across borders."
 
+[lints]
+workspace = true
+
 [dependencies]
 # Djogi core (no new feature flag needed): `Model::materialize_closure`,
 # `tree_descendants(edge, root_id)`, `search_breadth_first_by` /
