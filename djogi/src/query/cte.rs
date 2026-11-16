@@ -1293,7 +1293,9 @@ where
         M: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            // Empty-queryset short-circuit: the consumer is structurally none
+            // (e.g. `QuerySet::none()`), so no SQL is issued — matches the
+            // terminal contract of the underlying `QuerySet`.
             if self.consumer.is_empty() {
                 return Ok(vec![]);
             }
@@ -1317,7 +1319,9 @@ where
         M: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            // Empty-queryset short-circuit: the consumer is structurally none
+            // (e.g. `QuerySet::none()`), so no SQL is issued — matches the
+            // terminal contract of the underlying `QuerySet`.
             if self.consumer.is_empty() {
                 return Ok(None);
             }
@@ -1345,7 +1349,9 @@ where
         M: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            // Empty-queryset short-circuit: the consumer is structurally none
+            // (e.g. `QuerySet::none()`), so no SQL is issued — matches the
+            // terminal contract of the underlying `QuerySet`.
             if self.consumer.is_empty() {
                 return Ok(0_i64);
             }
@@ -1367,7 +1373,9 @@ where
         M: 'ctx,
     {
         async move {
-            // TASK6:empty_contract — consumer is structural-none; no SQL issued.
+            // Empty-queryset short-circuit: the consumer is structurally none
+            // (e.g. `QuerySet::none()`), so no SQL is issued — matches the
+            // terminal contract of the underlying `QuerySet`.
             if self.consumer.is_empty() {
                 return Ok(false);
             }

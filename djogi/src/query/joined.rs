@@ -3106,17 +3106,15 @@ mod tests {
     }
 
     // ──
-    // Round 2 surfaced four merge blockers in the substrate:
-    // 1. PairClosureKinshipSum<C> emitted C's metadata without
-    // validation, and no gate tied the aggregate's C to the join's C.
-    // 2. The emitters fell back to `pk_column().unwrap_or("id")` for
-    // `PkType::None` / `PkType::Composite` models — silent
-    // degradation rather than a typed error.
-    // 3. Joined annotations accepted ordinary `AggregateExpr<V>` which
-    // emits bare-column SQL — ambiguous on self-joins.
-    // 4. Source comments and fixture comments used GH close keywords
-    // against #99 / #84 (fixed via wording sweep — covered by grep
-    // verification at commit time rather than a unit test).
+    // The tests below pin three safety invariants of the pair-tuple
+    // annotation substrate:
+    // 1. `PairClosureKinshipSum<C>` validates C's metadata before emission,
+    // and a gate ties the aggregate's C to the join's C so a mismatched or
+    // hostile `impl ClosureModel` is rejected before any SQL is built.
+    // 2. The emitters surface a typed error (never a silent `"id"` fallback)
+    // for `PkType::None` / `PkType::Composite` models.
+    // 3. Joined annotations reject ordinary `AggregateExpr<V>`, whose
+    // bare-column SQL is ambiguous on self-joins.
 
     // ── Blocker 1.A — PairClosureKinshipSum<C> validates C's metadata ────
 
@@ -4154,11 +4152,14 @@ mod tests {
     //
     // `Expr::coalesce_many(Vec::new())` (and the LEAST/GREATEST siblings)
     // build an empty variadic node. Fed into a window via the pair-expr
-    // builders, the resulting spec must be rejected at the fetch-time
-    // joined-safety gate (`is_pair_qualified()` →
-    // `AnnotationSlot::is_joined_safe()`), so the empty variadic surfaces as
-    // a typed `DjogiError::Validation` before SQL build rather than panicking
-    // deep in the window emitter.
+    // builders, the resulting spec is rejected at two fetch-time gates before
+    // SQL build, so the empty variadic surfaces as a typed error rather than
+    // panicking deep in the window emitter: `check_legality()` (run on every
+    // annotate terminal) rejects it via `WindowSpec::has_empty_variadic_term`,
+    // and the joined terminal's joined-safety gate (`is_pair_qualified()` →
+    // `AnnotationSlot::is_joined_safe()`) also rejects it. The assertions below
+    // pin the joined-safety witness specifically; the single-Model path is
+    // covered by the `check_legality` tests in `crate::query::annotate`.
 
     #[test]
     fn partition_by_pair_expr_empty_coalesce_is_rejected_by_gate() {

@@ -497,18 +497,20 @@ where
 
     fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
-        // `emit_aggregate_*` is now fallible because
-        // aggregates may carry filter expressions that contain portable
-        // subqueries. The annotation-slot trait surface is `()`-returning
-        // (changing it would cascade through every aggregate + window
-        // tuple impl), so we `.expect` here. In practice this path only
-        // sees aggregates over scalar columns — the failure modes
-        // require a nested subquery filter with a malformed portable
-        // predicate, which the type system rejects upstream. PR2c may
-        // make the trait surface Result-returning if real-world adopter
-        // code surfaces this edge case.
+        // `emit_aggregate_*` is fallible because aggregates may carry filter
+        // expressions that contain portable subqueries, and because an empty
+        // variadic (`COALESCE()` / `LEAST()` / `GREATEST()`) anywhere in the
+        // aggregate tree emits `EmptyVariadicFunction`. The annotation-slot
+        // trait surface is `()`-returning (changing it would cascade through
+        // every aggregate + window tuple impl), so we `.expect` here. Both
+        // failure modes are denied upstream before emission:
+        // `check_legality()` — run on every annotate terminal (single-Model,
+        // grouped, joined) — rejects any empty variadic via
+        // `expr_node_has_empty_variadic`, and the typed `Expr` surface rejects
+        // a malformed portable-predicate filter. Reaching an `Err` here would
+        // mean the fetch-time gate and the emitter drifted out of sync.
         emit_aggregate_with_window_and_cast(acc, &self.node)
-            .expect("aggregate annotation emission cannot fail for typed-aggregate inputs");
+            .expect("aggregate annotation emission cannot fail: empty variadics and malformed filters are rejected by check_legality before SQL build");
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
     }
@@ -526,8 +528,13 @@ where
         if has_previous_columns {
             acc.push_sql(", ");
         }
+        // See `push_column` above: emission is fallible (empty variadic +
+        // malformed portable-predicate filter), but both are rejected by
+        // `check_legality` / the typed `Expr` surface before any annotate
+        // terminal reaches SQL build, so an `Err` here signals gate/emitter
+        // drift.
         crate::query::sql::emit_aggregate_with_cast(acc, &self.node)
-            .expect("aggregate annotation emission cannot fail for typed-aggregate inputs");
+            .expect("aggregate annotation emission cannot fail: empty variadics and malformed filters are rejected by check_legality before SQL build");
         acc.push_sql(" AS ");
         acc.push_sql(aggregate_alias(slot));
     }
@@ -569,6 +576,46 @@ impl<V> PlainAnnotationSlot for AggregateExpr<V, ValueAgg> where
 #[inline]
 pub(crate) fn alias_collides_with_column(alias: &str, col: &str) -> bool {
     alias.eq_ignore_ascii_case(col)
+}
+
+/// Shared fetch-time legality check for every window-function annotation slot.
+/// # What
+/// Validates two preconditions that a window annotation must satisfy before
+/// its SQL can be built:
+/// 1. An output alias was set via `.alias("…")` — the alias is the column
+///    name annotation decode and outer `.qualify(...)` predicates reference.
+/// 2. No partition / order term carries an empty variadic (`COALESCE()` /
+///    `LEAST()` / `GREATEST()` with zero operands) — Postgres rejects the
+///    zero-argument forms, and [`crate::expr::window::WindowSpec::emit`]
+///    returns [`crate::query::PortablePredicateError::EmptyVariadicFunction`]
+///    for that shape.
+/// # Why centralized
+/// Both window-slot `impl AnnotationSlot` macros (`impl_window_annotation_slot!`
+/// and `impl_window_annotation_slot_generic_v!`) call this so the two checks
+/// stay in lockstep. `check_legality` runs on every annotate terminal
+/// (single-Model, grouped, joined) before SQL build, so this is the
+/// path-independent boundary where an empty-variadic window term surfaces as a
+/// typed error instead of reaching the window emitter's `.expect()` (which
+/// unwraps the emit `Result` and would panic). The joined-only
+/// [`crate::expr::window::WindowSpec::is_pair_qualified`] gate also rejects the
+/// empty variadic, but it never runs on the single-Model path — this check is
+/// what closes that path.
+pub(crate) fn check_window_annotation_legality(
+    alias: Option<&'static str>,
+    window: &crate::expr::window::WindowSpec,
+    display: &str,
+) -> Result<(), crate::DjogiError> {
+    if alias.is_none() {
+        return Err(crate::DjogiError::Validation(format!(
+            "{display} window annotation requires .alias(\"name\") before annotate"
+        )));
+    }
+    if window.has_empty_variadic_term() {
+        return Err(crate::DjogiError::from(
+            crate::query::PortablePredicateError::EmptyVariadicFunction,
+        ));
+    }
+    Ok(())
 }
 
 macro_rules! impl_window_annotation_slot {
@@ -614,14 +661,11 @@ macro_rules! impl_window_annotation_slot {
             }
 
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
-                if self.alias_name().is_some() {
-                    Ok(())
-                } else {
-                    Err(crate::DjogiError::Validation(format!(
-                        "{} window annotation requires .alias(\"name\") before annotate",
-                        $display
-                    )))
-                }
+                crate::query::annotate::check_window_annotation_legality(
+                    self.alias_name(),
+                    &self.window,
+                    $display,
+                )
             }
 
             fn check_no_column_collision(
@@ -727,14 +771,11 @@ macro_rules! impl_window_annotation_slot_generic_v {
             }
 
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
-                if self.alias_name().is_some() {
-                    Ok(())
-                } else {
-                    Err(crate::DjogiError::Validation(format!(
-                        "{} window annotation requires .alias(\"name\") before annotate",
-                        $display
-                    )))
-                }
+                crate::query::annotate::check_window_annotation_legality(
+                    self.alias_name(),
+                    &self.window,
+                    $display,
+                )
             }
 
             fn check_no_column_collision(
@@ -2379,5 +2420,169 @@ mod tests {
             "threshold value must NOT appear verbatim in SQL text (injection safety), got: {}",
             acc.sql()
         );
+    }
+
+    // ── Empty-variadic rejection on the single-Model annotate path ────────
+    //
+    // An empty variadic (`COALESCE()` / `LEAST()` / `GREATEST()` with no
+    // operands) emits invalid SQL that Postgres rejects; the emitter surfaces
+    // it as `PortablePredicateError::EmptyVariadicFunction`. These tests pin
+    // that `IntoAggregateTuple::check_legality` — the gate every annotate
+    // terminal (`AnnotatedQuerySet::fetch_all`, grouped, joined,
+    // row-aggregate) runs BEFORE any SQL build — rejects the shape, so it
+    // never reaches the window / aggregate emitter's `.expect()` (which
+    // unwraps the emit `Result` and would panic on `Err`).
+    //
+    // Path A: an empty-variadic WINDOW term, reachable on the single-Model
+    // path via the pair-expr builder. The single-Model terminal never calls
+    // `is_joined_safe()` for its window slots, so the joined-only
+    // `is_pair_qualified()` gate does not fire here — `check_legality` is the
+    // only gate that covers this path, which is exactly the hole this fixes.
+    //
+    // Path B: an empty-variadic FILTER expression on an aggregate. The
+    // aggregate-slot `check_legality` forwards to `check_aggregate_legality`,
+    // which now rejects any empty variadic anywhere in the tree.
+
+    /// Asserts the error is the empty-variadic emit error, surfaced as the
+    /// typed `DjogiError::Predicate` wrapper, so the diagnostic points at the
+    /// right cause rather than a generic validation failure.
+    fn assert_empty_variadic_error(result: Result<(), crate::DjogiError>) {
+        match result {
+            Err(crate::DjogiError::Predicate(
+                crate::query::PortablePredicateError::EmptyVariadicFunction,
+            )) => {}
+            other => {
+                panic!("expected Err(DjogiError::Predicate(EmptyVariadicFunction)), got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn single_model_window_empty_coalesce_partition_rejected_by_check_legality() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        // The exact repro from the blocker: an empty `COALESCE()` fed into a
+        // window PARTITION BY on the single-Model annotate path. Before the
+        // fix this reached `WindowSpec::emit` through the window emitter's
+        // `.expect()` and panicked; now `check_legality` rejects it first.
+        let empty: Expr<i32> = Expr::coalesce_many(Vec::new());
+        let rn = RowNumber::new()
+            .partition_by_pair_expr(PairSide::Left, empty)
+            .alias("rn");
+
+        // Drive the exact gate the single-Model terminal invokes at
+        // `AnnotatedQuerySet::fetch_all` (the `IntoAggregateTuple` bridge),
+        // not just the slot method, so the test proves the full forwarding.
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&rn));
+    }
+
+    #[test]
+    fn single_model_window_empty_least_order_by_rejected_by_check_legality() {
+        use crate::expr::{Expr, Rank};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let empty: Expr<i32> = Expr::least_many(Vec::new());
+        let rank = Rank::new()
+            .order_by_pair_expr_asc(PairSide::Right, empty)
+            .alias("rnk");
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&rank));
+    }
+
+    #[test]
+    fn single_model_window_empty_greatest_order_by_rejected_by_check_legality() {
+        use crate::expr::{DenseRank, Expr};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        let empty: Expr<i32> = Expr::greatest_many(Vec::new());
+        let dr = DenseRank::new()
+            .order_by_pair_expr_desc(PairSide::Left, empty)
+            .alias("dr");
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&dr));
+    }
+
+    #[test]
+    fn single_model_window_empty_variadic_inside_arithmetic_rejected() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        // Nested case: the empty variadic is buried inside an arithmetic
+        // wrapper. The walker recurses into every child, so `score * COALESCE()`
+        // is still rejected — not vacuously accepted because the top node is an
+        // `Add`/`Mul` rather than a bare variadic.
+        let score: FieldRef<Acc, i32> = FieldRef::new("score");
+        let nested: Expr<i32> = score.as_expr() * Expr::coalesce_many(Vec::new());
+        let rn = RowNumber::new()
+            .partition_by_pair_expr(PairSide::Left, nested)
+            .alias("rn");
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&rn));
+    }
+
+    #[test]
+    fn single_model_window_non_empty_coalesce_passes_check_legality() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        // Regression guard: a well-formed non-empty variadic window term must
+        // NOT be rejected — the empty-case gate must not over-reject.
+        let a: FieldRef<Acc, i32> = FieldRef::new("score");
+        let b: FieldRef<Acc, i32> = FieldRef::new("rank");
+        let non_empty: Expr<i32> = Expr::coalesce_many(vec![a.as_expr(), b.as_expr()]);
+        let rn = RowNumber::new()
+            .partition_by_pair_expr(PairSide::Left, non_empty)
+            .alias("rn");
+        assert!(
+            IntoAggregateTuple::check_legality(&rn).is_ok(),
+            "non-empty COALESCE window term must pass check_legality"
+        );
+    }
+
+    #[test]
+    fn aggregate_empty_coalesce_filter_rejected_by_check_legality() {
+        // Path B: an empty-variadic FILTER expression on an aggregate. Before
+        // the fix this passed `check_aggregate_legality` (which walked filter
+        // operands but never checked emptiness) and panicked at the aggregate
+        // `push_column` `.expect()`; now it is rejected before SQL build.
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let agg = amount.sum().filter(Expr::<bool>::coalesce_many(Vec::new()));
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&agg));
+    }
+
+    #[test]
+    fn aggregate_empty_least_filter_rejected_by_check_legality() {
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let agg = amount.sum().filter(Expr::<bool>::least_many(Vec::new()));
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&agg));
+    }
+
+    #[test]
+    fn aggregate_non_empty_filter_passes_check_legality() {
+        // Regression guard: a well-formed filter predicate must still pass.
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let threshold: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let agg = amount
+            .sum()
+            .filter(threshold.as_expr().gt(Expr::literal(0i64)));
+        assert!(
+            IntoAggregateTuple::check_legality(&agg).is_ok(),
+            "non-empty aggregate filter must pass check_legality"
+        );
+    }
+
+    #[test]
+    fn tuple_check_legality_catches_empty_variadic_in_any_slot() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::joined::{PairSide, PairWindowExt};
+
+        // A tuple with one legal slot and one empty-variadic slot must be
+        // rejected — `IntoAggregateTuple::check_legality` walks every slot and
+        // propagates the first error, so one poisoned slot fails the tuple.
+        let good: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let empty: Expr<i32> = Expr::coalesce_many(Vec::new());
+        let bad = RowNumber::new()
+            .partition_by_pair_expr(PairSide::Left, empty)
+            .alias("rn");
+        let tuple = (good.sum(), bad);
+        assert_empty_variadic_error(IntoAggregateTuple::check_legality(&tuple));
     }
 }

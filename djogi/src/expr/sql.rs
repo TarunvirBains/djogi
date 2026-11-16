@@ -64,6 +64,20 @@ use crate::query::portable::{PortablePredicateError, SqlEmitContext};
 /// SQL string so the caller gets a typed `DjogiError::UnsupportedAggregate`
 /// rather than a cryptic Postgres syntax error.
 pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::DjogiError> {
+    // Reject an empty variadic (`COALESCE()` / `LEAST()` / `GREATEST()` with
+    // zero operands) anywhere in the tree — including inside an aggregate's
+    // `FILTER (WHERE ...)` clause, its argument, or its own `.over(...)` window
+    // terms. Postgres rejects the zero-argument forms as a syntax error, and
+    // `emit_expr` surfaces that as `PortablePredicateError::EmptyVariadicFunction`.
+    // Catching it here — a gate every annotate / aggregate terminal runs before
+    // SQL build — turns what would otherwise be an emit-time error unwrapped by
+    // the `()`-returning annotation-slot `push_column*` methods (a panic) into a
+    // typed error at the right boundary, on every terminal path.
+    if expr_node_has_empty_variadic(node) {
+        return Err(crate::DjogiError::from(
+            PortablePredicateError::EmptyVariadicFunction,
+        ));
+    }
     match node {
         ExprNode::Aggregate {
             op,
@@ -258,6 +272,115 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
         ExprNode::RowAggregate { .. } => Ok(()),
         // Leaf nodes and variants with no sub-expressions are trivially valid.
         _ => Ok(()),
+    }
+}
+
+// SAFETY-CRITICAL: This walker mirrors the single emit-time failure mode of
+// [`emit_expr`] — a `COALESCE()` / `LEAST()` / `GREATEST()` with an empty
+// operand list, which Postgres rejects as a syntax error and which `emit_expr`
+// surfaces as `PortablePredicateError::EmptyVariadicFunction`. It is the
+// fetch-time witness that lets terminal legality gates reject that shape
+// *before* SQL build, turning the would-be emit-time error (or `.expect()`
+// panic, where a `()`-returning trait method unwraps the emit result) into a
+// typed error at the right boundary.
+//
+// The match MUST remain exhaustive — do NOT add a `_ => false` wildcard. The
+// `ExprNode` enum is `#[non_exhaustive]`, so an exhaustive same-crate match is
+// what turns a future variant addition into a COMPILE ERROR that forces a
+// deliberate recurse/leaf decision, instead of silently treating a new
+// node-bearing variant as a leaf and letting an empty variadic nested inside it
+// slip past the gate. Structural variants recurse into EVERY child so an empty
+// variadic smuggled inside an allowed wrapper (e.g. `Add(Field, Coalesce([]))`)
+// still returns `true`. Mirrors the exhaustive, no-wildcard, child-recursing
+// discipline of `expr_node_contains_excluded` in `crate::query::insert_select`.
+pub(crate) fn expr_node_has_empty_variadic(node: &ExprNode) -> bool {
+    match node {
+        // ── Variadic scalar functions: the one true positive case ──
+        // An empty operand list is the exact shape `emit_expr` refuses. A
+        // non-empty list still recurses into every operand so a nested empty
+        // variadic is caught too.
+        ExprNode::Coalesce(operands) | ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
+            operands.is_empty() || operands.iter().any(expr_node_has_empty_variadic)
+        }
+
+        // ── Leaf variants: no inner `ExprNode`, so never an empty variadic ──
+        ExprNode::Field { .. }
+        | ExprNode::RawSql(_)
+        | ExprNode::Literal(_)
+        | ExprNode::ArrayLength { .. }
+        | ExprNode::CurrentYear
+        | ExprNode::Now
+        | ExprNode::OuterRef { .. }
+        | ExprNode::OuterRefColumn { .. }
+        | ExprNode::OuterRefAlias { .. }
+        | ExprNode::CteAliasField { .. }
+        | ExprNode::Excluded { .. }
+        | ExprNode::TsMatch { .. }
+        | ExprNode::TsRank { .. }
+        | ExprNode::TsRankCd { .. }
+        | ExprNode::IntervalLiteral { .. } => false,
+
+        // ── Binary arithmetic / comparison / boolean: recurse into both sides ──
+        ExprNode::Cmp { lhs, rhs, .. }
+        | ExprNode::Add(lhs, rhs)
+        | ExprNode::Sub(lhs, rhs)
+        | ExprNode::Mul(lhs, rhs)
+        | ExprNode::Div(lhs, rhs)
+        | ExprNode::And(lhs, rhs)
+        | ExprNode::Or(lhs, rhs) => {
+            expr_node_has_empty_variadic(lhs) || expr_node_has_empty_variadic(rhs)
+        }
+
+        // ── Unary wrappers: recurse into the single inner node ──
+        ExprNode::Not(inner) | ExprNode::IsNull(inner) | ExprNode::IsNotNull(inner) => {
+            expr_node_has_empty_variadic(inner)
+        }
+
+        // `GROUPING(c1, …, cN)` — walk each column-arg node.
+        ExprNode::GroupingVariadic { args } => args.iter().any(expr_node_has_empty_variadic),
+
+        // `CASE` — every arm condition + value, plus the mandatory default.
+        ExprNode::Case { arms, otherwise } => {
+            arms.iter().any(|(cond, val)| {
+                expr_node_has_empty_variadic(cond) || expr_node_has_empty_variadic(val)
+            }) || expr_node_has_empty_variadic(otherwise)
+        }
+
+        // `Aggregate` — recurse into the argument, optional second argument,
+        // and optional FILTER subtree (an empty variadic FILTER is the Path B
+        // panic this gate closes), and also inspect the aggregate's own
+        // `.over(...)` window spec for empty-variadic partition / order terms.
+        ExprNode::Aggregate {
+            arg,
+            arg2,
+            filter,
+            window,
+            ..
+        } => {
+            expr_node_has_empty_variadic(arg)
+                || arg2.as_deref().is_some_and(expr_node_has_empty_variadic)
+                || filter.as_deref().is_some_and(expr_node_has_empty_variadic)
+                || window
+                    .as_ref()
+                    .is_some_and(crate::expr::window::WindowSpec::has_empty_variadic_term)
+        }
+
+        // Subquery bodies are separate emit scopes with their own emit-time
+        // guards; only the lhs expression belongs to this scope.
+        ExprNode::Exists(_) | ExprNode::Subquery(_) => false,
+        ExprNode::InSubquery { lhs, .. } | ExprNode::QuantifiedSubquery { lhs, .. } => {
+            expr_node_has_empty_variadic(lhs)
+        }
+
+        // Spatial variants carry no inner `ExprNode` reachable via this path
+        // (their emission is self-contained in `SpatialExpr::emit` /
+        // `emit_row_aggregate`, which never emit a COALESCE/LEAST/GREATEST).
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(_) | ExprNode::RowAggregate { .. } => false,
+
+        // Trigram variants are leaf-shaped (column + bound pattern).
+        #[cfg(feature = "trgm")]
+        ExprNode::TrgmSimilarTo { .. } | ExprNode::TrgmSimilarityScore { .. } => false,
     }
 }
 
@@ -2299,6 +2422,160 @@ mod tests {
             1,
             "exactly one bind (pattern); got {}",
             acc.bind_count()
+        );
+    }
+
+    // ── expr_node_has_empty_variadic + check_aggregate_legality ───────────
+    //
+    // The walker mirrors the one emit-time failure of `emit_expr` — an empty
+    // `COALESCE()` / `LEAST()` / `GREATEST()`. `check_aggregate_legality`
+    // consults it at entry so terminals reject the shape before SQL build.
+
+    #[test]
+    fn empty_variadic_walker_true_for_bare_empty_coalesce() {
+        assert!(expr_node_has_empty_variadic(
+            &ExprNode::Coalesce(Vec::new())
+        ));
+        assert!(expr_node_has_empty_variadic(&ExprNode::Least(Vec::new())));
+        assert!(expr_node_has_empty_variadic(
+            &ExprNode::Greatest(Vec::new())
+        ));
+    }
+
+    #[test]
+    fn empty_variadic_walker_false_for_non_empty_variadic() {
+        assert!(!expr_node_has_empty_variadic(&ExprNode::Coalesce(vec![
+            ExprNode::Field { column: "a" },
+            ExprNode::Field { column: "b" },
+        ])));
+    }
+
+    #[test]
+    fn empty_variadic_walker_recurses_into_nested_wrappers() {
+        // Buried inside arithmetic — the top node is `Add`, not a variadic, so
+        // a non-recursing check would miss it.
+        let nested = ExprNode::Add(
+            Box::new(ExprNode::Field { column: "x" }),
+            Box::new(ExprNode::Greatest(Vec::new())),
+        );
+        assert!(expr_node_has_empty_variadic(&nested));
+
+        // Buried inside a CASE value.
+        let case = ExprNode::Case {
+            arms: vec![(ExprNode::Field { column: "c" }, ExprNode::Least(Vec::new()))],
+            otherwise: Box::new(ExprNode::Field { column: "d" }),
+        };
+        assert!(expr_node_has_empty_variadic(&case));
+    }
+
+    #[test]
+    fn empty_variadic_walker_false_for_plain_leaves() {
+        assert!(!expr_node_has_empty_variadic(&ExprNode::Field {
+            column: "x"
+        }));
+        assert!(!expr_node_has_empty_variadic(&ExprNode::CurrentYear));
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_empty_coalesce_filter() {
+        // Path B at the walker level: an aggregate whose FILTER is an empty
+        // COALESCE. `check_aggregate_legality` must reject it as
+        // `EmptyVariadicFunction` rather than walk past it.
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: Some(Box::new(ExprNode::Coalesce(Vec::new()))),
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                crate::DjogiError::Predicate(PortablePredicateError::EmptyVariadicFunction)
+            ),
+            "empty COALESCE filter must surface EmptyVariadicFunction; got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_empty_variadic_aggregate_arg() {
+        // An empty variadic in the aggregate ARGUMENT position is equally
+        // invalid and must be rejected.
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Least(Vec::new())),
+            arg2: None,
+            filter: None,
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::Predicate(PortablePredicateError::EmptyVariadicFunction)
+        ));
+    }
+
+    #[test]
+    fn check_aggregate_legality_rejects_empty_variadic_in_aggregate_window_term() {
+        // An aggregate carrying its own `.over(...)` window whose PARTITION BY
+        // is an empty variadic must be rejected — the walker inspects the
+        // aggregate's `window` spec, not just its arg / filter.
+        use crate::expr::window::{WindowSpec, WindowTerm};
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(Vec::new())),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: None,
+            cast_to: None,
+            distinct: false,
+            window: Some(spec),
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        let err = check_aggregate_legality(&agg).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::DjogiError::Predicate(PortablePredicateError::EmptyVariadicFunction)
+        ));
+    }
+
+    #[test]
+    fn check_aggregate_legality_accepts_non_empty_filter() {
+        // Regression guard: a well-formed filter must still pass — the
+        // empty-variadic rejection must not over-reject.
+        let agg = ExprNode::Aggregate {
+            op: AggOp::Sum,
+            arg: Box::new(ExprNode::Field { column: "amount" }),
+            arg2: None,
+            filter: Some(Box::new(ExprNode::Coalesce(vec![
+                ExprNode::Field { column: "a" },
+                ExprNode::Field { column: "b" },
+            ]))),
+            cast_to: None,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        };
+        assert!(
+            check_aggregate_legality(&agg).is_ok(),
+            "non-empty COALESCE filter must pass check_aggregate_legality"
         );
     }
 }

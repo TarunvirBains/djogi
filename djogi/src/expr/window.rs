@@ -435,6 +435,38 @@ impl WindowSpec {
         acc.push_sql(")");
         Ok(())
     }
+
+    /// Whether any [`WindowTerm::Expr`] stored in this spec carries an empty
+    /// variadic (`COALESCE()` / `LEAST()` / `GREATEST()` with zero operands)
+    /// anywhere in its node tree.
+    /// # What
+    /// Walks every partition and order term; for each [`WindowTerm::Expr`]
+    /// node it asks [`crate::expr::sql::expr_node_has_empty_variadic`] whether
+    /// the subtree contains an empty variadic. Plain [`WindowTerm::Column`]
+    /// terms carry no node tree and are always `false`.
+    /// # Why
+    /// [`Self::emit`] returns [`PortablePredicateError::EmptyVariadicFunction`]
+    /// for exactly this shape (an empty variadic is the only emit failure). The
+    /// annotation legality gate
+    /// ([`crate::query::annotate::IntoAggregateTuple::check_legality`], called
+    /// by every annotate terminal before SQL build) consults this so the empty
+    /// variadic surfaces as a typed error on the single-Model, grouped, and
+    /// joined paths alike — independent of the joined-only
+    /// [`Self::is_pair_qualified`] gate, which runs only on the joined terminal.
+    /// Without this, a single-Model `annotate` never calls `is_pair_qualified`,
+    /// so an empty-variadic window term reached [`Self::emit`] and panicked at
+    /// the `.expect()` in the window-function emitter.
+    pub(crate) fn has_empty_variadic_term(&self) -> bool {
+        let term_has_empty_variadic = |term: &WindowTerm| match term {
+            WindowTerm::Column(_) => false,
+            WindowTerm::Expr { node, .. } => crate::expr::sql::expr_node_has_empty_variadic(node),
+        };
+        self.partition_by.iter().any(term_has_empty_variadic)
+            || self
+                .order_by
+                .iter()
+                .any(|(term, _)| term_has_empty_variadic(term))
+    }
 }
 
 fn emit_bound(acc: &mut SqlAccumulator, bound: FrameBound) {
@@ -1265,5 +1297,73 @@ mod tests {
             "empty GREATEST ordering must propagate EmptyVariadicFunction, \
              not panic; got {result:?}"
         );
+    }
+
+    // ── has_empty_variadic_term ──────────────────────────────────────────
+    //
+    // The fetch-time witness consulted by `check_legality` on every annotate
+    // terminal (independent of the joined-only `is_pair_qualified` gate), so an
+    // empty-variadic window term is rejected before it reaches `emit`.
+
+    #[test]
+    fn has_empty_variadic_term_true_for_empty_coalesce_partition() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(Vec::new())),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(spec.has_empty_variadic_term());
+    }
+
+    #[test]
+    fn has_empty_variadic_term_true_for_empty_least_order_by() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Least(Vec::new())),
+                    alias: "r",
+                },
+                Direction::Asc,
+            )],
+            ..Default::default()
+        };
+        assert!(spec.has_empty_variadic_term());
+    }
+
+    #[test]
+    fn has_empty_variadic_term_false_for_plain_columns() {
+        // Plain column terms carry no node tree — never an empty variadic.
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Column("l.id")],
+            order_by: vec![(WindowTerm::Column("r.score"), Direction::Desc)],
+            ..Default::default()
+        };
+        assert!(!spec.has_empty_variadic_term());
+    }
+
+    #[test]
+    fn has_empty_variadic_term_false_for_non_empty_expr_term() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(vec![
+                    ExprNode::Field { column: "score" },
+                    ExprNode::Field { column: "rank" },
+                ])),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(!spec.has_empty_variadic_term());
+    }
+
+    #[test]
+    fn has_empty_variadic_term_false_for_empty_spec() {
+        // A vacuous `OVER ()` window has no terms and so no empty variadic.
+        assert!(!WindowSpec::default().has_empty_variadic_term());
     }
 }

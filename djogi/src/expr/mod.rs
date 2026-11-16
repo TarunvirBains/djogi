@@ -26,11 +26,11 @@
 //!    only needs to walk the enum and push bind parameters. The
 //!    internal [`node::ExprNode`] is therefore untyped (no `T`
 //!    parameter), and the emitter stays a single monomorphic function.
-//! 2. **Phase additivity.** Tasks 4 / 5 add `Case`, `Exists`, `Subquery`,
-//!    `Aggregate`, and `OuterRef` variants. By storing the dynamic
-//!    payload in `ExprNode`, those additions are one new variant + one
-//!    new emitter arm + one new typed constructor per variant — no
-//!    ripple through type-parameterised code.
+//! 2. **Additive growth.** Higher-level forms such as `Case`, `Exists`,
+//!    `Subquery`, `Aggregate`, and `OuterRef` are variants of `ExprNode`.
+//!    By storing the dynamic payload in `ExprNode`, each addition is one new
+//!    variant + one new emitter arm + one new typed constructor per variant —
+//!    no ripple through type-parameterised code.
 //! # Where
 //! - [`node::ExprNode`] / [`node::CmpOp`] — the untyped payload enum.
 //! - [`literal`] — `impl From<T> for Expr<T>` for every bindable scalar.
