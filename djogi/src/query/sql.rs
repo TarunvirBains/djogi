@@ -1548,11 +1548,18 @@ fn emit_aggregate_inner(
     };
     let has_window_clause = window.is_some() || default_window.is_some();
 
-    let emit_window_clause = |acc: &mut SqlAccumulator| match window {
-        Some(ws) => ws.emit(acc),
-        None => {
-            if let Some(s) = default_window {
-                acc.push_sql(s);
+    let emit_window_clause = |acc: &mut SqlAccumulator| -> Result<(), PortablePredicateError> {
+        match window {
+            // `WindowSpec::emit` only fails on an empty variadic
+            // `WindowTerm::Expr`, which the fetch-time
+            // `is_joined_safe()` gate rejects before SQL build.
+            // Propagating keeps this path panic-free.
+            Some(ws) => ws.emit(acc),
+            None => {
+                if let Some(s) = default_window {
+                    acc.push_sql(s);
+                }
+                Ok(())
             }
         }
     };
@@ -1583,7 +1590,7 @@ fn emit_aggregate_inner(
                 popped_close,
                 "wrapped spatial bare emission must end with `)` after popping cast"
             );
-            emit_window_clause(acc);
+            emit_window_clause(acc)?;
             acc.push_sql(")");
             acc.push_sql(suffix);
         }
@@ -1626,7 +1633,7 @@ fn emit_aggregate_inner(
                     "unwrapped spatial-with-filter bare emission must end with `)` \
                      after popping cast (FILTER parens from emit_spatial_unary_agg)"
                 );
-                emit_window_clause(acc);
+                emit_window_clause(acc)?;
                 acc.push_sql(")");
                 acc.push_sql(suffix);
             } else {
@@ -1637,7 +1644,7 @@ fn emit_aggregate_inner(
                     popped_cast,
                     "unwrapped spatial bare emission must end with {suffix}"
                 );
-                emit_window_clause(acc);
+                emit_window_clause(acc)?;
                 acc.push_sql(")");
                 acc.push_sql(suffix);
             }
@@ -1654,14 +1661,14 @@ fn emit_aggregate_inner(
         (None, _, Some(ty)) => {
             acc.push_sql("(");
             crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
-            emit_window_clause(acc);
+            emit_window_clause(acc)?;
             acc.push_sql(")::");
             acc.push_sql(ty);
         }
         // Non-spatial, no cast — bare emit + optional OVER.
         (None, _, None) => {
             crate::expr::sql::emit_expr(acc, agg, SqlEmitContext::root())?;
-            emit_window_clause(acc);
+            emit_window_clause(acc)?;
         }
     }
     Ok(())

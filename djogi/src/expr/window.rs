@@ -24,6 +24,7 @@
 
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::order::Direction;
+use crate::query::portable::PortablePredicateError;
 
 /// A window-function partition or order-by element — either a bare column
 /// reference or an expression evaluated under a specific table alias.
@@ -349,7 +350,20 @@ impl WindowSpec {
     /// `acc`. The leading space is part of the emission — callers append
     /// this directly after the aggregate function call and optional FILTER
     /// clause.
-    pub(crate) fn emit(&self, acc: &mut SqlAccumulator) {
+    ///
+    /// # Errors
+    /// Returns [`PortablePredicateError`] when a [`WindowTerm::Expr`] node
+    /// fails to emit — today the only such case is
+    /// [`PortablePredicateError::EmptyVariadicFunction`], raised by
+    /// [`crate::expr::sql::emit_expr`] for an empty `COALESCE()` / `LEAST()` /
+    /// `GREATEST()`. That shape is rejected upstream at the fetch-time
+    /// [`WindowSpec::is_pair_qualified`] gate (via
+    /// [`is_allowed_window_expr_node`], which denies empty variadics), so it
+    /// does not reach a well-formed query. Propagating the error here rather
+    /// than unwrapping keeps emission panic-free as defense in depth against
+    /// any future gate/emitter drift. Plain [`WindowTerm::Column`] terms and
+    /// the frame clause never fail.
+    pub(crate) fn emit(&self, acc: &mut SqlAccumulator) -> Result<(), PortablePredicateError> {
         acc.push_sql(" OVER (");
         let mut spacer = false;
 
@@ -365,13 +379,7 @@ impl WindowSpec {
                         acc,
                         node,
                         crate::query::portable::SqlEmitContext::joined(alias),
-                    )
-                    .expect(
-                        "WindowTerm::Expr nodes are validated by \
-                             is_allowed_window_expr_node at the pair-qualified gate \
-                             before emit — reaching this arm with an Err indicates \
-                             the gate and emitter are out of sync",
-                    ),
+                    )?,
                 }
             }
             spacer = true;
@@ -392,13 +400,7 @@ impl WindowSpec {
                         acc,
                         node,
                         crate::query::portable::SqlEmitContext::joined(alias),
-                    )
-                    .expect(
-                        "WindowTerm::Expr nodes are validated by \
-                             is_allowed_window_expr_node at the pair-qualified gate \
-                             before emit — reaching this arm with an Err indicates \
-                             the gate and emitter are out of sync",
-                    ),
+                    )?,
                 }
                 acc.push_sql(match d {
                     Direction::Asc => " ASC",
@@ -431,6 +433,7 @@ impl WindowSpec {
         }
 
         acc.push_sql(")");
+        Ok(())
     }
 }
 
@@ -509,8 +512,19 @@ pub(crate) fn is_allowed_window_expr_node(node: &crate::expr::node::ExprNode) ->
             is_allowed_window_expr_node(inner)
         }
         // `Coalesce` / `Least` / `Greatest` recurse into every operand.
+        // An EMPTY operand list is rejected outright: `COALESCE()` / `LEAST()`
+        // / `GREATEST()` with zero arguments is invalid SQL that Postgres
+        // refuses with a syntax error, and the emitter (`emit_expr`) returns
+        // `PortablePredicateError::EmptyVariadicFunction` for it. Because
+        // `Iterator::all` is vacuously `true` on an empty iterator, the
+        // recurse-into-every-operand check alone would let an empty variadic
+        // pass this gate and reach emission, where it previously panicked.
+        // Rejecting it here means the empty variadic is caught at the same
+        // fetch-time `is_joined_safe()` boundary as every other disallowed
+        // window expression, surfacing as `DjogiError::Validation` before any
+        // SQL is built.
         ExprNode::Coalesce(operands) | ExprNode::Least(operands) | ExprNode::Greatest(operands) => {
-            operands.iter().all(is_allowed_window_expr_node)
+            !operands.is_empty() && operands.iter().all(is_allowed_window_expr_node)
         }
         // `Cmp` recurses into both operands.
         ExprNode::Cmp { lhs, rhs, .. } => {
@@ -578,7 +592,8 @@ mod tests {
 
     fn emit(spec: &WindowSpec) -> String {
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
         acc.sql().to_string()
     }
 
@@ -691,7 +706,8 @@ mod tests {
             ..Default::default()
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
         let sql = acc.sql().to_string();
         // The offset 3 is bound as $1; the FOLLOWING keyword is a SQL token.
         assert!(
@@ -712,7 +728,8 @@ mod tests {
             ..Default::default()
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains("ROWS BETWEEN CURRENT ROW AND $1 FOLLOWING"),
@@ -735,7 +752,8 @@ mod tests {
             ..Default::default()
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
     }
 
     #[test]
@@ -751,7 +769,8 @@ mod tests {
             ..Default::default()
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
     }
 
     // ── RANGE frame ──────────────────────────────────────────────────────
@@ -787,7 +806,8 @@ mod tests {
             ..Default::default()
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains("GROUPS BETWEEN CURRENT ROW AND $1 FOLLOWING"),
@@ -872,7 +892,8 @@ mod tests {
             }),
         };
         let mut acc = SqlAccumulator::new("");
-        spec.emit(&mut acc);
+        spec.emit(&mut acc)
+            .expect("test window specs use only well-formed terms");
         let sql = acc.sql().to_string();
         assert!(
             sql.contains("PARTITION BY org_id"),
@@ -1094,6 +1115,155 @@ mod tests {
         assert!(
             !spec.is_pair_qualified(),
             "RawSql emits verbatim fragment, must not be pair-qualified"
+        );
+    }
+
+    // ── Empty variadic (COALESCE/LEAST/GREATEST with no operands) ─────────
+    //
+    // An empty variadic emits invalid SQL (`COALESCE()` / `LEAST()` /
+    // `GREATEST()`), which Postgres rejects. `emit_expr` surfaces this as
+    // `PortablePredicateError::EmptyVariadicFunction`. Two guarantees are
+    // asserted: (1) the fetch-time `is_pair_qualified()` gate rejects the
+    // shape so it never reaches SQL build via a well-formed query, and (2)
+    // `WindowSpec::emit` propagates the error instead of panicking, as
+    // defense in depth if the gate and emitter ever drift.
+
+    #[test]
+    fn is_pair_qualified_false_for_empty_coalesce_partition() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(Vec::new())),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "empty COALESCE emits invalid SQL — must be rejected at the gate, not \
+             pass vacuously via `Iterator::all` on an empty operand list"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_empty_least_order_by() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Least(Vec::new())),
+                    alias: "r",
+                },
+                Direction::Asc,
+            )],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "empty LEAST in ORDER BY must be rejected at the gate"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_false_for_empty_greatest_order_by() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Greatest(Vec::new())),
+                    alias: "l",
+                },
+                Direction::Desc,
+            )],
+            ..Default::default()
+        };
+        assert!(
+            !spec.is_pair_qualified(),
+            "empty GREATEST in ORDER BY must be rejected at the gate"
+        );
+    }
+
+    #[test]
+    fn is_pair_qualified_true_for_non_empty_coalesce() {
+        use crate::expr::node::ExprNode;
+        // Regression guard: rejecting the EMPTY case must not reject a
+        // well-formed non-empty variadic whose operands are all allowed.
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(vec![
+                    ExprNode::Field { column: "score" },
+                    ExprNode::Field { column: "rank" },
+                ])),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        assert!(
+            spec.is_pair_qualified(),
+            "a non-empty COALESCE of allowed fields must remain pair-qualified"
+        );
+    }
+
+    #[test]
+    fn emit_returns_err_for_empty_coalesce_partition() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            partition_by: vec![WindowTerm::Expr {
+                node: Box::new(ExprNode::Coalesce(Vec::new())),
+                alias: "l",
+            }],
+            ..Default::default()
+        };
+        let mut acc = SqlAccumulator::new("");
+        let result = spec.emit(&mut acc);
+        assert!(
+            matches!(result, Err(PortablePredicateError::EmptyVariadicFunction)),
+            "empty COALESCE partition must propagate EmptyVariadicFunction, \
+             not panic; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn emit_returns_err_for_empty_least_order_by() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Least(Vec::new())),
+                    alias: "r",
+                },
+                Direction::Asc,
+            )],
+            ..Default::default()
+        };
+        let mut acc = SqlAccumulator::new("");
+        let result = spec.emit(&mut acc);
+        assert!(
+            matches!(result, Err(PortablePredicateError::EmptyVariadicFunction)),
+            "empty LEAST ordering must propagate EmptyVariadicFunction, \
+             not panic; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn emit_returns_err_for_empty_greatest_order_by() {
+        use crate::expr::node::ExprNode;
+        let spec = WindowSpec {
+            order_by: vec![(
+                WindowTerm::Expr {
+                    node: Box::new(ExprNode::Greatest(Vec::new())),
+                    alias: "l",
+                },
+                Direction::Desc,
+            )],
+            ..Default::default()
+        };
+        let mut acc = SqlAccumulator::new("");
+        let result = spec.emit(&mut acc);
+        assert!(
+            matches!(result, Err(PortablePredicateError::EmptyVariadicFunction)),
+            "empty GREATEST ordering must propagate EmptyVariadicFunction, \
+             not panic; got {result:?}"
         );
     }
 }

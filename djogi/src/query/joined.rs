@@ -4149,4 +4149,90 @@ mod tests {
             }
         }
     }
+
+    // ── Empty-variadic rejection through the public pair-expr API ─────────
+    //
+    // `Expr::coalesce_many(Vec::new())` (and the LEAST/GREATEST siblings)
+    // build an empty variadic node. Fed into a window via the pair-expr
+    // builders, the resulting spec must be rejected at the fetch-time
+    // joined-safety gate (`is_pair_qualified()` →
+    // `AnnotationSlot::is_joined_safe()`), so the empty variadic surfaces as
+    // a typed `DjogiError::Validation` before SQL build rather than panicking
+    // deep in the window emitter.
+
+    #[test]
+    fn partition_by_pair_expr_empty_coalesce_is_rejected_by_gate() {
+        use crate::expr::{Expr, RowNumber};
+
+        let empty: Expr<i32> = Expr::coalesce_many(Vec::new());
+        let rn = RowNumber::new().partition_by_pair_expr(PairSide::Left, empty);
+
+        assert!(
+            !rn.window.is_pair_qualified(),
+            "empty COALESCE in PARTITION BY must fail the pair-qualified gate"
+        );
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&rn),
+            "empty COALESCE partition must make the window annotation not joined-safe, \
+             so fetch_all rejects it with DjogiError::Validation before SQL build"
+        );
+    }
+
+    #[test]
+    fn order_by_pair_expr_asc_empty_least_is_rejected_by_gate() {
+        use crate::expr::{Expr, Rank};
+
+        let empty: Expr<i32> = Expr::least_many(Vec::new());
+        let rank = Rank::new().order_by_pair_expr_asc(PairSide::Left, empty);
+
+        assert!(
+            !rank.window.is_pair_qualified(),
+            "empty LEAST in ORDER BY ASC must fail the pair-qualified gate"
+        );
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&rank),
+            "empty LEAST ordering must make the window annotation not joined-safe"
+        );
+    }
+
+    #[test]
+    fn order_by_pair_expr_desc_empty_greatest_is_rejected_by_gate() {
+        use crate::expr::{DenseRank, Expr};
+
+        let empty: Expr<i32> = Expr::greatest_many(Vec::new());
+        let dr = DenseRank::new().order_by_pair_expr_desc(PairSide::Right, empty);
+
+        assert!(
+            !dr.window.is_pair_qualified(),
+            "empty GREATEST in ORDER BY DESC must fail the pair-qualified gate"
+        );
+        assert!(
+            !crate::query::annotate::AnnotationSlot::is_joined_safe(&dr),
+            "empty GREATEST ordering must make the window annotation not joined-safe"
+        );
+    }
+
+    #[test]
+    fn non_empty_coalesce_pair_expr_remains_joined_safe() {
+        use crate::expr::{Expr, RowNumber};
+        use crate::query::FieldRef;
+
+        // Regression guard: a well-formed non-empty variadic through the
+        // pair-expr builder must still pass the gate — the empty-case
+        // rejection must not over-reject valid queries.
+        let score_ref: FieldRef<Mini, i32> = FieldRef::new("score");
+        let rank_ref: FieldRef<Mini, i32> = FieldRef::new("value");
+        let non_empty: Expr<i32> =
+            Expr::coalesce_many(vec![score_ref.as_expr(), rank_ref.as_expr()]);
+        let rn = RowNumber::new().partition_by_pair_expr(PairSide::Left, non_empty);
+
+        assert!(
+            rn.window.is_pair_qualified(),
+            "non-empty COALESCE of allowed fields must pass the pair-qualified gate"
+        );
+        assert!(
+            crate::query::annotate::AnnotationSlot::is_joined_safe(&rn),
+            "non-empty COALESCE partition must remain joined-safe"
+        );
+    }
 }

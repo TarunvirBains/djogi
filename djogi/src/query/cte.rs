@@ -120,6 +120,80 @@ fn find_selected_cycle_mark(terms: &[CteTerm], from: &str) -> Option<&'static st
         .map(|cycle| cycle.mark_column)
 }
 
+/// The mark and path columns a CYCLE clause contributes as synthetic output
+/// columns of its term. `cycle_columns` (the tracked-path key list) are NOT
+/// synthetic outputs — Postgres reads them from the term's own projection —
+/// so they are excluded here. Returns an empty slice iterator for a term with
+/// no CYCLE clause.
+fn cycle_mark_path_columns(term: &CteTerm) -> impl Iterator<Item = &'static str> + '_ {
+    term.cycle
+        .as_ref()
+        .into_iter()
+        .flat_map(|cycle| [cycle.mark_column, cycle.path_column])
+}
+
+/// Reject a multi-term consumer FROM in which two selected terms expose a
+/// CYCLE mark/path column of the same name.
+///
+/// # Why this is scoped to the consumer selection
+/// A CYCLE clause adds synthetic `mark` / `path` output columns to its term.
+/// When `also_from_cte` brings a second term into the consumer FROM, the
+/// emitted `FROM <from>, <also_from>, …` is a comma (implicit cross) join, so
+/// two terms exposing the same output-column name make any unqualified
+/// reference to that name ambiguous at Postgres (`42702`). Two terms that are
+/// never selected together — or a single-term FROM — carry no such ambiguity,
+/// so independent recursive terms may freely reuse `is_cycle` / `cycle_path`
+/// names as long as a given consumer selects at most one of them.
+///
+/// # When it runs
+/// At the shared build boundary ([`build_cte_select_inner`]), after `from` and
+/// every `also_from` sibling are finalized — not at `cycle()` build time,
+/// where the consumer selection is not yet known.
+///
+/// # Errors
+/// Returns [`DjogiError::Validation`] naming the two colliding terms and the
+/// shared column when a collision is found.
+fn ensure_selected_cycle_columns_unambiguous(
+    terms: &[CteTerm],
+    from: &'static str,
+    also_from: &[&'static str],
+) -> Result<(), DjogiError> {
+    // Single-term consumer FROM cannot have a cross-term collision.
+    if also_from.is_empty() {
+        return Ok(());
+    }
+    // The selected terms, in FROM order: `from` first, then each `also_from`.
+    // Duplicate names in this list are already rejected by `from_cte` /
+    // `also_from_cte`, so each resolves to a distinct term.
+    let selected: Vec<&'static str> = std::iter::once(from)
+        .chain(also_from.iter().copied())
+        .collect();
+    for (i, &lhs_name) in selected.iter().enumerate() {
+        let Some(lhs) = find_term(terms, lhs_name) else {
+            continue;
+        };
+        for &rhs_name in &selected[i + 1..] {
+            let Some(rhs) = find_term(terms, rhs_name) else {
+                continue;
+            };
+            for lhs_col in cycle_mark_path_columns(lhs) {
+                for rhs_col in cycle_mark_path_columns(rhs) {
+                    if sql_ident_eq(lhs_col, rhs_col) {
+                        return Err(DjogiError::Validation(format!(
+                            "CYCLE column {lhs_col:?} is exposed by both consumer-FROM terms \
+                             {lhs_name:?} and {rhs_name:?}; a multi-term consumer FROM \
+                             (also_from_cte) makes the shared synthetic cycle column ambiguous. \
+                             Rename the CYCLE SET/USING column on one of the terms, or select \
+                             only one of them in this consumer."
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn build_cte_queryset_body<M: Model + FromPgRow>(
     qs: &QuerySet<M>,
 ) -> Result<SqlAccumulator, DjogiError> {
@@ -882,37 +956,22 @@ impl<M: Model + FromPgRow> CteQuerySet<M> {
         }
 
         // Empty-list early return — mirrors the last_mut() error message below
-        // so the earlier-term slice subtraction is proven in-bounds (len >= 1)
-        // and the error contract is unchanged.
+        // so the `last_mut()` call is proven to have a term to configure and
+        // the error contract is unchanged.
+        //
+        // NOTE: cross-term cycle-column uniqueness is NOT enforced here. Two
+        // independent terms may both declare a mark/path column of the same
+        // name — that is only an ambiguity when both terms are selected into
+        // the SAME consumer FROM (`from_cte` + `also_from_cte`). The consumer
+        // selection is not known at this builder step (callers chain `cycle()`
+        // and `from_cte`/`also_from_cte` in either order), so the scoped check
+        // runs at the shared build boundary in `build_cte_select_inner` via
+        // [`ensure_selected_cycle_columns_unambiguous`], where both the `from`
+        // target and every `also_from` sibling are finalized.
         if self.terms.is_empty() {
             return Err(DjogiError::Validation(
                 "cycle(...) called before any CTE term was added".to_string(),
             ));
-        }
-        // Reject a CYCLE SET/USING column that duplicates a mark or path column
-        // already attached to an *earlier* CTE term. Each term's mark/path
-        // becomes a synthetic output column; two terms sharing a mark name make
-        // a multi-term consumer FROM (also_from_cte) ambiguous. The `from`-term
-        // mark is qualified at emission; this guard keeps even unqualified /
-        // sibling-referencing uses unambiguous by construction. Scan every term
-        // except the last (the one being configured here) so a replacement
-        // cycle() call does not collide with its own prior mark.
-        for term in &self.terms[..self.terms.len() - 1] {
-            let Some(existing) = &term.cycle else {
-                continue;
-            };
-            if sql_ident_eq(existing.mark_column, mark_column)
-                || sql_ident_eq(existing.path_column, mark_column)
-                || sql_ident_eq(existing.mark_column, path_column)
-                || sql_ident_eq(existing.path_column, path_column)
-            {
-                return Err(DjogiError::Validation(format!(
-                    "CYCLE SET/USING column {mark_column:?}/{path_column:?} duplicates a mark \
-                     or path column already declared on CTE term {:?}; mark and path columns \
-                     must be unique across all CTE terms",
-                    term.name
-                )));
-            }
         }
 
         let last = self
@@ -1154,6 +1213,16 @@ fn build_cte_select_inner<M: Model + FromPgRow>(
              the base QuerySet before entering the CTE builder."
                 .to_string(),
         ));
+    }
+    // Cross-term CYCLE-column uniqueness is scoped to the consumer's selected
+    // terms, which are only known here (not at `cycle()` build time). When a
+    // multi-term consumer FROM selects two terms that both expose a CYCLE
+    // mark/path column of the same name, reject the ambiguity before SQL build.
+    // `from` being `None` is reported by `push_consumer_select` below; skip the
+    // scoped check in that case so the authoritative "no consumer target" error
+    // is not pre-empted by this one.
+    if let Some(from) = cte.from {
+        ensure_selected_cycle_columns_unambiguous(&cte.terms, from, &cte.also_from)?;
     }
     let mut acc = SqlAccumulator::new("");
     if matches!(tail, ConsumerTail::ExistsWrapped) {
@@ -2306,7 +2375,7 @@ mod tests {
         assert!(sql.contains(" SELECT 1 FROM recent LIMIT 1)"), "{sql}");
     }
 
-    // ── Task 8: filter_expr reaches the consumer WHERE with a CteRef ──────────
+    // ── filter_expr reaches the consumer WHERE with a CteRef ─────────────────
     #[test]
     fn cte_filter_expr_emits_cte_alias_ref_in_consumer_where() {
         use crate::query::cte_ref::CteRef;
@@ -2333,7 +2402,7 @@ mod tests {
         );
     }
 
-    // ── Task 8b: also_from_cte appends the sibling and qualifies the SELECT ───
+    // ── also_from_cte appends the sibling and qualifies the SELECT ───────────
     #[test]
     fn also_from_cte_appends_sibling_to_consumer_from() {
         let cte = MiniNode::objects()
@@ -2349,7 +2418,7 @@ mod tests {
         // Both terms in the consumer FROM, comma-separated, primary first.
         assert!(sql.contains("FROM places_cte, anchor"), "{sql}");
         // Under also_from, the SELECT projection is qualified to the `from`
-        // term (R4 Change 1) — no bare column list.
+        // term — no bare column list.
         assert!(
             sql.contains("places_cte.id") && sql.contains("places_cte.active"),
             "qualified projection expected: {sql}"
@@ -2413,9 +2482,80 @@ mod tests {
         assert!(matches!(err, crate::DjogiError::Validation(_)));
     }
 
-    // ── cross-term cycle-mark uniqueness ─────────────────────────────────────
+    // ── per-consumer-selection cycle-column uniqueness ───────────────────────
+
+    /// Two independent recursive terms declaring the SAME cycle-column names
+    /// is accepted at build time. The names belong to separate CTE relations;
+    /// a collision only matters when both terms land in one consumer FROM.
     #[test]
-    fn duplicate_cycle_mark_across_terms_is_rejected() {
+    fn duplicate_cycle_mark_across_unselected_terms_is_accepted() {
+        let cte = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle walk")
+            .with_recursive(
+                "sibling",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("sibling")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive sibling")
+            // Same mark/path names as `walk`. Independent relation — accepted.
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("duplicate cycle-column names across terms must be accepted");
+        let _ = cte;
+    }
+
+    /// Selecting only ONE of two same-cycle-column terms renders cleanly — the
+    /// other term is not in the consumer FROM, so there is no ambiguity.
+    #[test]
+    fn duplicate_cycle_mark_single_selected_term_renders() {
+        let sql = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle walk")
+            .with_recursive(
+                "sibling",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("sibling")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive sibling")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle sibling")
+            // Consumer selects ONLY `walk` — `sibling` stays out of the FROM.
+            .from_cte("walk")
+            .expect("from_cte walk")
+            .render_cte_sql_for_testing()
+            .expect("single-selected term with duplicate cycle names must render");
+        assert!(
+            sql.contains("FROM walk") && !sql.contains("FROM walk, sibling"),
+            "expected a single-term consumer FROM; got: {sql}"
+        );
+    }
+
+    /// Selecting BOTH same-cycle-column terms into one consumer FROM via
+    /// `also_from_cte` is the genuine ambiguity: the shared synthetic cycle
+    /// column (`is_cycle`) is exposed by both terms. Rejected at the build
+    /// boundary with a message naming both terms and the shared column.
+    #[test]
+    fn duplicate_cycle_mark_both_selected_is_rejected_at_build() {
         let err = MiniNode::objects()
             .with_recursive(
                 "walk",
@@ -2435,20 +2575,95 @@ mod tests {
                     .expect("join_on"),
             )
             .expect("with_recursive sibling")
-            // Same mark name as `walk` — must be rejected before any terminal.
+            // Same mark name `is_cycle` as `walk`; distinct path name.
             .cycle(&["id"], "is_cycle", "sibling_path")
-            .expect_err("duplicate mark name must be rejected");
+            .expect("cycle sibling")
+            .from_cte("walk")
+            .expect("from_cte walk")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .render_cte_sql_for_testing()
+            .expect_err("both terms sharing `is_cycle` in one FROM must be rejected");
         let msg = format!("{err}");
         assert!(
-            msg.contains("duplicates a mark") && msg.contains("unique across all CTE terms"),
+            msg.contains("is_cycle")
+                && msg.contains("walk")
+                && msg.contains("sibling")
+                && msg.contains("ambiguous"),
             "unexpected error: {msg}"
         );
+    }
+
+    /// A shared PATH column (not just the mark) across both selected terms is
+    /// equally ambiguous and equally rejected — the check covers mark AND path.
+    #[test]
+    fn duplicate_cycle_path_both_selected_is_rejected_at_build() {
+        let err = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "walk_cycle", "shared_path")
+            .expect("cycle walk")
+            .with_recursive(
+                "sibling",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("sibling")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive sibling")
+            // Distinct mark, but the PATH column `shared_path` collides.
+            .cycle(&["id"], "sibling_cycle", "shared_path")
+            .expect("cycle sibling")
+            .from_cte("walk")
+            .expect("from_cte walk")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .render_cte_sql_for_testing()
+            .expect_err("both terms sharing `shared_path` in one FROM must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("shared_path") && msg.contains("ambiguous"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Selecting both terms where only ONE carries a cycle clause is fine — the
+    /// cycle column is exposed by a single relation, so no ambiguity.
+    #[test]
+    fn both_selected_with_single_cycle_term_renders() {
+        let sql = MiniNode::objects()
+            .with_recursive(
+                "walk",
+                MiniNode::objects(),
+                RecursiveArm::<MiniNode>::referencing("walk")
+                    .join_on("parent_id", "id")
+                    .expect("join_on"),
+            )
+            .expect("with_recursive walk")
+            .cycle(&["id"], "is_cycle", "cycle_path")
+            .expect("cycle walk")
+            // `sibling` has NO cycle clause.
+            .with("sibling", MiniNode::objects())
+            .expect("with sibling")
+            .from_cte("walk")
+            .expect("from_cte walk")
+            .also_from_cte("sibling")
+            .expect("also_from_cte sibling")
+            .render_cte_sql_for_testing()
+            .expect("one cycle term among two selected must render");
+        assert!(sql.contains("FROM walk, sibling"), "got: {sql}");
     }
 
     #[test]
     fn replacement_cycle_on_same_term_is_accepted() {
         // Calling cycle() twice on the SAME term (an idempotent re-config)
-        // must NOT self-collide via the cross-term uniqueness loop.
+        // must not self-collide; the most-recent call wins.
         let cte = MiniNode::objects()
             .with_recursive(
                 "walk",

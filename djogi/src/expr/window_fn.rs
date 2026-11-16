@@ -350,7 +350,14 @@ macro_rules! define_window_rank_fn {
             pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
                 acc.push_sql($sql_name);
                 acc.push_sql("()");
-                self.window.emit(acc);
+                // `emit` only fails on an empty variadic `WindowTerm::Expr`,
+                // which `is_allowed_window_expr_node` denies at the fetch-time
+                // `is_joined_safe()` / `check_legality()` gate before any
+                // annotation reaches SQL build. Reaching an `Err` here would
+                // mean that gate and the emitter drifted out of sync.
+                self.window.emit(acc).expect(
+                    "window spec passed the fetch-time validation gate before SQL emission",
+                );
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
@@ -548,7 +555,14 @@ macro_rules! impl_zero_arg_f64_window {
             pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
                 acc.push_sql($sql_name);
                 acc.push_sql("()");
-                self.window.emit(acc);
+                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
+                // `is_allowed_window_expr_node` denies at the fetch-time
+                // `is_joined_safe()` / `check_legality()` gate before any annotation
+                // reaches SQL build. Reaching an `Err` here would mean that gate and
+                // the emitter drifted out of sync.
+                self.window.emit(acc).expect(
+                    "window spec passed the fetch-time validation gate before SQL emission",
+                );
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
@@ -693,7 +707,14 @@ impl NtileWindow {
         acc.push_sql("NTILE(");
         acc.push_bind(self.buckets as i64);
         acc.push_sql(")");
-        self.window.emit(acc);
+        // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
+        // `is_allowed_window_expr_node` denies at the fetch-time
+        // `is_joined_safe()` / `check_legality()` gate before any annotation
+        // reaches SQL build. Reaching an `Err` here would mean that gate and
+        // the emitter drifted out of sync.
+        self.window
+            .emit(acc)
+            .expect("window spec passed the fetch-time validation gate before SQL emission");
         acc.push_sql(" AS ");
         acc.push_sql(
             self.alias
@@ -791,7 +812,14 @@ macro_rules! define_column_arg_window_fn {
                 acc.push_sql("(");
                 acc.push_sql(self.target_column);
                 acc.push_sql(")");
-                self.window.emit(acc);
+                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
+                // `is_allowed_window_expr_node` denies at the fetch-time
+                // `is_joined_safe()` / `check_legality()` gate before any annotation
+                // reaches SQL build. Reaching an `Err` here would mean that gate and
+                // the emitter drifted out of sync.
+                self.window.emit(acc).expect(
+                    "window spec passed the fetch-time validation gate before SQL emission",
+                );
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
@@ -932,7 +960,14 @@ macro_rules! impl_lead_lag {
                     acc.push_bind(off);
                 }
                 acc.push_sql(")");
-                self.window.emit(acc);
+                // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
+                // `is_allowed_window_expr_node` denies at the fetch-time
+                // `is_joined_safe()` / `check_legality()` gate before any annotation
+                // reaches SQL build. Reaching an `Err` here would mean that gate and
+                // the emitter drifted out of sync.
+                self.window.emit(acc).expect(
+                    "window spec passed the fetch-time validation gate before SQL emission",
+                );
                 acc.push_sql(" AS ");
                 acc.push_sql(
                     self.alias
@@ -1031,7 +1066,14 @@ impl<V> NthValueWindow<V> {
         acc.push_sql(", ");
         acc.push_bind(self.n);
         acc.push_sql(")");
-        self.window.emit(acc);
+        // `emit` only fails on an empty variadic `WindowTerm::Expr`, which
+        // `is_allowed_window_expr_node` denies at the fetch-time
+        // `is_joined_safe()` / `check_legality()` gate before any annotation
+        // reaches SQL build. Reaching an `Err` here would mean that gate and
+        // the emitter drifted out of sync.
+        self.window
+            .emit(acc)
+            .expect("window spec passed the fetch-time validation gate before SQL emission");
         acc.push_sql(" AS ");
         acc.push_sql(
             self.alias
