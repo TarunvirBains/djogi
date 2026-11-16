@@ -321,10 +321,7 @@ fn is_single_dollar_quoted_run(bytes: &[u8]) -> bool {
     let body = &bytes[tag.len()..close_start];
     // Body must not contain the tag as a substring (otherwise the
     // expression contains multiple dollar-quoted runs / partial tags).
-    if body.windows(tag.len()).any(|w| w == tag) {
-        return false;
-    }
-    true
+    !body.windows(tag.len()).any(|w| w == tag)
 }
 
 /// Walk `bytes` as a single Postgres numeric literal token. Returns

@@ -8,6 +8,13 @@ members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elepha
 exclude = ["sassi-reference"]
 resolver = "2"
 
+[workspace.lints.clippy]
+# result_large_err fires on error enum variants that contain DjogiError
+# (136-180+ bytes). The fix (boxing) spans repair.rs, runner.rs, and
+# verify.rs and belongs in a dedicated PR, not bundled into unrelated changes.
+# Suppressed at the workspace level until that cleanup lands.
+result-large-err = "allow"
+
 [workspace.package]
 version = "0.1.0-alpha.18"
 edition = "2024"

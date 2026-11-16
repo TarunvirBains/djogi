@@ -811,11 +811,7 @@ fn is_binary_coercible_widening(from: &str, to: &str) -> bool {
     {
         return true;
     }
-    if parse_varchar(&f).is_some() && t == "text" {
-        return true;
-    }
-
-    false
+    parse_varchar(&f).is_some() && t == "text"
 }
 
 /// Parse a `varchar` / `character varying` / `char` / `character` type
@@ -832,10 +828,9 @@ fn parse_varchar(t: &str) -> Option<(&'static str, Option<u32>)> {
         ("varchar", rest.trim_start())
     } else if let Some(rest) = normalized.strip_prefix("character") {
         ("char", rest.trim_start())
-    } else if let Some(rest) = normalized.strip_prefix("char") {
-        ("char", rest.trim_start())
     } else {
-        return None;
+        let rest = normalized.strip_prefix("char")?;
+        ("char", rest.trim_start())
     };
     if rest.is_empty() {
         return Some((kind, None));
