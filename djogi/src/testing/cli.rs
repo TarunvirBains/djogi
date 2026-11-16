@@ -71,7 +71,9 @@ pub fn djogi_binary_path() -> PathBuf {
     // at test time if the user hasn't built djogi-cli; the error from the
     // caller's assert!() is clearer than a panic here).
     let deps = exe.parent().expect("current_exe has parent");
-    deps.parent().expect("deps has parent (profile/)").join("djogi")
+    deps.parent()
+        .expect("deps has parent (profile/)")
+        .join("djogi")
 }
 
 /// Resolve the connected test context's `current_database()` so callers
