@@ -58,6 +58,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   identifiers change; any existing `schema_snapshot.json` containing shortened
   names will report a one-time index/constraint rename on next
   `djogi migrations compose` (#493).
+- **Breaking (sealed API):** `AnnotationSlot::{push_column,
+  push_column_bare, push_column_bare_after}`,
+  `IntoAggregateTuple::{push_columns, push_columns_bare,
+  push_columns_bare_after}`, and
+  `PlainAnnotationTuple::push_plain_columns` now return
+  `Result<(), PortablePredicateError>` instead of `()`. `AnnotationSlot`
+  and `PlainAnnotationTuple` are `#[doc(hidden)]`; `IntoAggregateTuple`
+  is sealed but publicly accessible via `djogi::query::annotate`. All
+  three traits are sealed — downstream crates cannot implement them, but
+  callers who reference these methods directly must handle the new result
+  or propagate with `?`. Normal annotate-terminal callers
+  (`.annotate(...).fetch_all(...)` etc.) require no call-site changes;
+  annotation emission failures now propagate through the existing
+  `DjogiError` result instead of panicking.
 
 ### Fixed
 
