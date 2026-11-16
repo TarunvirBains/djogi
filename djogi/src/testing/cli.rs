@@ -62,9 +62,15 @@ pub fn djogi_binary_path() -> PathBuf {
             Some(p) => p,
             None => break,
         };
-        let djogi = candidate.join("djogi");
-        if djogi.is_file() {
-            return djogi;
+        // Canonicalize to resolve symlinks in the current_exe()-derived path,
+        // then join the literal binary name and verify it stays within the
+        // canonicalized directory — the same guard pattern used in
+        // temp_workspace and write_minimal_djogi_toml.
+        if let Ok(dir_canon) = candidate.canonicalize() {
+            let djogi = dir_canon.join("djogi");
+            if djogi.starts_with(&dir_canon) && djogi.is_file() {
+                return djogi;
+            }
         }
     }
     // Fallback: original two-level assumption (compile-time path may not exist
