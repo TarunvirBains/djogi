@@ -1816,6 +1816,9 @@ pub struct FieldAttrs {
     /// multi-attr merge path needs this opt-in to exist at all.
     /// Users never read this field; it is the darling landing site for
     /// the rename. Read [`Self::expose`] instead.
+    // Allow on the field: darling generates `expose_raw: expose_raw` using this
+    // field's span; the field-level allow suppresses the lint on that generated code.
+    #[allow(clippy::redundant_field_names)]
     #[darling(multiple, rename = "expose")]
     pub expose_raw: Vec<ExposeSpec>,
 
