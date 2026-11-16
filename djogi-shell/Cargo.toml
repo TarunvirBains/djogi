@@ -16,6 +16,9 @@ categories = ["command-line-utilities", "database"]
 # shipped surface. Remove this once the shell ships.
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 djogi.workspace = true
 tokio.workspace = true
