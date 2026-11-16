@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guard fires for all three wrapper permutations; one compile-pass fixture
   verifies canonical narrowing still compiles.
 
+## [0.1.0-alpha.18] — 2026-11-15
+
+### Fixed
+
+- **RepairError typed error chains:** `RepairError::Verify` now preserves
+  the full `VerifyRunError` chain via `Error::source()`, and
+  `RepairError::ArtifactIo` preserves the original `io::Error` from Phase 0
+  artifact reads. Both variants are classified as exit-code 1 in the CLI.
+  (Closes #414, Closes #415)
+
 ## [0.1.0-alpha.17] - 2026-06-15
 
 ### Added

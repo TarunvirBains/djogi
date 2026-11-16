@@ -310,7 +310,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cargo-djogi"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "djogi",
  "serde_json",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "djogi"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -636,7 +636,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-cli"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "clap",
  "deadpool-postgres",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-macros"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "darling",
  "djogi",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "djogi-shell"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "djogi",
  "tokio",
@@ -2648,7 +2648,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0-alpha.17"
+version = "0.1.0-alpha.18"
 dependencies = [
  "djogi",
  "proc-macro2",
